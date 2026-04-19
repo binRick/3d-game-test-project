@@ -351,6 +351,12 @@ static bool      g_bossInterlude = false;  // true between waves while a boss is
 
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
 static Sound    g_sHurt, g_sPickup, g_sEmpty, g_sDie;
+static Sound    g_sHealthPickup;       // override g_sPickup specifically for health grabs
+static bool     g_sHealthPickupOK = false;
+static Sound    g_sMGPickup;           // override g_sPickup for MG-ammo grabs
+static bool     g_sMGPickupOK = false;
+static Sound    g_sOneLeft;            // plays when only one chef remains in the wave
+static bool     g_sOneLeftOK = false;
 // Additional chef death variants; g_sDie is variant 0, g_sDieAlt[i] are variants 1..N
 #define CHEF_DIE_ALT_COUNT 3
 static Sound    g_sDieAlt[CHEF_DIE_ALT_COUNT];
@@ -363,8 +369,13 @@ static Sound    g_sMulti;         // UT "Holy Shit!" — multi-kill (>=2 enemies
 static bool     g_sMultiOK = false;
 static Sound    g_sFirstBlood;    // UT "First Blood!" — plays on first enemy kill each run
 static bool     g_sFirstBloodOK = false;
-static Sound    g_sDistantEnemy; // plays when an enemy first comes into view after none were visible
-static bool     g_sDistantEnemyOK = false;
+// Enemy-sighted stingers — one is picked at random each time the first enemy
+// enters the player's view. Add more by appending to the ENEMY_ALERT_FILES
+// table; the loader skips any file that fails to load.
+#define ENEMY_ALERT_MAX 4
+static Sound    g_sEnemyAlert[ENEMY_ALERT_MAX];
+static bool     g_sEnemyAlertOK[ENEMY_ALERT_MAX] = {0};
+static int      g_sEnemyAlertCount = 0;
 static bool     g_hadVisibleEnemy = false;   // previous-frame visibility state
 static Sound    g_sShotgunKill; // stinger that plays when a shotgun kill lands
 static bool     g_sShotgunKillOK = false;
@@ -974,7 +985,10 @@ static void UpdPicks(void) {
         if (sqrtf(dx*dx+dz*dz)<1.2f) {
             // Don't grab a health pickup if we're already at full HP
             if (pk->type == 0 && g_p.hp >= g_p.maxHp) continue;
-            pk->active=false; PlaySound(g_sPickup);
+            pk->active=false;
+            if      (pk->type == 0 && g_sHealthPickupOK) PlaySound(g_sHealthPickup);
+            else if (pk->type == 4 && g_sMGPickupOK)     PlaySound(g_sMGPickup);
+            else                                         PlaySound(g_sPickup);
             g_msgT=1.8f;
             switch (pk->type) {
                 case 0: g_p.hp     =fminf(g_p.maxHp,g_p.hp+35);         snprintf(g_msg,80,"+35 HEALTH");  break;
@@ -1067,6 +1081,18 @@ static void Msg(const char *s) { strncpy(g_msg,s,79); g_msgT=2.0f; }
 // "Alive" = active AND not dying (corpse/dying enemies are still drawn but don't count)
 static int Alive(void) { int n=0; for(int i=0;i<g_ec;i++) if(g_e[i].active && !g_e[i].dying) n++; return n; }
 
+// Pick a random open corner of the map to spawn the boss. All four interior
+// corner cells ((1,1), (1,28), (18,1), (18,28)) are open in MAP[][] — centred
+// in the cell they give the boss ~1m of clearance from the perimeter walls.
+static void PickBossSpawn(float *bx, float *bz) {
+    static const struct { int row, col; } corners[4] = {
+        { 1,  1 }, { 1,  28 }, { 18, 1 }, { 18, 28 }
+    };
+    int i = rand() % 4;
+    *bx = corners[i].col * CELL + CELL * 0.5f;
+    *bz = corners[i].row * CELL + CELL * 0.5f;
+}
+
 static void KillEnemy(int i) {
     Enemy *e=&g_e[i];
     // Keep the enemy active=true so the sprite keeps rendering — mark dying so
@@ -1100,6 +1126,14 @@ static void KillEnemy(int i) {
         SetSoundVolume(g_sFirstBlood, 1.5f);
         PlaySound(g_sFirstBlood);
     }
+    // "One left" stinger — fires the frame the kill takes Alive() from 2 to 1,
+    // i.e. one chef remains in this wave. Boss phase always has Alive()==1
+    // throughout, so gate on !g_bossInterlude to avoid firing on boss spawn or
+    // on any stray kill while the boss is up.
+    if (!g_bossInterlude && Alive() == 1 && g_sOneLeftOK && e->type != 3) {
+        SetSoundVolume(g_sOneLeft, 1.5f);
+        PlaySound(g_sOneLeft);
+    }
     // (shotgun-kill stinger now plays on every shotgun shot in Shoot(), not here)
     if ((float)rand()/RAND_MAX<0.55f) {
         // Drop chances: health 40%, shells 25%, MG 20%, rockets 15%
@@ -1122,8 +1156,7 @@ static void KillEnemy(int i) {
             Msg("BOSS DOWN - RESPAWN");
             Enemy *ne = &g_e[g_ec++];
             *ne = (Enemy){0};
-            float bx = 20.f*CELL/2.f + 4.f*CELL;
-            float bz = 10.f*CELL/2.f + 4.f*CELL;
+            float bx, bz; PickBossSpawn(&bx, &bz);
             ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
             ne->type = 3; ne->state = ES_PATROL;
             ne->hp = ne->maxHp = ET_HP[3];
@@ -1147,8 +1180,7 @@ static void KillEnemy(int i) {
             Msg(bmsg);
             Enemy *ne = &g_e[g_ec++];
             *ne = (Enemy){0};
-            float bx = 20.f*CELL/2.f + 4.f*CELL;
-            float bz = 10.f*CELL/2.f + 4.f*CELL;
+            float bx, bz; PickBossSpawn(&bx, &bz);
             ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
             ne->type = 3; ne->state = ES_PATROL;
             // Boss scales with wave like chefs do
@@ -2197,9 +2229,19 @@ int main(void) {
         g_sFirstBlood = LoadSound(fp);
         g_sFirstBloodOK = (g_sFirstBlood.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/distant-enemy.mp3", AppDir());
-        g_sDistantEnemy = LoadSound(fp);
-        g_sDistantEnemyOK = (g_sDistantEnemy.frameCount > 0);
+        static const char *ENEMY_ALERT_FILES[] = {
+            "sounds/distant-enemy.mp3",
+            "sounds/bombin-alert.mp3",
+            "sounds/scary-alert.mp3",
+        };
+        int na = (int)(sizeof(ENEMY_ALERT_FILES)/sizeof(ENEMY_ALERT_FILES[0]));
+        if (na > ENEMY_ALERT_MAX) na = ENEMY_ALERT_MAX;
+        for (int a = 0; a < na; a++) {
+            snprintf(fp, sizeof(fp), "%s" RES_PREFIX "%s", AppDir(), ENEMY_ALERT_FILES[a]);
+            g_sEnemyAlert[a] = LoadSound(fp);
+            g_sEnemyAlertOK[a] = (g_sEnemyAlert[a].frameCount > 0);
+        }
+        g_sEnemyAlertCount = na;
 
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/shotgun-kill.mp3", AppDir());
         g_sShotgunKill = LoadSound(fp);
@@ -2212,6 +2254,18 @@ int main(void) {
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mg-sound.mp3", AppDir());
         g_sMG = LoadSound(fp);
         g_sMGOK = (g_sMG.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/health-pickup.mp3", AppDir());
+        g_sHealthPickup = LoadSound(fp);
+        g_sHealthPickupOK = (g_sHealthPickup.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mg-ammo-pickup.mp3", AppDir());
+        g_sMGPickup = LoadSound(fp);
+        g_sMGPickupOK = (g_sMGPickup.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/one-left.mp3", AppDir());
+        g_sOneLeft = LoadSound(fp);
+        g_sOneLeftOK = (g_sOneLeft.frameCount > 0);
 
         // Real rocket launcher firing sound (overrides procedural g_sRocket)
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/launcher-shot.mp3", AppDir());
@@ -2584,10 +2638,32 @@ int main(void) {
                     }
                     if (!blocked) anyVisible = true;
                 }
-                if (anyVisible && !g_hadVisibleEnemy && g_sDistantEnemyOK &&
-                    !IsSoundPlaying(g_sDistantEnemy)) {
-                    SetSoundVolume(g_sDistantEnemy, 2.0f);
-                    PlaySound(g_sDistantEnemy);
+                if (anyVisible && !g_hadVisibleEnemy && g_sEnemyAlertCount > 0) {
+                    // 10-second cooldown — otherwise a sprinkle of line-of-sight
+                    // flips (chef rounding a corner, re-emerging) would stack
+                    // stingers on top of each other.
+                    static double lastAlertT = -1000.0;
+                    const double ALERT_COOLDOWN = 10.0;
+                    double now = GetTime();
+                    bool anyPlaying = false;
+                    for (int a = 0; a < g_sEnemyAlertCount; a++) {
+                        if (g_sEnemyAlertOK[a] && IsSoundPlaying(g_sEnemyAlert[a])) {
+                            anyPlaying = true; break;
+                        }
+                    }
+                    if (!anyPlaying && (now - lastAlertT) >= ALERT_COOLDOWN) {
+                        // Pick a random loaded alert stinger
+                        int pick = rand() % g_sEnemyAlertCount;
+                        for (int tries = 0; tries < g_sEnemyAlertCount; tries++) {
+                            int a = (pick + tries) % g_sEnemyAlertCount;
+                            if (g_sEnemyAlertOK[a]) {
+                                SetSoundVolume(g_sEnemyAlert[a], 2.0f);
+                                PlaySound(g_sEnemyAlert[a]);
+                                lastAlertT = now;
+                                break;
+                            }
+                        }
+                    }
                 }
                 g_hadVisibleEnemy = anyVisible;
             }
@@ -2695,10 +2771,15 @@ int main(void) {
     if (g_sFatalityOK) UnloadSound(g_sFatality);
     if (g_sMultiOK)      UnloadSound(g_sMulti);
     if (g_sFirstBloodOK)   UnloadSound(g_sFirstBlood);
-    if (g_sDistantEnemyOK) UnloadSound(g_sDistantEnemy);
+    for (int a = 0; a < g_sEnemyAlertCount; a++) {
+        if (g_sEnemyAlertOK[a]) UnloadSound(g_sEnemyAlert[a]);
+    }
     if (g_sShotgunKillOK)  UnloadSound(g_sShotgunKill);
     if (g_sMGOK)           UnloadSound(g_sMG);
     if (g_sNextWaveOK)     UnloadSound(g_sNextWave);
+    if (g_sHealthPickupOK) UnloadSound(g_sHealthPickup);
+    if (g_sMGPickupOK)     UnloadSound(g_sMGPickup);
+    if (g_sOneLeftOK)      UnloadSound(g_sOneLeft);
     if (g_musicOK) { StopMusicStream(g_music); UnloadMusicStream(g_music); }
     CloseAudioDevice(); CloseWindow();
     return 0;
