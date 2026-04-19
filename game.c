@@ -613,6 +613,29 @@ static bool IsWall(float wx, float wz) {
     return MAP[r][c]==1;
 }
 
+// Circle-vs-grid wall check. Any wall cell whose AABB is within `rad` of
+// (cx, cz) blocks. Smoother than 3-point shoulder tests — avoids false-block
+// at wall corners where the body only grazes the cell diagonally.
+static bool IsWallCircle(float cx, float cz, float rad) {
+    int cMin = (int)((cx - rad) / CELL);
+    int cMax = (int)((cx + rad) / CELL);
+    int rMin = (int)((cz - rad) / CELL);
+    int rMax = (int)((cz + rad) / CELL);
+    for (int row = rMin; row <= rMax; row++) {
+        for (int col = cMin; col <= cMax; col++) {
+            if (row<0||row>=ROWS||col<0||col>=COLS) return true;
+            if (MAP[row][col] != 1) continue;
+            float ax0 = col * CELL, ax1 = (col+1) * CELL;
+            float az0 = row * CELL, az1 = (row+1) * CELL;
+            float qx = fmaxf(ax0, fminf(cx, ax1));
+            float qz = fmaxf(az0, fminf(cz, az1));
+            float dx = cx - qx, dz = cz - qz;
+            if (dx*dx + dz*dz < rad*rad) return true;
+        }
+    }
+    return false;
+}
+
 // ── PLATFORM COLLISION ──────────────────────────────────────────────────────
 // Returns true if the position (x, z) would penetrate a platform whose top is
 // more than STEP_H above currentY (i.e. too tall to walk up onto).
@@ -625,6 +648,27 @@ static bool PlatBlocks(float x, float z, float currentY, float rad) {
         }
     }
     return false;
+}
+
+// How far inside a too-tall platform's safety margin the point lies — 0 if the
+// point is clear, positive if penetrating. Used so an entity that just fell off
+// a platform (and so overlaps the edge from the side) can still move AWAY —
+// allow moves only if they don't deepen penetration.
+static float PlatPenetration(float x, float z, float currentY, float rad) {
+    float worst = 0.f;
+    for (int i = 0; i < g_platCount; i++) {
+        Platform *p = &g_plats[i];
+        if (currentY >= p->top - STEP_H) continue;
+        if (x <= p->x0 - rad || x >= p->x1 + rad ||
+            z <= p->z0 - rad || z >= p->z1 + rad) continue;
+        float dxL = x - (p->x0 - rad);
+        float dxR = (p->x1 + rad) - x;
+        float dzF = z - (p->z0 - rad);
+        float dzB = (p->z1 + rad) - z;
+        float d = fminf(fminf(dxL, dxR), fminf(dzF, dzB));
+        if (d > worst) worst = d;
+    }
+    return worst;
 }
 
 // Return the highest platform top the player can stand on at (x, z) given
@@ -641,20 +685,44 @@ static float PlatGroundAt(float x, float z, float currentY) {
     return best;
 }
 
+// Same as PlatGroundAt but with a radius margin — the entity steps onto a
+// platform as soon as its body overlaps the platform footprint, not only once
+// its centre crosses the strict edge. Used for enemies so they climb stairs
+// smoothly when approaching from the side instead of clipping into the mesh.
+static float PlatGroundAtR(float x, float z, float currentY, float rad) {
+    float best = 0.f;
+    for (int i = 0; i < g_platCount; i++) {
+        Platform *p = &g_plats[i];
+        if (x >= p->x0 - rad && x <= p->x1 + rad &&
+            z >= p->z0 - rad && z <= p->z1 + rad) {
+            if (p->top > best && p->top <= currentY + 0.05f) best = p->top;
+        }
+    }
+    return best;
+}
+
 // Per-axis move for enemies — blocks against walls AND tall platforms, matching
 // the player's movement rules. Enemies can still step onto platforms within STEP_H.
 static void EnemyMove(Enemy *e, float dx, float dz) {
     const float r = (e->type == 3) ? 0.85f : 0.42f;  // boss takes more space
+    // Compare penetration instead of a hard block — an enemy already inside a
+    // platform's margin (e.g. just fell off its edge) can still move AWAY from
+    // it, they just can't push FURTHER in. No free re-entry either.
+    float curPen = PlatPenetration(e->pos.x, e->pos.z, e->pos.y, r + 0.1f);
+    // Try the combined diagonal move first so the enemy can round outside
+    // corners smoothly. Falls back to per-axis if the diagonal is blocked.
+    float nxD = e->pos.x + dx, nzD = e->pos.z + dz;
+    float penD = PlatPenetration(nxD, nzD, e->pos.y, r + 0.1f);
+    if (!IsWallCircle(nxD, nzD, r) && penD <= curPen + 0.001f) {
+        e->pos.x = nxD; e->pos.z = nzD;
+        return;
+    }
     float nx = e->pos.x + dx;
-    if (!IsWall(nx+(dx>=0?r:-r), e->pos.z) &&
-        !IsWall(nx+(dx>=0?r:-r), e->pos.z+r) &&
-        !IsWall(nx+(dx>=0?r:-r), e->pos.z-r) &&
-        !PlatBlocks(nx, e->pos.z, e->pos.y, r + 0.1f)) e->pos.x = nx;
+    float newPenX = PlatPenetration(nx, e->pos.z, e->pos.y, r + 0.1f);
+    if (!IsWallCircle(nx, e->pos.z, r) && newPenX <= curPen + 0.001f) e->pos.x = nx;
     float nz = e->pos.z + dz;
-    if (!IsWall(e->pos.x, nz+(dz>=0?r:-r)) &&
-        !IsWall(e->pos.x+r, nz+(dz>=0?r:-r)) &&
-        !IsWall(e->pos.x-r, nz+(dz>=0?r:-r)) &&
-        !PlatBlocks(e->pos.x, nz, e->pos.y, r + 0.1f)) e->pos.z = nz;
+    float newPenZ = PlatPenetration(e->pos.x, nz, e->pos.y, r + 0.1f);
+    if (!IsWallCircle(e->pos.x, nz, r) && newPenZ <= curPen + 0.001f) e->pos.z = nz;
 }
 
 // Build the level's platforms. Called once at init.
@@ -1102,8 +1170,11 @@ static void UpdEnemies(float dt) {
         e->cd-=dt; e->stateT-=dt; e->legT+=dt*e->speed*2.8f;
         if (e->state==ES_PATROL) {
             EnemyMove(e, e->pd.x*e->speed*dt, e->pd.z*e->speed*dt);
-            // Snap enemy Y to highest reachable platform under them (auto-step stairs)
-            e->pos.y = PlatGroundAt(e->pos.x, e->pos.z, e->pos.y + STEP_H);
+            // Snap enemy Y to highest reachable platform under them (auto-step stairs).
+            // Use body-radius margin so the chef steps up as soon as his footprint
+            // overlaps a step, not only once his centre crosses the strict edge.
+            float er = (e->type == 3) ? 0.85f : 0.42f;
+            e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, er);
             if (e->stateT<0){float a=(float)rand()/RAND_MAX*6.28f;e->pd=(Vector3){sinf(a),0,cosf(a)};e->stateT=1.f+(float)rand()/RAND_MAX*2.5f;}
         } else if (e->state==ES_CHASE) {
             if (dist>e->atkR) {
@@ -1129,8 +1200,63 @@ static void UpdEnemies(float dt) {
                 float sz = dz/dist + sepZ * 1.4f;
                 float slen = sqrtf(sx*sx + sz*sz);
                 if (slen > 0.01f) { sx /= slen; sz /= slen; }
+                // Obstacle avoidance: if a too-tall platform is on the path to
+                // the player, skirt around it tangentially (always the same side
+                // per-enemy, so the enemy doesn't oscillate between left/right).
+                const float r = (e->type == 3) ? 0.85f : 0.42f;
+                const float probe = 1.5f;
+                float px = e->pos.x + sx*probe, pz = e->pos.z + sz*probe;
+                // Effective Y at the probe: if a walkable step sits there, the
+                // enemy will lift to its top when they walk onto it. Without
+                // this, a staircase gets flagged as a blocker because the next
+                // step looks unreachable from the ground — but it's reachable
+                // via the first step. So probeY = highest step the enemy could
+                // climb onto at the probe point.
+                float probeY = e->pos.y;
+                for (int pi = 0; pi < g_platCount; pi++) {
+                    Platform *pp = &g_plats[pi];
+                    if (px >= pp->x0 - r && px <= pp->x1 + r &&
+                        pz >= pp->z0 - r && pz <= pp->z1 + r &&
+                        pp->top > probeY && pp->top <= e->pos.y + STEP_H + 0.05f) {
+                        probeY = pp->top;
+                    }
+                }
+                Platform *bp = NULL;
+                for (int pi = 0; pi < g_platCount; pi++) {
+                    Platform *pp = &g_plats[pi];
+                    if (px > pp->x0 - (r+0.1f) && px < pp->x1 + (r+0.1f) &&
+                        pz > pp->z0 - (r+0.1f) && pz < pp->z1 + (r+0.1f) &&
+                        probeY < pp->top - STEP_H) { bp = pp; break; }
+                }
+                if (bp) {
+                    // Skirt direction: perpendicular to the enemy->platform-centre
+                    // vector, sign picked per-enemy so a group fans around both sides.
+                    float cx = (bp->x0 + bp->x1) * 0.5f;
+                    float cz = (bp->z0 + bp->z1) * 0.5f;
+                    float ex = e->pos.x - cx, ez = e->pos.z - cz;
+                    float el = sqrtf(ex*ex + ez*ez);
+                    if (el > 0.01f) { ex /= el; ez /= el; }
+                    int bias = ((i * 2654435761u) & 1) ? 1 : -1;
+                    float tx = -ez * bias, tz = ex * bias;
+                    // 85% tangent + 15% pull toward player so enemy still makes
+                    // progress around the obstacle instead of orbiting it.
+                    float bxv = tx*0.85f + (dx/dist)*0.15f;
+                    float bzv = tz*0.85f + (dz/dist)*0.15f;
+                    float bl = sqrtf(bxv*bxv + bzv*bzv);
+                    if (bl > 0.01f) { sx = bxv/bl; sz = bzv/bl; }
+                    // If the chosen skirt side is itself blocked (another
+                    // platform or wall nearby), flip to the other side.
+                    float qx = e->pos.x + sx*probe, qz = e->pos.z + sz*probe;
+                    if (PlatBlocks(qx, qz, e->pos.y, r + 0.1f) || IsWall(qx, qz)) {
+                        tx = -tx; tz = -tz;
+                        bxv = tx*0.85f + (dx/dist)*0.15f;
+                        bzv = tz*0.85f + (dz/dist)*0.15f;
+                        bl = sqrtf(bxv*bxv + bzv*bzv);
+                        if (bl > 0.01f) { sx = bxv/bl; sz = bzv/bl; }
+                    }
+                }
                 EnemyMove(e, sx*e->speed*dt, sz*e->speed*dt);
-                e->pos.y = PlatGroundAt(e->pos.x, e->pos.z, e->pos.y + STEP_H);
+                e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, r);
             }
             else e->state=ES_ATTACK;
         } else {
