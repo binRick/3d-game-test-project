@@ -1,5 +1,11 @@
 # ⚔️ IRON FIST 3D
 
+![gameplay](docs/screenshot-1.png)
+
+| | |
+|:-:|:-:|
+| ![](docs/screenshot-2.png) | ![](docs/screenshot-3.png) |
+
 **A native macOS Duke-Nukem-style FPS built from scratch in C with raylib.**
 
 One `game.c` file. No engine. No scripting layer. Real OpenGL, real audio, real
