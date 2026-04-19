@@ -174,7 +174,7 @@ typedef struct {
 
 typedef struct { Vector3 pos, vel; float life, dmg; bool active, rocket; } Bullet;
 typedef struct { Vector3 pos, vel; float life, maxLife, size; Color col; bool active, grav; } Part;
-typedef struct { Vector3 pos; int type; bool active; float bobT; } Pickup;
+typedef struct { Vector3 pos; int type; int variant; bool active; float bobT; } Pickup;
 
 // ── GLOBALS ──────────────────────────────────────────────────────────────────
 static Player   g_p;
@@ -187,6 +187,29 @@ static int      g_wave;
 static GameState g_gs;
 static char     g_msg[80]; static float g_msgT;
 static Model    g_wallModel, g_floorModel, g_ceilModel;
+// ── Sprite-based weapon viewmodels ───────────────────────────────────────────
+// Each weapon has a frame[0]=idle and frame[1..count-1]=fire animation.
+// When shootCD>0, we interpolate through fire frames; otherwise show idle.
+#define MAX_WFRAMES 16
+typedef struct {
+    Texture2D frames[MAX_WFRAMES];
+    int   count;
+    float scale;      // display pixel scale
+    int   yAnchor;    // "sh - yAnchor" is bottom of sprite baseline
+    float xShift;     // fraction of screen width to offset horizontally (-0.1 = 10% left)
+    Texture2D flash;  // optional muzzle-flash overlay drawn on top while firing (same dst rect)
+    bool  hasFlash;
+    bool  loaded;
+} WepSprite;
+static WepSprite g_wep[4];  // one per player weapon (0=pistol 1=shotgun 2=rocket 3=MG)
+
+// Per-weapon crosshair overrides (NULL texture = use default tick-mark crosshair)
+static Texture2D g_xhair[4];
+
+// Pickup billboards (NULL texture = use default colored sphere)
+// g_healthTex[0]=CHIKA0, [1]=EASTA0 — 50/50 picked per spawn via Pickup.variant
+static Texture2D g_healthTex[2];
+
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
 static Sound    g_sHurt, g_sPickup, g_sEmpty, g_sDie;
 
@@ -203,7 +226,7 @@ static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255}
 
 // weapon tables
 static const char *WPN[]    = {"PISTOL","SHOTGUN","ROCKETS","MACHINEGUN"};
-static const float WR[]     = {0.34f, 0.88f, 0.96f, 0.09f};
+static const float WR[]     = {0.34f, 0.59f, 0.96f, 0.09f};
 static const int   WD[]     = {26, 15, 0, 18};
 static const int   WPEL[]   = {1, 8, 1, 1};
 
@@ -274,21 +297,64 @@ static Texture2D MkBrick(void) {
     SetTextureWrap(t,TEXTURE_WRAP_REPEAT); return t;
 }
 static Texture2D MkFloor(void) {
-    int S=256; Image img=GenImageColor(S,S,(Color){28,28,28,255});
-    for (int r=0;r<8;r++) for (int c=0;c<8;c++) {
-        unsigned char v=32+rand()%16;
-        ImageDrawRectangle(&img,c*32+1,r*32+1,30,30,(Color){v,v,v,255});
+    // Metal grating / industrial tile
+    int S=256; Image img=GenImageColor(S,S,(Color){22,20,18,255});
+    // Large concrete tiles
+    int ts=64;
+    for (int r=0;r<S/ts;r++) for (int c=0;c<S/ts;c++) {
+        unsigned char base=38+rand()%14;
+        // Tile fill with subtle noise
+        for (int py=r*ts+2;py<r*ts+ts-2;py++) for (int px=c*ts+2;px<c*ts+ts-2;px++) {
+            unsigned char v=base+(rand()%6);
+            ImageDrawPixel(&img,px,py,(Color){v,v,(unsigned char)(v-4),255});
+        }
+        // Grout lines (dark border)
+        ImageDrawRectangle(&img,c*ts,r*ts,ts,2,(Color){12,12,12,255});
+        ImageDrawRectangle(&img,c*ts,r*ts,2,ts,(Color){12,12,12,255});
+    }
+    // Metal grate holes pattern over tiles
+    for (int r=8;r<S-8;r+=16) for (int c=8;c<S-8;c+=16) {
+        ImageDrawRectangle(&img,c,r,8,8,(Color){10,10,10,255});
+        ImageDrawRectangle(&img,c+1,r+1,6,6,(Color){16,14,12,255});
+    }
+    // Worn edge highlights on tiles
+    for (int r=0;r<S/ts;r++) for (int c=0;c<S/ts;c++) {
+        ImageDrawRectangle(&img,c*ts+2,r*ts+2,ts-4,1,(Color){65,62,55,255});
+        ImageDrawRectangle(&img,c*ts+2,r*ts+2,1,ts-4,(Color){65,62,55,255});
     }
     Texture2D t=LoadTextureFromImage(img); UnloadImage(img);
     GenTextureMipmaps(&t); SetTextureFilter(t,TEXTURE_FILTER_TRILINEAR);
     SetTextureWrap(t,TEXTURE_WRAP_REPEAT); return t;
 }
+
 static Texture2D MkCeil(void) {
-    int S=128; Image img=GenImageColor(S,S,(Color){14,14,22,255});
-    for (int i=0;i<70;i++) {
-        int x=rand()%S,y=rand()%S,w=3+rand()%14;
-        unsigned char v=30+rand()%28;
-        ImageDrawRectangle(&img,x,y,w,w,(Color){(unsigned char)(v/3),(unsigned char)(v/3),v,160});
+    // Concrete panels with recessed lighting strips
+    int S=256; Image img=GenImageColor(S,S,(Color){20,20,28,255});
+    // Panel grid
+    int ps=64;
+    for (int r=0;r<S/ps;r++) for (int c=0;c<S/ps;c++) {
+        unsigned char base=26+rand()%10;
+        for (int py=r*ps+3;py<r*ps+ps-3;py++) for (int px=c*ps+3;px<c*ps+ps-3;px++) {
+            unsigned char v=base+(rand()%5);
+            ImageDrawPixel(&img,px,py,(Color){(unsigned char)(v-2),(unsigned char)(v-2),v,255});
+        }
+        // Panel border (recessed look)
+        ImageDrawRectangle(&img,c*ps,  r*ps,  ps,3,(Color){10,10,14,255});
+        ImageDrawRectangle(&img,c*ps,  r*ps,  3,ps,(Color){10,10,14,255});
+        ImageDrawRectangle(&img,c*ps,  r*ps+ps-3,ps,3,(Color){40,40,55,255});
+        ImageDrawRectangle(&img,c*ps+ps-3,r*ps,3,ps,(Color){40,40,55,255});
+    }
+    // Lighting strip down the middle of each panel row
+    for (int r=0;r<S/ps;r++) {
+        int ly=r*ps+ps/2-3;
+        ImageDrawRectangle(&img,4,ly,S-8,6,(Color){50,50,70,255});
+        ImageDrawRectangle(&img,4,ly+1,S-8,4,(Color){70,68,90,200});
+    }
+    // Rivets at panel corners
+    for (int r=0;r<=S/ps;r++) for (int c=0;c<=S/ps;c++) {
+        int rx=c*ps-2, ry=r*ps-2;
+        if (rx>=0&&ry>=0&&rx<S&&ry<S)
+            ImageDrawRectangle(&img,rx,ry,4,4,(Color){55,55,70,255});
     }
     Texture2D t=LoadTextureFromImage(img); UnloadImage(img);
     GenTextureMipmaps(&t); SetTextureFilter(t,TEXTURE_FILTER_TRILINEAR);
@@ -490,7 +556,7 @@ static void DrawParts(void) {
 // ── PICKUPS ──────────────────────────────────────────────────────────────────
 static void SpawnPick(float x, float z, int type) {
     if (g_pkc>=MAX_PICKS) return;
-    g_pk[g_pkc++]=(Pickup){{x,0.5f,z},type,true,0};
+    g_pk[g_pkc++]=(Pickup){{x,0.5f,z},type,rand()&1,true,0};
 }
 static void SeedPicks(void) {
     static const int POS[][2]={{5,5},{14,9},{24,5},{5,14},{14,14},{24,14},{9,18},{19,18},{2,9},{27,9},{9,2},{19,2},{14,18},{14,2},{2,14},{27,14}};
@@ -514,12 +580,17 @@ static void UpdPicks(void) {
         }
     }
 }
-static void DrawPicks(void) {
+static void DrawPicks(Camera3D cam) {
     static Color tc[]={{255,60,60,255},{255,220,0,255},{255,140,0,255}};
     for (int i=0;i<g_pkc;i++) {
         Pickup *pk=&g_pk[i]; if (!pk->active) continue;
-        DrawSphere(pk->pos,0.22f,tc[pk->type]);
-        DrawCircle3D(pk->pos,0.36f,(Vector3){1,0,0},90.f,Fade(tc[pk->type],0.35f));
+        if (pk->type == 0 && g_healthTex[pk->variant].id) {
+            // Sprite billboard for health (always faces camera)
+            DrawBillboard(cam, g_healthTex[pk->variant], pk->pos, 0.9f, WHITE);
+        } else {
+            DrawSphere(pk->pos,0.22f,tc[pk->type]);
+            DrawCircle3D(pk->pos,0.36f,(Vector3){1,0,0},90.f,Fade(tc[pk->type],0.35f));
+        }
     }
 }
 
@@ -756,6 +827,50 @@ static void Shoot(void) {
 // 2D screen-space weapon — always correct, no 3D rotation issues
 // Draw an oriented box with world-space vertex positions computed from camera axes.
 // bx/by/bz: offset from center along right/up/fwd.  hw/hh/hl: half-extents.
+// Draw the current weapon's sprite over the 3D scene (2D overlay, post-EndMode3D).
+// Frame[0] = idle.  Frame[1..count-1] = fire animation, played back during shootCD.
+static void DrawSpriteWeapon(void) {
+    int w = g_p.weapon;
+    if (w < 0 || w >= 4) return;
+    WepSprite *ws = &g_wep[w];
+    if (!ws->loaded) return;
+
+    // Pick frame index
+    int frame = 0;
+    if (g_p.shootCD > 0.f && ws->count > 1) {
+        float prog = 1.f - (g_p.shootCD / WR[w]);        // 0→1 across the fire window
+        if (prog < 0.f) prog = 0.f; if (prog > 1.f) prog = 1.f;
+        int fireFrames = ws->count - 1;
+        frame = 1 + (int)(prog * fireFrames);
+        if (frame >= ws->count) frame = ws->count - 1;
+    }
+
+    Texture2D tex = ws->frames[frame];
+    if (tex.id == 0) return;
+
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    float kickY   = g_p.kickAnim  * 45.f;
+    float bobY    = sinf(g_p.bobT) * 7.f;
+    float switchY = g_p.switchAnim * 110.f;
+    float dstW    = tex.width  * ws->scale;
+    float dstH    = tex.height * ws->scale;
+    float dstX    = sw * 0.5f - dstW * 0.5f + sw * ws->xShift;  // crosshair + per-weapon shift
+    float dstY    = (float)sh - dstH + kickY + bobY + switchY;
+
+    DrawTexturePro(tex,
+        (Rectangle){0, 0, (float)tex.width, (float)tex.height},
+        (Rectangle){dstX, dstY, dstW, dstH},
+        (Vector2){0, 0}, 0.f, WHITE);
+
+    // Muzzle-flash overlay: same dst rect, drawn only in first ~30% of the fire window
+    if (ws->hasFlash && g_p.shootCD > WR[w] * 0.70f) {
+        DrawTexturePro(ws->flash,
+            (Rectangle){0, 0, (float)ws->flash.width, (float)ws->flash.height},
+            (Rectangle){dstX, dstY, dstW, dstH},
+            (Vector2){0, 0}, 0.f, WHITE);
+    }
+}
+
 static void OBox(Vector3 c, float hw, float hh, float hl,
                   Vector3 R, Vector3 U, Vector3 F, Color col) {
     Vector3 v[8];
@@ -816,6 +931,7 @@ static void DrawWeapon3D(Camera3D cam) {
     Color dk={50,52,56,255}, md={82,84,90,255}, lt={115,118,126,255};
     Color wd={95,58,26,255}, wd2={72,44,18,255};
     int w = g_p.weapon;
+    if (g_wep[w].loaded) return;  // sprite handles this weapon
 
     rlDisableDepthTest();
     rlDisableBackfaceCulling();
@@ -864,10 +980,21 @@ static void DrawHUD(void) {
     }
     // scanlines (subtle)
     for (int y=0;y<sh;y+=3) DrawLine(0,y,sw,y,(Color){0,0,0,18});
-    // crosshair
+    // crosshair — per-weapon texture override, else default tick marks
     int cx=sw/2,cy=sh/2;
-    DrawRectangle(cx-14,cy-1,10,2,WHITE); DrawRectangle(cx+4,cy-1,10,2,WHITE);
-    DrawRectangle(cx-1,cy-14,2,10,WHITE); DrawRectangle(cx-1,cy+4,2,10,WHITE);
+    int wpn=g_p.weapon;
+    if (wpn>=0 && wpn<4 && g_xhair[wpn].id) {
+        Texture2D xh = g_xhair[wpn];
+        float xsc = 1.2f;
+        float xw = xh.width*xsc, xh2 = xh.height*xsc;
+        DrawTexturePro(xh,
+            (Rectangle){0,0,(float)xh.width,(float)xh.height},
+            (Rectangle){cx-xw/2, cy-xh2/2, xw, xh2},
+            (Vector2){0,0}, 0.f, WHITE);
+    } else {
+        DrawRectangle(cx-14,cy-1,10,2,WHITE); DrawRectangle(cx+4,cy-1,10,2,WHITE);
+        DrawRectangle(cx-1,cy-14,2,10,WHITE); DrawRectangle(cx-1,cy+4,2,10,WHITE);
+    }
     // bottom panel bg
     DrawRectangle(0,sh-64,sw,64,(Color){8,8,12,220});
     DrawLine(0,sh-64,sw,sh-64,(Color){80,0,0,200});
@@ -912,7 +1039,7 @@ static void DrawHUD(void) {
     {
         int cx2=sw-90, cy2=88;   // screen centre of minimap
         int radius=78;
-        float scale=4.5f;        // world units per pixel
+        float scale=2.8f;        // world units per pixel
         float yaw=g_p.yaw+3.14159f; // camera yaw: forward direction angle
         float cosY=cosf(yaw), sinY=sinf(yaw);
 
@@ -1121,6 +1248,80 @@ int main(void) {
 
     InitShader();
 
+    // Load WolfenDoom weapon sprite viewmodels from bundle Resources.
+    // Each entry: folder, file list (idle first, then fire frames), scale, count.
+    {
+        char appBase[512];
+        snprintf(appBase, sizeof(appBase), "%s../Resources/sprites/", GetApplicationDirectory());
+
+        struct { int wepIdx; const char *folder; const char *files[MAX_WFRAMES]; int n; float scale; } packs[] = {
+            // PISTOL (luger): idle GA, then GB..GJ as fire/recover animation (ignore FA flash)
+            { 0, "luger",        {"LUGGA0.png","LUGGB0.png","LUGGC0.png","LUGGD0.png","LUGGE0.png",
+                                  "LUGGF0.png","LUGGG0.png","LUGGH0.png","LUGGI0.png","LUGGJ0.png"}, 10, 3.125f },
+            // SHOTGUN (browning): GA idle, then GE muzzle flash first, then GB/GC/GD recover
+            { 1, "browning",     {"BA5GA0.png","BA5GE0.png","BA5GB0.png","BA5GC0.png","BA5GD0.png"},  5, 4.4f },
+            // ROCKET LAUNCHER (panzerschreck): only a static ready pose
+            { 2, "panzerschreck",{"PANZA0.png"},                                                      1, 2.5f },
+            // MACHINE GUN (mp40/rif): single-frame — GB only for idle and fire
+            { 3, "mp40",         {"RIFGB0.png"},                                                      1, 3.23f },
+        };
+        for (int p = 0; p < (int)(sizeof(packs)/sizeof(packs[0])); p++) {
+            WepSprite *ws = &g_wep[packs[p].wepIdx];
+            ws->count = packs[p].n;
+            ws->scale = packs[p].scale;
+            ws->loaded = true;
+            for (int i = 0; i < packs[p].n; i++) {
+                char path[700];
+                snprintf(path, sizeof(path), "%s%s/%s", appBase, packs[p].folder, packs[p].files[i]);
+                ws->frames[i] = LoadTexture(path);
+                SetTextureFilter(ws->frames[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap(ws->frames[i], TEXTURE_WRAP_CLAMP); // prevent edge wrap artifacts
+                if (ws->frames[i].id == 0) ws->loaded = false;
+            }
+        }
+        // Per-weapon horizontal shifts (fraction of screen width)
+        g_wep[0].xShift =  0.02f;  // PISTOL: 2% right
+        g_wep[1].xShift = -0.01f;  // SHOTGUN: 1% left
+        g_wep[3].xShift = -0.06f;  // MG: 6% left
+
+        // MG muzzle flash: RIFGA0 is a full-canvas overlay aligned with RIFGB0
+        {
+            char fp[700];
+            snprintf(fp, sizeof(fp), "%smp40/RIFGA0.png", appBase);
+            g_wep[3].flash = LoadTexture(fp);
+            if (g_wep[3].flash.id) {
+                SetTextureFilter(g_wep[3].flash, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_wep[3].flash, TEXTURE_WRAP_CLAMP);
+                g_wep[3].hasFlash = true;
+            }
+        }
+
+        // Per-weapon crosshair textures (only shotgun for now)
+        {
+            char fp[700];
+            snprintf(fp, sizeof(fp), "%scrosshairs/SHOT.png", appBase);
+            g_xhair[1] = LoadTexture(fp);
+            if (g_xhair[1].id) {
+                SetTextureFilter(g_xhair[1], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_xhair[1], TEXTURE_WRAP_CLAMP);
+            }
+        }
+
+        // Health pickup sprite variants — CHIKA (roast chicken) & EASTA (easter egg)
+        {
+            char fp[700];
+            const char *names[2] = {"CHIKA0.png","EASTA0.png"};
+            for (int i = 0; i < 2; i++) {
+                snprintf(fp, sizeof(fp), "%spickups/%s", appBase, names[i]);
+                g_healthTex[i] = LoadTexture(fp);
+                if (g_healthTex[i].id) {
+                    SetTextureFilter(g_healthTex[i], TEXTURE_FILTER_POINT);
+                    SetTextureWrap  (g_healthTex[i], TEXTURE_WRAP_CLAMP);
+                }
+            }
+        }
+    }
+
     // Set ambient
     float amb[4]={0.40f,0.32f,0.46f,1.f};
     SetShaderValue(g_shader,u_ambient,amb,SHADER_UNIFORM_VEC4);
@@ -1171,9 +1372,10 @@ int main(void) {
             DrawEnemies();
             DrawBullets();
             DrawParts();
-            DrawPicks();
+            DrawPicks(cam);
             DrawWeapon3D(cam);
             EndMode3D();
+            DrawSpriteWeapon();
             DrawHUD();
         }
 
@@ -1191,7 +1393,7 @@ int main(void) {
             DrawText(t2,sw2/2-MeasureText(t2,16)/2,sh2/3+96,16,(Color){120,120,120,255});
             const char *ctrl="WASD / ARROWS — MOVE     MOUSE — LOOK     LMB — FIRE\n"
                              "SPACE — JUMP     SHIFT — SPRINT\n"
-                             "1 — PISTOL     2 — SHOTGUN     3 — ROCKETS";
+                             "1 — PISTOL     2 — SHOTGUN     3 — ROCKETS     4 — MG";
             DrawText(ctrl,sw2/2-MeasureText("WASD / ARROWS — MOVE     MOUSE — LOOK     LMB — FIRE",15)/2,sh2/2+20,15,(Color){90,90,90,255});
             const char *st="[ ENTER  /  CLICK  TO  START ]";
             if (sinf(GetTime()*3.f)>0)
@@ -1214,6 +1416,13 @@ int main(void) {
 
     UnloadModel(g_wallModel); UnloadModel(g_floorModel); UnloadModel(g_ceilModel);
     UnloadTexture(tBrick); UnloadTexture(tFloor); UnloadTexture(tCeil);
+    for (int w=0;w<4;w++) {
+        for (int i=0;i<g_wep[w].count;i++)
+            if (g_wep[w].frames[i].id) UnloadTexture(g_wep[w].frames[i]);
+        if (g_wep[w].hasFlash && g_wep[w].flash.id) UnloadTexture(g_wep[w].flash);
+        if (g_xhair[w].id) UnloadTexture(g_xhair[w]);
+    }
+    for (int i=0;i<2;i++) if (g_healthTex[i].id) UnloadTexture(g_healthTex[i]);
     UnloadShader(g_shader);
     UnloadSound(g_sPistol); UnloadSound(g_sShotgun); UnloadSound(g_sRocket);
     UnloadSound(g_sExplode); UnloadSound(g_sHurt); UnloadSound(g_sPickup);

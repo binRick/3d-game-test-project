@@ -8,8 +8,9 @@ LDFLAGS = -L$(RDIR)/lib -lraylib -lm \
 APP     = IronFist3D.app
 BIN     = $(APP)/Contents/MacOS/IronFist3D
 ICNS    = $(APP)/Contents/Resources/icon.icns
+SPRITES = $(APP)/Contents/Resources/sprites
 
-game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist
+game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES)
 	@echo "Built $(APP) — run with: open $(APP)"
 
 $(APP)/Contents/MacOS:
@@ -48,6 +49,9 @@ $(ICNS): | $(APP)/Contents/Resources
 	sips -z 512 512   /tmp/ironfist.png --out /tmp/ironfist_icon.iconset/icon_256x256@2x.png >/dev/null
 	sips -z 512 512   /tmp/ironfist.png --out /tmp/ironfist_icon.iconset/icon_512x512.png  >/dev/null
 	iconutil -c icns /tmp/ironfist_icon.iconset -o $(ICNS)
+
+$(SPRITES): sprites | $(APP)/Contents/Resources
+	cp -r sprites $(APP)/Contents/Resources/
 
 run: game
 	open $(APP)
