@@ -139,13 +139,14 @@ static void InitShader(void) {
     }
 
     // Fixed scene lights – industrial/hell palette
+    // Mounted just below the ceiling so the visible fixture sits flush
     LightDef scene[6] = {
-        {{ 5*CELL, WALL_H*0.8f,  2*CELL}, {1.0f, 0.65f, 0.2f},  40.f, 1},
-        {{14*CELL, WALL_H*0.8f,  9*CELL}, {0.2f, 0.5f,  1.0f},  50.f, 1},
-        {{24*CELL, WALL_H*0.8f,  5*CELL}, {1.0f, 0.15f, 0.1f},  40.f, 1},
-        {{ 5*CELL, WALL_H*0.8f, 16*CELL}, {0.15f,1.0f,  0.3f},  40.f, 1},
-        {{24*CELL, WALL_H*0.8f, 16*CELL}, {0.9f, 0.3f,  1.0f},  40.f, 1},
-        {{14*CELL, WALL_H*0.8f, 17*CELL}, {1.0f, 0.8f,  0.3f},  40.f, 1},
+        {{ 5*CELL, WALL_H-0.15f,  2*CELL}, {1.0f, 0.65f, 0.2f},  40.f, 1},
+        {{14*CELL, WALL_H-0.15f,  9*CELL}, {0.2f, 0.5f,  1.0f},  50.f, 1},
+        {{24*CELL, WALL_H-0.15f,  5*CELL}, {1.0f, 0.15f, 0.1f},  40.f, 1},
+        {{ 5*CELL, WALL_H-0.15f, 16*CELL}, {0.15f,1.0f,  0.3f},  40.f, 1},
+        {{24*CELL, WALL_H-0.15f, 16*CELL}, {0.9f, 0.3f,  1.0f},  40.f, 1},
+        {{14*CELL, WALL_H-0.15f, 17*CELL}, {1.0f, 0.8f,  0.3f},  40.f, 1},
     };
     for (int i = 0; i < 6; i++) g_lights[i] = scene[i];
     // slots 6-7 reserved (muzzle flash, player damage pulse)
@@ -173,10 +174,11 @@ typedef struct {
     bool active; int score;
     bool  dying;       // true once HP hits 0 — corpse remains in scene
     float deathT;      // seconds since death started (drives death animation)
+    float bleedT;      // bleeding drip timer (wounded enemies leak blood periodically)
 } Enemy;
 
 typedef struct { Vector3 pos, vel; float life, dmg; bool active, rocket; } Bullet;
-typedef struct { Vector3 pos, vel; float life, maxLife, size; Color col; bool active, grav; } Part;
+typedef struct { Vector3 pos, vel; float life, maxLife, size; Color col; bool active, grav, stuck; } Part;
 typedef struct { Vector3 pos; int type; int variant; bool active; float bobT; } Pickup;
 
 // ── GLOBALS ──────────────────────────────────────────────────────────────────
@@ -237,10 +239,60 @@ static bool      g_chefPainOK = false;
 
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
 static Sound    g_sHurt, g_sPickup, g_sEmpty, g_sDie;
+// Additional chef death variants; g_sDie is variant 0, g_sDieAlt[i] are variants 1..N
+#define CHEF_DIE_ALT_COUNT 3
+static Sound    g_sDieAlt[CHEF_DIE_ALT_COUNT];
+static bool     g_sDieAltOK[CHEF_DIE_ALT_COUNT] = {0};
+static Sound    g_sHeadshot;      // UT announcer headshot sfx
+static bool     g_sHeadshotOK = false;
+static Sound    g_sFatality;      // MK announcer fatality sfx — plays on kill
+static bool     g_sFatalityOK = false;
+static Sound    g_sMulti;         // UT "Holy Shit!" — multi-kill (>=2 enemies in one shot)
+static bool     g_sMultiOK = false;
+static Sound    g_sFirstBlood;    // UT "First Blood!" — plays on first enemy kill each run
+static bool     g_sFirstBloodOK = false;
+static Sound    g_sDistantEnemy; // plays when an enemy first comes into view after none were visible
+static bool     g_sDistantEnemyOK = false;
+static bool     g_hadVisibleEnemy = false;   // previous-frame visibility state
+static Sound    g_sShotgunKill; // stinger that plays when a shotgun kill lands
+static bool     g_sShotgunKillOK = false;
+static Sound    g_sNextWave;   // stinger when next wave starts
+static bool     g_sNextWaveOK = false;
+static Sound    g_sMG;          // machine gun firing sound
+static bool     g_sMGOK = false;
+static int      g_killsThisShot = 0;  // incremented by KillEnemy, reset around each shot/explosion
+static Music    g_music;          // looping background track (streamed)
+static bool     g_musicOK = false;
+static float    g_musicVol = 0.36f;  // adjustable via - / + (persisted to disk)
+#define VOL_CONFIG_FILE ".ironfist3d.cfg"
+
+static void SaveMusicVol(void) {
+    const char *home = getenv("HOME");
+    if (!home) return;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/" VOL_CONFIG_FILE, home);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "%f\n", g_musicVol);
+    fclose(f);
+}
+static void LoadMusicVol(void) {
+    const char *home = getenv("HOME");
+    if (!home) return;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/" VOL_CONFIG_FILE, home);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    float v;
+    if (fscanf(f, "%f", &v) == 1 && v >= 0.f && v <= 1.5f) g_musicVol = v;
+    fclose(f);
+}
+static bool     g_needMouseRelease = false;  // mouse must be released once before firing
+static bool     g_lastHitHead = false;  // set while processing a headshot shot; KillEnemy reads it
 
 // enemy stat tables
 static const float ET_HP[]    = {65,145,42};
-static const float ET_SPD[]   = {4.0f,2.3f,6.2f};
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f};  // chef rush speed (grunt, heavy, fast)
 static const float ET_DMG[]   = {10,24,8};
 static const float ET_RATE[]  = {1.5f,2.1f,1.0f};
 static const float ET_AR[]    = {24,20,30};
@@ -251,7 +303,7 @@ static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255}
 
 // weapon tables
 // Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3)
-static const char *WPN[]    = {"SHOTGUN", "MACHINE GUN", "ROCKETS"};
+static const char *WPN[]    = {"SHOTGUN", "MACHINE GUN", "LAUNCHER"};
 static const float WR[]     = {0.59f, 0.09f, 0.96f};
 static const int   WD[]     = {15, 18, 0};
 static const int   WPEL[]   = {8, 1, 1};
@@ -520,25 +572,15 @@ static bool IsWall(float wx, float wz) {
     if (r<0||r>=ROWS||c<0||c>=COLS) return true;
     return MAP[r][c]==1;
 }
-static void Slide(Vector3 *pos, float dx, float dz, float rad) {
-    float nx=pos->x+dx;
-    if (!IsWall(nx+(dx>=0?rad:-rad),pos->z) &&
-        !IsWall(nx+(dx>=0?rad:-rad),pos->z+rad) &&
-        !IsWall(nx+(dx>=0?rad:-rad),pos->z-rad)) pos->x=nx;
-    float nz=pos->z+dz;
-    if (!IsWall(pos->x,nz+(dz>=0?rad:-rad)) &&
-        !IsWall(pos->x+rad,nz+(dz>=0?rad:-rad)) &&
-        !IsWall(pos->x-rad,nz+(dz>=0?rad:-rad))) pos->z=nz;
-}
 
 // ── PLATFORM COLLISION ──────────────────────────────────────────────────────
 // Returns true if the position (x, z) would penetrate a platform whose top is
 // more than STEP_H above currentY (i.e. too tall to walk up onto).
-static bool PlatBlocks(float x, float z, float currentY) {
+static bool PlatBlocks(float x, float z, float currentY, float rad) {
     for (int i = 0; i < g_platCount; i++) {
         Platform *p = &g_plats[i];
-        if (x > p->x0 - PRAD && x < p->x1 + PRAD &&
-            z > p->z0 - PRAD && z < p->z1 + PRAD) {
+        if (x > p->x0 - rad && x < p->x1 + rad &&
+            z > p->z0 - rad && z < p->z1 + rad) {
             if (currentY < p->top - STEP_H) return true;
         }
     }
@@ -557,6 +599,22 @@ static float PlatGroundAt(float x, float z, float currentY) {
         }
     }
     return best;
+}
+
+// Per-axis move for enemies — blocks against walls AND tall platforms, matching
+// the player's movement rules. Enemies can still step onto platforms within STEP_H.
+static void EnemyMove(Enemy *e, float dx, float dz) {
+    const float r = 0.42f;
+    float nx = e->pos.x + dx;
+    if (!IsWall(nx+(dx>=0?r:-r), e->pos.z) &&
+        !IsWall(nx+(dx>=0?r:-r), e->pos.z+r) &&
+        !IsWall(nx+(dx>=0?r:-r), e->pos.z-r) &&
+        !PlatBlocks(nx, e->pos.z, e->pos.y, r + 0.1f)) e->pos.x = nx;
+    float nz = e->pos.z + dz;
+    if (!IsWall(e->pos.x, nz+(dz>=0?r:-r)) &&
+        !IsWall(e->pos.x+r, nz+(dz>=0?r:-r)) &&
+        !IsWall(e->pos.x-r, nz+(dz>=0?r:-r)) &&
+        !PlatBlocks(e->pos.x, nz, e->pos.y, r + 0.1f)) e->pos.z = nz;
 }
 
 // Build the level's platforms. Called once at init.
@@ -591,18 +649,75 @@ static void SpawnPart(Vector3 p, Vector3 v, Color c, float life, float sz, bool 
     }
 }
 static void Blood(Vector3 p, int n) {
-    for (int i=0;i<n;i++) {
-        Vector3 v={(float)rand()/RAND_MAX*8-4,(float)rand()/RAND_MAX*5+1,(float)rand()/RAND_MAX*8-4};
-        SpawnPart(p,v,RED,0.4f+(float)rand()/RAND_MAX*0.5f,0.06f+(float)rand()/RAND_MAX*0.07f,true);
+    // Realistic blood spatter. Each droplet starts at a small random offset
+    // from the impact point so they never clump into one visible block.
+    int count = n * 2;
+    for (int i = 0; i < count; i++) {
+        Vector3 offset = {
+            ((float)rand()/RAND_MAX - 0.5f) * 0.35f,
+            ((float)rand()/RAND_MAX - 0.5f) * 0.35f,
+            ((float)rand()/RAND_MAX - 0.5f) * 0.35f
+        };
+        Vector3 spawn = { p.x + offset.x, p.y + offset.y, p.z + offset.z };
+        Vector3 v = {
+            ((float)rand()/RAND_MAX - 0.5f) * 8.f,
+            (float)rand()/RAND_MAX * 3.f + 0.3f,
+            ((float)rand()/RAND_MAX - 0.5f) * 8.f
+        };
+        unsigned char r = (unsigned char)(90 + rand() % 70);
+        unsigned char g = (unsigned char)(rand() % 10);
+        unsigned char b = (unsigned char)(rand() % 8);
+        Color col = { r, g, b, 220 };  // slight transparency so clumps blend
+        float size = 0.018f + (float)rand()/RAND_MAX * 0.030f; // smaller droplets
+        float life = 0.35f + (float)rand()/RAND_MAX * 0.45f;
+        SpawnPart(spawn, v, col, life, size, true);
     }
 }
 static void Sparks(Vector3 p, int n) {
+    // Bright orange sparks (fast, short-lived)
     for (int i=0;i<n;i++) {
-        Vector3 v={(float)rand()/RAND_MAX*10-5,(float)rand()/RAND_MAX*6,(float)rand()/RAND_MAX*10-5};
-        SpawnPart(p,v,ORANGE,0.2f+(float)rand()/RAND_MAX*0.25f,0.04f,true);
+        Vector3 v = {
+            ((float)rand()/RAND_MAX - 0.5f) * 10.f,
+            (float)rand()/RAND_MAX * 6.f,
+            ((float)rand()/RAND_MAX - 0.5f) * 10.f
+        };
+        SpawnPart(p, v, ORANGE,
+                  0.2f + (float)rand()/RAND_MAX * 0.25f,
+                  0.04f, true);
+    }
+    // Grey/brown debris chips that stick to the floor (concrete/brick chips)
+    int chips = n * 2 / 3;
+    for (int i = 0; i < chips; i++) {
+        Vector3 v = {
+            ((float)rand()/RAND_MAX - 0.5f) * 6.f,
+            (float)rand()/RAND_MAX * 4.f + 0.5f,
+            ((float)rand()/RAND_MAX - 0.5f) * 6.f
+        };
+        unsigned char shade = 60 + rand() % 40;
+        Color chipCol = { shade, (unsigned char)(shade*0.7f), (unsigned char)(shade*0.5f), 255 };
+        SpawnPart(p, v, chipCol,
+                  0.5f + (float)rand()/RAND_MAX * 0.6f,
+                  0.05f + (float)rand()/RAND_MAX * 0.05f, true);
+    }
+    // Dust puff — small near-static particles that fade quickly
+    for (int i = 0; i < n / 3; i++) {
+        Vector3 v = {
+            ((float)rand()/RAND_MAX - 0.5f) * 2.f,
+            (float)rand()/RAND_MAX * 1.5f + 0.2f,
+            ((float)rand()/RAND_MAX - 0.5f) * 2.f
+        };
+        SpawnPart(p, v, (Color){170,160,150,200},
+                  0.4f + (float)rand()/RAND_MAX * 0.3f,
+                  0.08f, false);
     }
 }
 static void Explode(Vector3 p) {
+    // Distance-scaled volume: up to 2.5x at point-blank, floor 0.25x far away
+    float dx = p.x - g_p.pos.x, dz = p.z - g_p.pos.z;
+    float d  = sqrtf(dx*dx + dz*dz);
+    float vol = 2.5f - d * 0.07f;   // 2.5 at 0m, 1.1 at ~20m, floors at 0.25
+    if (vol < 0.25f) vol = 0.25f;
+    SetSoundVolume(g_sExplode, vol);
     PlaySound(g_sExplode);
     for (int i=0;i<28;i++) {
         Vector3 v={(float)rand()/RAND_MAX*16-8,(float)rand()/RAND_MAX*9+1,(float)rand()/RAND_MAX*16-8};
@@ -620,7 +735,22 @@ static void UpdParts(float dt) {
         if (p->life<=0){p->active=false;continue;}
         if (p->grav) p->vel.y+=GRAV*dt;
         p->pos=Vector3Add(p->pos,Vector3Scale(p->vel,dt));
-        if (p->pos.y<0.05f&&p->grav){p->pos.y=0.05f;p->vel.y*=-0.25f;p->vel.x*=0.55f;p->vel.z*=0.55f;}
+        if (p->pos.y<0.05f && p->grav) {
+            // Stick to the floor once the droplet slows down — becomes a lasting stain
+            float sp2 = p->vel.x*p->vel.x + p->vel.y*p->vel.y + p->vel.z*p->vel.z;
+            if (sp2 < 3.5f) {
+                p->pos.y = 0.005f;
+                p->vel = (Vector3){0, 0, 0};
+                p->grav = false;
+                p->stuck = true;
+                // Long persistent stain with its own lifetime
+                p->life    = 10.f + (float)rand()/RAND_MAX * 6.f;
+                p->maxLife = p->life;
+            } else {
+                p->pos.y = 0.05f; p->vel.y *= -0.25f;
+                p->vel.x *= 0.55f; p->vel.z *= 0.55f;
+            }
+        }
     }
 }
 static void DrawParts(void) {
@@ -628,7 +758,17 @@ static void DrawParts(void) {
         Part *p=&g_pt[i]; if (!p->active) continue;
         float t=p->life/p->maxLife;
         Color c=p->col; c.a=(unsigned char)(255*t);
-        DrawSphere(p->pos,p->size*t,c);
+        if (p->stuck) {
+            // Flat splat on the floor — wider than it is tall
+            float s = p->size * 3.5f;
+            // Fade over final 25% of life
+            float fade = (t < 0.25f) ? (t / 0.25f) : 1.f;
+            c.a = (unsigned char)(255 * fade);
+            DrawCubeV(p->pos, (Vector3){s, 0.02f, s}, c);
+        } else {
+            float s = p->size * t;  // half-scale — tiny droplet, not chunky cube
+            DrawCubeV(p->pos, (Vector3){s, s, s}, c);
+        }
     }
 }
 
@@ -666,6 +806,54 @@ static void UpdPicks(void) {
         }
     }
 }
+// Volumetric-ish ceiling lights: visible fixture + translucent cone beam below.
+// Uses the first 6 entries of g_lights (the static scene lights; slots 6-7 are dynamic).
+static void DrawCeilingLights(Camera3D cam) {
+    (void)cam;
+    // Fixture geometry + light cone — additive blending for the "god ray" glow
+    for (int i = 0; i < 6; i++) {
+        LightDef *L = &g_lights[i];
+        if (!L->enabled) continue;
+        Color col = {
+            (unsigned char)(fminf(L->color.x,1.f)*255),
+            (unsigned char)(fminf(L->color.y,1.f)*255),
+            (unsigned char)(fminf(L->color.z,1.f)*255),
+            255
+        };
+        // Light fixture: a flat disc / emissive plate just under the ceiling
+        Vector3 fixturePos = L->pos;
+        DrawCube(fixturePos, 0.7f, 0.15f, 0.7f, (Color){col.r, col.g, col.b, 255});
+        // Small glowing orb inside the housing
+        DrawSphere((Vector3){fixturePos.x, fixturePos.y - 0.05f, fixturePos.z}, 0.22f, WHITE);
+    }
+
+    // Light cones (draw last, additive blended, so they brighten rather than occlude)
+    rlDrawRenderBatchActive();
+    BeginBlendMode(BLEND_ADDITIVE);
+    rlDisableDepthMask();
+    for (int i = 0; i < 6; i++) {
+        LightDef *L = &g_lights[i];
+        if (!L->enabled) continue;
+        Color base = {
+            (unsigned char)(L->color.x*90),
+            (unsigned char)(L->color.y*90),
+            (unsigned char)(L->color.z*90),
+            70
+        };
+        // Cone going from ceiling down to floor — small radius at top, wider at bottom.
+        // DrawCylinderEx(start, end, startRad, endRad, slices, color)
+        Vector3 top    = {L->pos.x, L->pos.y - 0.1f, L->pos.z};
+        Vector3 bottom = {L->pos.x, 0.02f,           L->pos.z};
+        DrawCylinderEx(top, bottom, 0.3f, 2.4f, 16, base);
+        // Inner brighter core shaft
+        Color core = base; core.a = 120;
+        DrawCylinderEx(top, bottom, 0.12f, 1.0f, 12, core);
+    }
+    rlEnableDepthMask();
+    EndBlendMode();
+    rlDrawRenderBatchActive();
+}
+
 static void DrawPicks(Camera3D cam) {
     // Fallback colours if a sprite fails to load
     static Color tc[] = {
@@ -704,8 +892,35 @@ static void KillEnemy(int i) {
     // Keep the enemy active=true so the sprite keeps rendering — mark dying so
     // AI/bullets/minimap/alive-count skip it.
     e->dying = true; e->deathT = 0.f; e->hp = 0.f;
-    Vector3 bp={e->pos.x,1.0f,e->pos.z}; Blood(bp,20); PlaySound(g_sDie);
-    g_p.score+=e->score*g_wave; g_p.kills++;
+    Vector3 bp={e->pos.x,1.0f,e->pos.z};
+    // Massive blood burst on death — waist, chest, head for a gorey finish
+    Blood(bp, 50);
+    Blood((Vector3){e->pos.x, 1.6f, e->pos.z}, 35);
+    Blood((Vector3){e->pos.x, 0.4f, e->pos.z}, 25);
+    // Pick a random death vocalisation (g_sDie + g_sDieAlt[])
+    {
+        int total = 1;  // g_sDie itself
+        for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) total++;
+        int pick = rand() % total;
+        if (pick == 0) PlaySound(g_sDie);
+        else {
+            int idx = 0;
+            for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) {
+                if (++idx == pick) { PlaySound(g_sDieAlt[i]); break; }
+            }
+        }
+    }
+    // Only play the MK "FATALITY" shout for non-headshot kills (headshot has its own SFX)
+    if (g_sFatalityOK && !g_lastHitHead) {
+        SetSoundVolume(g_sFatality, 1.5f);
+        PlaySound(g_sFatality);
+    }
+    g_p.score+=e->score*g_wave; g_p.kills++; g_killsThisShot++;
+    if (g_p.kills == 1 && g_sFirstBloodOK) {
+        SetSoundVolume(g_sFirstBlood, 1.5f);
+        PlaySound(g_sFirstBlood);
+    }
+    // (shotgun-kill stinger now plays on every shotgun shot in Shoot(), not here)
     if ((float)rand()/RAND_MAX<0.55f) {
         // Drop chances: health 40%, shells 25%, MG 20%, rockets 15%
         float r = (float)rand()/RAND_MAX;
@@ -723,6 +938,10 @@ static void KillEnemy(int i) {
     Msg(buf);
     if (Alive()==0) {
         g_wave++;
+        if (g_sNextWaveOK) {
+            SetSoundVolume(g_sNextWave, 1.5f);
+            PlaySound(g_sNextWave);
+        }
         char wbuf[64]; snprintf(wbuf,64,"-- WAVE %d INCOMING --",g_wave);
         Msg(wbuf);
         // spawn next wave
@@ -737,7 +956,7 @@ static void KillEnemy(int i) {
                 int type=g_wave<2?0:rng<0.5f?0:rng<0.78f?2:1;
                 Enemy *ne=&g_e[g_ec++];
                 *ne=(Enemy){0};
-                ne->pos=(Vector3){wx,0,wz}; ne->type=type;
+                ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top ne->type=type;
                 ne->state=ES_PATROL;
                 float hm=1.f+g_wave*0.12f;
                 ne->hp=ne->maxHp=ET_HP[type]*hm;
@@ -765,18 +984,62 @@ static void UpdEnemies(float dt) {
         Enemy *e=&g_e[i]; if (!e->active) continue;
         if (e->dying) { e->deathT += dt; continue; }  // corpse: run death timer, skip AI
         if (e->flashT>0) e->flashT-=dt;
+        // Wounded chefs leak blood as they move (drips behind them)
+        if (e->hp < e->maxHp) {
+            e->bleedT -= dt;
+            if (e->bleedT <= 0.f) {
+                Vector3 dripPos = {
+                    e->pos.x + ((float)rand()/RAND_MAX - 0.5f) * 0.4f,
+                    0.5f + (float)rand()/RAND_MAX * 0.5f,
+                    e->pos.z + ((float)rand()/RAND_MAX - 0.5f) * 0.4f
+                };
+                Vector3 dripVel = {
+                    ((float)rand()/RAND_MAX - 0.5f) * 0.6f,
+                    0.2f,
+                    ((float)rand()/RAND_MAX - 0.5f) * 0.6f
+                };
+                unsigned char br = 95 + rand() % 55;
+                SpawnPart(dripPos, dripVel, (Color){br, 0, 0, 255},
+                          1.5f + (float)rand()/RAND_MAX, 0.045f, true);
+                // More frequent drips when more hurt
+                float healthFrac = e->hp / e->maxHp;
+                e->bleedT = 0.08f + healthFrac * 0.25f;
+            }
+        }
         float dx=g_p.pos.x-e->pos.x, dz=g_p.pos.z-e->pos.z;
         float dist=sqrtf(dx*dx+dz*dz);
         if (dist<e->alertR) e->state=ES_CHASE;
         e->cd-=dt; e->stateT-=dt; e->legT+=dt*e->speed*2.8f;
         if (e->state==ES_PATROL) {
-            Slide(&e->pos,e->pd.x*e->speed*dt,e->pd.z*e->speed*dt,0.42f);
+            EnemyMove(e, e->pd.x*e->speed*dt, e->pd.z*e->speed*dt);
             // Snap enemy Y to highest reachable platform under them (auto-step stairs)
             e->pos.y = PlatGroundAt(e->pos.x, e->pos.z, e->pos.y + STEP_H);
             if (e->stateT<0){float a=(float)rand()/RAND_MAX*6.28f;e->pd=(Vector3){sinf(a),0,cosf(a)};e->stateT=1.f+(float)rand()/RAND_MAX*2.5f;}
         } else if (e->state==ES_CHASE) {
             if (dist>e->atkR) {
-                Slide(&e->pos,dx/dist*e->speed*dt,dz/dist*e->speed*dt,0.42f);
+                // Separation: sum a push-away vector from all nearby live enemies,
+                // so chasing chefs fan out instead of stacking on the same line.
+                float sepX = 0, sepZ = 0;
+                const float SEP_RADIUS = 1.5f;
+                for (int j = 0; j < g_ec; j++) {
+                    if (j == i) continue;
+                    Enemy *o = &g_e[j];
+                    if (!o->active || o->dying) continue;
+                    float ox = e->pos.x - o->pos.x;
+                    float oz = e->pos.z - o->pos.z;
+                    float od = sqrtf(ox*ox + oz*oz);
+                    if (od > 0.01f && od < SEP_RADIUS) {
+                        float push = (SEP_RADIUS - od) / SEP_RADIUS;
+                        sepX += (ox/od) * push;
+                        sepZ += (oz/od) * push;
+                    }
+                }
+                // Blend: seek player + separation (weighted)
+                float sx = dx/dist + sepX * 1.4f;
+                float sz = dz/dist + sepZ * 1.4f;
+                float slen = sqrtf(sx*sx + sz*sz);
+                if (slen > 0.01f) { sx /= slen; sz /= slen; }
+                EnemyMove(e, sx*e->speed*dt, sz*e->speed*dt);
                 e->pos.y = PlatGroundAt(e->pos.x, e->pos.z, e->pos.y + STEP_H);
             }
             else e->state=ES_ATTACK;
@@ -867,12 +1130,34 @@ static void DrawEnemies(Camera3D cam) {
             rlPopMatrix();
         }
 
-        // HP bar — world space, always upright (hidden once dying)
+        // HP bar — billboarded quads so they always face the camera (hidden once dying)
         if (!e->dying && e->hp<e->maxHp) {
-            float hp=e->hp/e->maxHp;
-            float bary=bh+1.25f;
-            DrawCube((Vector3){e->pos.x,bary,e->pos.z},0.82f,0.08f,0.02f,DARKGRAY);
-            DrawCube((Vector3){e->pos.x-0.41f+0.41f*hp,bary,e->pos.z},0.82f*hp,0.08f,0.03f,GREEN);
+            float hp = e->hp / e->maxHp;
+            float bary = bh + 1.25f;
+            Vector3 HF = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+            Vector3 HR = Vector3Normalize(Vector3CrossProduct(HF, cam.up));
+            Vector3 HU = Vector3CrossProduct(HR, HF);
+            const float W = 0.82f, H = 0.10f;
+            Vector3 center = {e->pos.x, bary, e->pos.z};
+            // Background (full width, dark)
+            Vector3 bgTL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU, H*0.5f)));
+            Vector3 bgTR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU, H*0.5f)));
+            Vector3 bgBR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU,-H*0.5f)));
+            Vector3 bgBL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU,-H*0.5f)));
+            rlBegin(RL_TRIANGLES);
+            rlColor4ub(30,30,30,240);
+            rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z);
+            rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z); rlVertex3f(bgTR.x,bgTR.y,bgTR.z);
+            // Fill (proportional width from the left edge)
+            Vector3 fTL = bgTL;
+            Vector3 fBL = bgBL;
+            Vector3 fTR = Vector3Add(bgTL, Vector3Scale(HR, W*hp));
+            Vector3 fBR = Vector3Add(bgBL, Vector3Scale(HR, W*hp));
+            Color hc = hp>0.6f ? (Color){40,200,40,255} : hp>0.3f ? (Color){220,180,0,255} : (Color){220,30,30,255};
+            rlColor4ub(hc.r,hc.g,hc.b,hc.a);
+            rlVertex3f(fTL.x,fTL.y,fTL.z); rlVertex3f(fBL.x,fBL.y,fBL.z); rlVertex3f(fBR.x,fBR.y,fBR.z);
+            rlVertex3f(fTL.x,fTL.y,fTL.z); rlVertex3f(fBR.x,fBR.y,fBR.z); rlVertex3f(fTR.x,fTR.y,fTR.z);
+            rlEnd();
         }
     }
     rlDrawRenderBatchActive();
@@ -900,14 +1185,16 @@ static void UpdBullets(float dt) {
         if (IsWall(b->pos.x,b->pos.z)||b->pos.y>WALL_H||b->pos.y<0) {
             if (b->rocket) {
                 Explode(b->pos);
+                g_killsThisShot = 0;
                 for (int j=0;j<g_ec;j++) {
                     if (!g_e[j].active || g_e[j].dying) continue;
                     float d=Vector3Distance(b->pos,g_e[j].pos);
                     if (d<5.f) DmgEnemy(j,200.f*(1.f-d/5.f));
                 }
+                if (g_killsThisShot>=2 && g_sMultiOK){ SetSoundVolume(g_sMulti,8.0f); PlaySound(g_sMulti); Msg("MULTI KILL!"); }
                 float pd=Vector3Distance(b->pos,g_p.pos);
                 if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
-            } else Sparks(prev,5);
+            } else Sparks(prev,22);
             b->active=false; continue;
         }
         for (int j=0;j<g_ec;j++) {
@@ -918,7 +1205,9 @@ static void UpdBullets(float dt) {
             if ((_xzdist<0.9f && _ydist<1.2f) || Vector3Distance(b->pos,(Vector3){e->pos.x,1.f,e->pos.z})<0.9f) {
                 if (b->rocket) {
                     Explode(b->pos);
+                    g_killsThisShot = 0;
                     for (int k=0;k<g_ec;k++){if(!g_e[k].active||g_e[k].dying)continue;float d=Vector3Distance(b->pos,g_e[k].pos);if(d<5.f)DmgEnemy(k,200.f*(1.f-d/5.f));}
+                    if (g_killsThisShot>=2 && g_sMultiOK){ SetSoundVolume(g_sMulti,8.0f); PlaySound(g_sMulti); Msg("MULTI KILL!"); }
                     float pd=Vector3Distance(b->pos,g_p.pos);
                     if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
                 } else { Blood(b->pos,6); DmgEnemy(j,b->dmg); }
@@ -937,13 +1226,16 @@ static void DrawBullets(void) {
 
 // ── PLAYER SHOOT ─────────────────────────────────────────────────────────────
 static void Shoot(void) {
+    if (g_needMouseRelease) return;  // swallow held click from menu/death screen
     if (g_p.shootCD>0) return;
     int w=g_p.weapon;
     if (w==0&&g_p.shells<=0){PlaySound(g_sEmpty);return;}
     if (w==1&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);return;}
     if (w==2&&g_p.rockets<=0){PlaySound(g_sEmpty);return;}
-    if (w==0){PlaySound(g_sShotgun);g_p.shells--;}
-    else if (w==1){PlaySound(g_sPistol);g_p.mgAmmo--;}  // MG reuses pistol snd
+    // Shotgun sound is deferred until after the pellet loop so we can make it
+    // LOUDER when the shot didn't actually kill an enemy (no kill stinger plays).
+    if (w==0){g_p.shells--;}
+    else if (w==1){PlaySound(g_sMGOK ? g_sMG : g_sPistol); g_p.mgAmmo--;}
     else {PlaySound(g_sRocket);g_p.rockets--;}
     g_p.shootCD=WR[w]; g_p.kickAnim=0.18f; g_p.shake=fmaxf(g_p.shake,0.07f);
     // muzzle flash light
@@ -954,6 +1246,7 @@ static void Shoot(void) {
     g_lights[6]=(LightDef){Vector3Add(eyePos,Vector3Scale(fwd,1.5f)),{1.f,0.85f,0.4f},8.f,1};
     ShaderSetLight(6);
     if (w==2){FireBullet(eyePos,fwd,200,true);return;}
+    g_killsThisShot = 0;          // reset per-shot counter for multi-kill detection
     int pels=WPEL[w]; float sprd=(w==1)?0.10f:0.012f;
     for (int p=0;p<pels;p++) {
         Vector3 rd=fwd;
@@ -973,12 +1266,36 @@ static void Shoot(void) {
         }
         if (bi>=0){
             Vector3 hp=Vector3Add(eyePos,Vector3Scale(rd,best));
-            Blood(hp,headshot?12:5);
+            Blood(hp, headshot ? 25 : 14);  // spray from impact point
             float dmg=(float)WD[w]*(headshot?2.5f:1.0f);
+            // Shotgun damage falloff curve:
+            //   0m  → 2.5x (point-blank)
+            //   6m  → 1.0x (normal)
+            //   15m+→ 0.25x (floor — pellets barely tickle at long range)
+            if (w==0) {
+                if (best < 6.f)      dmg *= 1.f + (6.f - best) * 0.25f;
+                else                 dmg *= fmaxf(0.25f, 1.f - (best - 6.f) * 0.083f);
+            }
+            g_lastHitHead = headshot;    // flag read inside KillEnemy so fatality sfx is skipped
             DmgEnemy(bi,dmg);
-            if (headshot && p==0) Msg("HEADSHOT!");
+            g_lastHitHead = false;
+            if (headshot && p==0) {
+                Msg("HEADSHOT!");
+                if (g_sHeadshotOK) { SetSoundVolume(g_sHeadshot, 1.5f); PlaySound(g_sHeadshot); }
+            }
         }
-        else{for(float t=0.5f;t<50.f;t+=0.5f){Vector3 pt=Vector3Add(eyePos,Vector3Scale(rd,t));if(IsWall(pt.x,pt.z)){Sparks(pt,4);break;}}}
+        else{for(float t=0.5f;t<50.f;t+=0.5f){Vector3 pt=Vector3Add(eyePos,Vector3Scale(rd,t));if(IsWall(pt.x,pt.z)){Sparks(pt,18);break;}}}
+    }
+    // Shotgun blast SFX — always use the shotgun-kill stinger for every shot
+    if (g_p.weapon == 0 && g_sShotgunKillOK) {
+        SetSoundVolume(g_sShotgunKill, 1.0f);
+        PlaySound(g_sShotgunKill);
+    }
+    // Multi-kill announcement (2+ enemies dropped by this shot)
+    if (g_killsThisShot >= 2 && g_sMultiOK) {
+        SetSoundVolume(g_sMulti, 8.0f);
+        PlaySound(g_sMulti);
+        Msg("MULTI KILL!");
     }
 }
 
@@ -1189,7 +1506,7 @@ static void DrawHUD(void) {
     DrawRectangle(sw/2-klw/2-6,sh-36,klw+12,22,(Color){8,8,12,200});
     DrawText(kl,sw/2-klw/2,sh-33,16,(Color){255,80,80,255});
     // weapon hint
-    DrawText("[ 1 ] SHOTGUN   [ 2 ] MACHINE GUN   [ 3 ] ROCKETS",sw/2-175,sh-18,12,(Color){80,80,80,255});
+    DrawText("[ 1 ] SHOTGUN   [ 2 ] MACHINE GUN   [ 3 ] LAUNCHER",sw/2-175,sh-18,12,(Color){80,80,80,255});
     // kill msg
     if (g_msgT>0) {
         unsigned char a=(unsigned char)(255.f*fminf(1.f,g_msgT));
@@ -1218,7 +1535,7 @@ static void DrawHUD(void) {
             float wx=c*CELL+CELL*0.5f - pw;
             float wz=r*CELL+CELL*0.5f - pz;
             // rotate: screen x = world right, screen y = world -forward (up=forward)
-            float sx2= wx*cosY - wz*sinY;
+            float sx2= wz*sinY - wx*cosY;  // fixed: right-of-player direction (was mirrored)
             float sy2= wx*sinY + wz*cosY;  // y in "forward" direction (screen-up = positive)
             int px3=cx2+(int)(sx2/scale);
             int py3=cy2-(int)(sy2/scale);  // negate: up on screen = forward
@@ -1234,7 +1551,7 @@ static void DrawHUD(void) {
         for (int i=0;i<g_ec;i++) {
             Enemy *e=&g_e[i]; if (!e->active || e->dying) continue;
             float wx=e->pos.x-pw, wz=e->pos.z-pz;
-            float sx2= wx*cosY - wz*sinY;
+            float sx2= wz*sinY - wx*cosY;  // fixed: right-of-player direction (was mirrored)
             float sy2= wx*sinY + wz*cosY;
             int ex=cx2+(int)(sx2/scale);
             int ey=cy2-(int)(sy2/scale);
@@ -1255,9 +1572,12 @@ static void DrawHUD(void) {
         DrawCircleLines(cx2,cy2,radius+1,(Color){100,80,60,180});
         DrawText("N",cx2-4,cy2-radius-14,12,(Color){180,180,180,200});
     }
-    // Ensure cursor stays hidden during gameplay — force every frame
-    // (otherwise alt-tab back in can show the OS cursor over the crosshair)
+    // Ensure cursor stays hidden during gameplay — call every frame AND park
+    // the cursor at screen centre so even if macOS briefly shows it on alt-tab,
+    // it's forced off the crosshair region and then re-hidden.
     HideCursor();
+    DisableCursor();
+    SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
 }
 
 // ── PLAYER ───────────────────────────────────────────────────────────────────
@@ -1294,12 +1614,12 @@ static void UpdPlayer(float dt, Camera3D *cam) {
         if (!IsWall(nx+(dx>=0?PRAD:-PRAD),g_p.pos.z) &&
             !IsWall(nx+(dx>=0?PRAD:-PRAD),g_p.pos.z+PRAD) &&
             !IsWall(nx+(dx>=0?PRAD:-PRAD),g_p.pos.z-PRAD) &&
-            !PlatBlocks(nx, g_p.pos.z, g_p.pos.y)) g_p.pos.x = nx;
+            !PlatBlocks(nx, g_p.pos.z, g_p.pos.y, PRAD)) g_p.pos.x = nx;
         float nz = g_p.pos.z + dz;
         if (!IsWall(g_p.pos.x,nz+(dz>=0?PRAD:-PRAD)) &&
             !IsWall(g_p.pos.x+PRAD,nz+(dz>=0?PRAD:-PRAD)) &&
             !IsWall(g_p.pos.x-PRAD,nz+(dz>=0?PRAD:-PRAD)) &&
-            !PlatBlocks(g_p.pos.x, nz, g_p.pos.y)) g_p.pos.z = nz;
+            !PlatBlocks(g_p.pos.x, nz, g_p.pos.y, PRAD)) g_p.pos.z = nz;
     }
     // Auto step-up onto low platforms as player walks onto them
     if (g_p.onGround) {
@@ -1342,7 +1662,8 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (IsKeyPressed(KEY_TWO)  &&g_p.weapon!=1){g_p.weapon=1;g_p.switchAnim=0.3f;}
     if (IsKeyPressed(KEY_THREE)&&g_p.weapon!=2){g_p.weapon=2;g_p.switchAnim=0.3f;}
 
-    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) Shoot();
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) g_needMouseRelease = false;
+    else if (!g_needMouseRelease) Shoot();
 
     // timers
     if (g_p.shootCD>0)   g_p.shootCD-=dt;
@@ -1403,7 +1724,7 @@ static void InitGame(void) {
             float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
             if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
             Enemy *ne=&g_e[g_ec++]; *ne=(Enemy){0};
-            ne->pos=(Vector3){wx,0,wz}; ne->type=0; ne->state=ES_PATROL;
+            ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top ne->type=0; ne->state=ES_PATROL;
             ne->hp=ne->maxHp=ET_HP[0]; ne->speed=ET_SPD[0];
             ne->dmg=ET_DMG[0]; ne->rate=ne->cd=ET_RATE[0];
             ne->alertR=ET_AR[0]; ne->atkR=ET_ATK[0]; ne->score=ET_SC[0]; ne->active=true;
@@ -1415,8 +1736,9 @@ static void InitGame(void) {
     g_gs=GS_PLAY;
     HideCursor();
     SetMousePosition(GetScreenWidth()/2,GetScreenHeight()/2);
-    // Grace period: swallow the click that started the game so it doesn't fire a shot
-    g_p.shootCD = 0.3f;
+    // Block firing until mouse released — stops menu-click from triggering a shot
+    g_needMouseRelease = true;
+    g_hadVisibleEnemy = false;  // reset so the first spotted enemy triggers the stinger
     strcpy(g_msg,""); g_msgT=0;
 }
 
@@ -1451,6 +1773,90 @@ int main(void) {
     g_sPickup  = MkPickup();
     g_sEmpty   = MkEmpty();
     g_sDie     = MkDie();
+    // Load announcer SFX (UT headshot, MK fatality) from bundle Resources
+    {
+        char fp[700];
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/headshot.mp3", GetApplicationDirectory());
+        g_sHeadshot = LoadSound(fp);
+        g_sHeadshotOK = (g_sHeadshot.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/fatality.mp3", GetApplicationDirectory());
+        g_sFatality = LoadSound(fp);
+        g_sFatalityOK = (g_sFatality.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/holy-shit.mp3", GetApplicationDirectory());
+        g_sMulti = LoadSound(fp);
+        g_sMultiOK = (g_sMulti.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/first-blood.mp3", GetApplicationDirectory());
+        g_sFirstBlood = LoadSound(fp);
+        g_sFirstBloodOK = (g_sFirstBlood.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/distant-enemy.mp3", GetApplicationDirectory());
+        g_sDistantEnemy = LoadSound(fp);
+        g_sDistantEnemyOK = (g_sDistantEnemy.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/shotgun-kill.mp3", GetApplicationDirectory());
+        g_sShotgunKill = LoadSound(fp);
+        g_sShotgunKillOK = (g_sShotgunKill.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/next-wave.mp3", GetApplicationDirectory());
+        g_sNextWave = LoadSound(fp);
+        g_sNextWaveOK = (g_sNextWave.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/mg-sound.mp3", GetApplicationDirectory());
+        g_sMG = LoadSound(fp);
+        g_sMGOK = (g_sMG.frameCount > 0);
+
+        // Real rocket launcher firing sound (overrides procedural g_sRocket)
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/launcher-shot.mp3", GetApplicationDirectory());
+        Sound realLauncher = LoadSound(fp);
+        if (realLauncher.frameCount > 0) {
+            UnloadSound(g_sRocket);
+            g_sRocket = realLauncher;
+        }
+
+        // Real Doom shotgun sound (overrides the procedural one)
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/shotgun.mp3", GetApplicationDirectory());
+        Sound realShotgun = LoadSound(fp);
+        if (realShotgun.frameCount > 0) {
+            UnloadSound(g_sShotgun);
+            g_sShotgun = realShotgun;
+        }
+
+        // Real rocket-hit explosion sound (overrides procedural g_sExplode)
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/rocket-hit.mp3", GetApplicationDirectory());
+        Sound realExplode = LoadSound(fp);
+        if (realExplode.frameCount > 0) {
+            UnloadSound(g_sExplode);
+            g_sExplode = realExplode;
+        }
+
+        // Real chef death screams — multiple variants played randomly
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/chef-die.mp3", GetApplicationDirectory());
+        Sound realDie = LoadSound(fp);
+        if (realDie.frameCount > 0) {
+            UnloadSound(g_sDie);
+            g_sDie = realDie;
+        }
+        // chef-die-1..N variants
+        for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) {
+            snprintf(fp, sizeof(fp), "%s../Resources/sounds/chef-die-%d.mp3", GetApplicationDirectory(), i+1);
+            g_sDieAlt[i] = LoadSound(fp);
+            g_sDieAltOK[i] = (g_sDieAlt[i].frameCount > 0);
+        }
+
+        // Streamed background music (C&C Red Alert — Hell March)
+        LoadMusicVol();  // restore user's last-saved volume from ~/.ironfist3d.cfg
+        snprintf(fp, sizeof(fp), "%s../Resources/sounds/hell-march.mp3", GetApplicationDirectory());
+        g_music = LoadMusicStream(fp);
+        g_musicOK = (g_music.frameCount > 0);
+        if (g_musicOK) {
+            g_music.looping = true;
+            SetMusicVolume(g_music, g_musicVol);  // under the gunfire / sfx
+            PlayMusicStream(g_music);
+        }
+    }
     srand((unsigned)time(NULL));
 
     InitShader();
@@ -1487,7 +1893,7 @@ int main(void) {
         g_wep[0].xShift = -0.01f;  // SHOTGUN: 1% left
         g_wep[1].xShift = -0.06f;  // MG:      6% left
         g_wep[2].xShift =  0.10f;  // ROCKET: 10% right
-        g_wep[2].yShift = -0.12f;  // ROCKET: 12% up (was 10, +2% request)
+        g_wep[2].yShift = -0.085f; // ROCKET: 8.5% up (lowered 0.5%)
 
         // MG muzzle flash: RIFGA0 is a full-canvas overlay aligned with RIFGB0
         {
@@ -1610,6 +2016,20 @@ int main(void) {
 
     while (!WindowShouldClose()) {
         float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
+        if (g_musicOK) {
+            UpdateMusicStream(g_music);   // feed the streaming decoder
+            // Music volume: - / + (and numpad equivalents)
+            bool vDown = IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT);
+            bool vUp   = IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD);
+            if (vDown) g_musicVol = fmaxf(0.f,  g_musicVol - 0.1f);
+            if (vUp)   g_musicVol = fminf(1.5f, g_musicVol + 0.1f);
+            if (vDown || vUp) {
+                SetMusicVolume(g_music, g_musicVol);
+                SaveMusicVol();  // persist to disk
+                char buf[48]; snprintf(buf, 48, "MUSIC VOL %d%%", (int)(g_musicVol * 100.f + 0.5f));
+                Msg(buf);
+            }
+        }
 
         if (g_gs==GS_MENU) {
             if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
@@ -1621,6 +2041,39 @@ int main(void) {
             UpdBullets(dt);
             UpdParts(dt);
             UpdPicks();
+
+            // "Distant enemy" stinger — plays once when the first enemy comes into sight
+            // after a period of having none visible. Uses dot-product FOV cone + wall raycast.
+            {
+                bool anyVisible = false;
+                float cy = cosf(g_p.pitch);
+                float syw = sinf(g_p.yaw + 3.14159f), cyw = cosf(g_p.yaw + 3.14159f);
+                float fx = syw * cy, fz = cyw * cy;     // camera forward XZ (normalized)
+                for (int i = 0; i < g_ec && !anyVisible; i++) {
+                    Enemy *e = &g_e[i];
+                    if (!e->active || e->dying) continue;
+                    float dx = e->pos.x - g_p.pos.x;
+                    float dz = e->pos.z - g_p.pos.z;
+                    float dist = sqrtf(dx*dx + dz*dz);
+                    if (dist < 0.1f || dist > 50.f) continue;   // too close / too far
+                    float dot = (dx*fx + dz*fz) / dist;          // cone: >= 0.6 ~= 53° half-FOV
+                    if (dot < 0.6f) continue;
+                    // Simple raycast: step along the line of sight, bail if we hit a wall
+                    bool blocked = false;
+                    int steps = (int)(dist / 0.5f);
+                    for (int s = 1; s < steps; s++) {
+                        float t = s / (float)steps;
+                        if (IsWall(g_p.pos.x + dx*t, g_p.pos.z + dz*t)) { blocked = true; break; }
+                    }
+                    if (!blocked) anyVisible = true;
+                }
+                if (anyVisible && !g_hadVisibleEnemy && g_sDistantEnemyOK &&
+                    !IsSoundPlaying(g_sDistantEnemy)) {
+                    SetSoundVolume(g_sDistantEnemy, 2.0f);
+                    PlaySound(g_sDistantEnemy);
+                }
+                g_hadVisibleEnemy = anyVisible;
+            }
         } else if (g_gs==GS_DEAD) {
             if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
         }
@@ -1647,6 +2100,9 @@ int main(void) {
             DrawBullets();
             DrawParts();
             DrawPicks(cam);
+            // Ceiling lights drawn LAST so the additive glow shines over enemies,
+            // pickups, and bullets — otherwise opaque billboards cover the light cones.
+            DrawCeilingLights(cam);
             DrawWeapon3D(cam);
             EndMode3D();
             DrawSpriteWeapon();
@@ -1665,10 +2121,10 @@ int main(void) {
             DrawText(t1,sw2/2-tw/2,sh2/3,80,RED);
             const char *t2="S L A U G H T E R  S T Y L E";
             DrawText(t2,sw2/2-MeasureText(t2,16)/2,sh2/3+96,16,(Color){120,120,120,255});
-            const char *ctrl="WASD / ARROWS — MOVE     MOUSE — LOOK     LMB — FIRE\n"
-                             "SPACE — JUMP     SHIFT — SPRINT\n"
-                             "1 — SHOTGUN     2 — MACHINE GUN     3 — ROCKETS";
-            DrawText(ctrl,sw2/2-MeasureText("WASD / ARROWS — MOVE     MOUSE — LOOK     LMB — FIRE",15)/2,sh2/2+20,15,(Color){90,90,90,255});
+            const char *ctrl="WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE\n"
+                             "SPACE - JUMP     SHIFT - SPRINT     - / + - MUSIC VOL\n"
+                             "1 - SHOTGUN     2 - MACHINE GUN     3 - LAUNCHER";
+            DrawText(ctrl,sw2/2-MeasureText("WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE",15)/2,sh2/2+20,15,(Color){90,90,90,255});
             const char *st="[ ENTER  /  CLICK  TO  START ]";
             if (sinf(GetTime()*3.f)>0)
                 DrawText(st,sw2/2-MeasureText(st,22)/2,sh2*3/4,22,RED);
@@ -1706,6 +2162,16 @@ int main(void) {
     UnloadSound(g_sPistol); UnloadSound(g_sShotgun); UnloadSound(g_sRocket);
     UnloadSound(g_sExplode); UnloadSound(g_sHurt); UnloadSound(g_sPickup);
     UnloadSound(g_sEmpty); UnloadSound(g_sDie);
+    for (int i=0;i<CHEF_DIE_ALT_COUNT;i++) if (g_sDieAltOK[i]) UnloadSound(g_sDieAlt[i]);
+    if (g_sHeadshotOK) UnloadSound(g_sHeadshot);
+    if (g_sFatalityOK) UnloadSound(g_sFatality);
+    if (g_sMultiOK)      UnloadSound(g_sMulti);
+    if (g_sFirstBloodOK)   UnloadSound(g_sFirstBlood);
+    if (g_sDistantEnemyOK) UnloadSound(g_sDistantEnemy);
+    if (g_sShotgunKillOK)  UnloadSound(g_sShotgunKill);
+    if (g_sMGOK)           UnloadSound(g_sMG);
+    if (g_sNextWaveOK)     UnloadSound(g_sNextWave);
+    if (g_musicOK) { StopMusicStream(g_music); UnloadMusicStream(g_music); }
     CloseAudioDevice(); CloseWindow();
     return 0;
 }

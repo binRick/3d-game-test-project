@@ -9,8 +9,9 @@ APP     = IronFist3D.app
 BIN     = $(APP)/Contents/MacOS/IronFist3D
 ICNS    = $(APP)/Contents/Resources/icon.icns
 SPRITES = $(APP)/Contents/Resources/sprites
+SOUNDS  = $(APP)/Contents/Resources/sounds
 
-game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES)
+game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES) $(SOUNDS)
 	@echo "Built $(APP) — run with: open $(APP)"
 
 $(APP)/Contents/MacOS:
@@ -52,6 +53,9 @@ $(ICNS): | $(APP)/Contents/Resources
 
 $(SPRITES): sprites | $(APP)/Contents/Resources
 	cp -r sprites $(APP)/Contents/Resources/
+
+$(SOUNDS): sounds | $(APP)/Contents/Resources
+	cp -r sounds $(APP)/Contents/Resources/
 
 run: game
 	open $(APP)
