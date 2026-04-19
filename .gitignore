@@ -4,4 +4,7 @@ game
 .DS_Store
 WolfenDoom-master/
 game-sounds-main/
+dist-win/
+vendor/
+game-sounds-main/
 ~/.ironfist3d.cfg

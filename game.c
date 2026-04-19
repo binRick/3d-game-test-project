@@ -4,6 +4,15 @@
 #include "rlgl.h"
 #include <math.h>
 #include <stdio.h>
+
+// Resource layout differs between platforms:
+//   macOS  — resources live at <app>/Contents/Resources/ (one dir up from MacOS/)
+//   Win/Linux — resources sit next to the exe in flat sprites/ and sounds/
+#ifdef _WIN32
+  #define RES_PREFIX ""
+#else
+  #define RES_PREFIX "../Resources/"
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -267,7 +276,7 @@ static float    g_musicVol = 0.36f;  // adjustable via - / + (persisted to disk)
 #define VOL_CONFIG_FILE ".ironfist3d.cfg"
 
 static void SaveMusicVol(void) {
-    const char *home = getenv("HOME");
+    const char *home = getenv("HOME"); if (!home) home = getenv("USERPROFILE");
     if (!home) return;
     char path[512];
     snprintf(path, sizeof(path), "%s/" VOL_CONFIG_FILE, home);
@@ -277,7 +286,7 @@ static void SaveMusicVol(void) {
     fclose(f);
 }
 static void LoadMusicVol(void) {
-    const char *home = getenv("HOME");
+    const char *home = getenv("HOME"); if (!home) home = getenv("USERPROFILE");
     if (!home) return;
     char path[512];
     snprintf(path, sizeof(path), "%s/" VOL_CONFIG_FILE, home);
@@ -1776,40 +1785,40 @@ int main(void) {
     // Load announcer SFX (UT headshot, MK fatality) from bundle Resources
     {
         char fp[700];
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/headshot.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/headshot.mp3", GetApplicationDirectory());
         g_sHeadshot = LoadSound(fp);
         g_sHeadshotOK = (g_sHeadshot.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/fatality.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/fatality.mp3", GetApplicationDirectory());
         g_sFatality = LoadSound(fp);
         g_sFatalityOK = (g_sFatality.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/holy-shit.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/holy-shit.mp3", GetApplicationDirectory());
         g_sMulti = LoadSound(fp);
         g_sMultiOK = (g_sMulti.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/first-blood.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/first-blood.mp3", GetApplicationDirectory());
         g_sFirstBlood = LoadSound(fp);
         g_sFirstBloodOK = (g_sFirstBlood.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/distant-enemy.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/distant-enemy.mp3", GetApplicationDirectory());
         g_sDistantEnemy = LoadSound(fp);
         g_sDistantEnemyOK = (g_sDistantEnemy.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/shotgun-kill.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/shotgun-kill.mp3", GetApplicationDirectory());
         g_sShotgunKill = LoadSound(fp);
         g_sShotgunKillOK = (g_sShotgunKill.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/next-wave.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/next-wave.mp3", GetApplicationDirectory());
         g_sNextWave = LoadSound(fp);
         g_sNextWaveOK = (g_sNextWave.frameCount > 0);
 
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/mg-sound.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mg-sound.mp3", GetApplicationDirectory());
         g_sMG = LoadSound(fp);
         g_sMGOK = (g_sMG.frameCount > 0);
 
         // Real rocket launcher firing sound (overrides procedural g_sRocket)
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/launcher-shot.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/launcher-shot.mp3", GetApplicationDirectory());
         Sound realLauncher = LoadSound(fp);
         if (realLauncher.frameCount > 0) {
             UnloadSound(g_sRocket);
@@ -1817,7 +1826,7 @@ int main(void) {
         }
 
         // Real Doom shotgun sound (overrides the procedural one)
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/shotgun.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/shotgun.mp3", GetApplicationDirectory());
         Sound realShotgun = LoadSound(fp);
         if (realShotgun.frameCount > 0) {
             UnloadSound(g_sShotgun);
@@ -1825,7 +1834,7 @@ int main(void) {
         }
 
         // Real rocket-hit explosion sound (overrides procedural g_sExplode)
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/rocket-hit.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/rocket-hit.mp3", GetApplicationDirectory());
         Sound realExplode = LoadSound(fp);
         if (realExplode.frameCount > 0) {
             UnloadSound(g_sExplode);
@@ -1833,7 +1842,7 @@ int main(void) {
         }
 
         // Real chef death screams — multiple variants played randomly
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/chef-die.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/chef-die.mp3", GetApplicationDirectory());
         Sound realDie = LoadSound(fp);
         if (realDie.frameCount > 0) {
             UnloadSound(g_sDie);
@@ -1841,14 +1850,14 @@ int main(void) {
         }
         // chef-die-1..N variants
         for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) {
-            snprintf(fp, sizeof(fp), "%s../Resources/sounds/chef-die-%d.mp3", GetApplicationDirectory(), i+1);
+            snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/chef-die-%d.mp3", GetApplicationDirectory(), i+1);
             g_sDieAlt[i] = LoadSound(fp);
             g_sDieAltOK[i] = (g_sDieAlt[i].frameCount > 0);
         }
 
         // Streamed background music (C&C Red Alert — Hell March)
         LoadMusicVol();  // restore user's last-saved volume from ~/.ironfist3d.cfg
-        snprintf(fp, sizeof(fp), "%s../Resources/sounds/hell-march.mp3", GetApplicationDirectory());
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/hell-march.mp3", GetApplicationDirectory());
         g_music = LoadMusicStream(fp);
         g_musicOK = (g_music.frameCount > 0);
         if (g_musicOK) {
@@ -1865,7 +1874,7 @@ int main(void) {
     // Each entry: folder, file list (idle first, then fire frames), scale, count.
     {
         char appBase[512];
-        snprintf(appBase, sizeof(appBase), "%s../Resources/sprites/", GetApplicationDirectory());
+        snprintf(appBase, sizeof(appBase), "%s" RES_PREFIX "sprites/", GetApplicationDirectory());
 
         struct { int wepIdx; const char *folder; const char *files[MAX_WFRAMES]; int n; float scale; } packs[] = {
             // 0 SHOTGUN (browning): GA idle then GE muzzle flash first, then GB/GC/GD recover
