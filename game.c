@@ -13,7 +13,7 @@
 #define SH          720
 #define FPS         144
 #define CELL        4.0f
-#define WALL_H      3.4f
+#define WALL_H      5.1f
 #define ROWS        20
 #define COLS        30
 #define MAX_ENEMIES 96
@@ -26,6 +26,7 @@
 #define SENS        0.0016f
 #define GRAV       -22.0f
 #define JUMP        8.5f
+#define STEP_H      0.55f  // max auto-climb height (stairs)
 #define MAX_PITCH   1.44f
 
 // ── MAP ──────────────────────────────────────────────────────────────────────
@@ -162,7 +163,7 @@ typedef struct {
     bool onGround, dead;
     float hp, maxHp;
     float shootCD, kickAnim, bobT, hurtFlash, shake, switchAnim;
-    int   weapon, shells, rockets, mgAmmo, score, kills;
+    int   weapon, bullets, shells, rockets, mgAmmo, score, kills;
 } Player;
 
 typedef struct {
@@ -170,6 +171,8 @@ typedef struct {
     int type; float hp, maxHp, speed, dmg, rate, cd, stateT;
     Vector3 pd; float legT, flashT, alertR, atkR;
     bool active; int score;
+    bool  dying;       // true once HP hits 0 — corpse remains in scene
+    float deathT;      // seconds since death started (drives death animation)
 } Enemy;
 
 typedef struct { Vector3 pos, vel; float life, dmg; bool active, rocket; } Bullet;
@@ -187,6 +190,13 @@ static int      g_wave;
 static GameState g_gs;
 static char     g_msg[80]; static float g_msgT;
 static Model    g_wallModel, g_floorModel, g_ceilModel;
+
+// ── PLATFORMS (Q3-style 3D level geometry on top of the 2D floor) ───────────
+typedef struct { float x0, z0, x1, z1, top; } Platform;
+#define MAX_PLATS 64
+static Platform g_plats[MAX_PLATS];
+static int      g_platCount = 0;
+static Model    g_platModel;     // shared unit cube scaled per-platform, lit via g_shader
 // ── Sprite-based weapon viewmodels ───────────────────────────────────────────
 // Each weapon has a frame[0]=idle and frame[1..count-1]=fire animation.
 // When shootCD>0, we interpolate through fire frames; otherwise show idle.
@@ -197,18 +207,33 @@ typedef struct {
     float scale;      // display pixel scale
     int   yAnchor;    // "sh - yAnchor" is bottom of sprite baseline
     float xShift;     // fraction of screen width to offset horizontally (-0.1 = 10% left)
+    float yShift;     // fraction of screen height to offset vertically (-0.04 = 4% up)
     Texture2D flash;  // optional muzzle-flash overlay drawn on top while firing (same dst rect)
     bool  hasFlash;
     bool  loaded;
 } WepSprite;
-static WepSprite g_wep[4];  // one per player weapon (0=pistol 1=shotgun 2=rocket 3=MG)
+static WepSprite g_wep[3];  // one per player weapon (0=shotgun 1=MG 2=rocket)
 
 // Per-weapon crosshair overrides (NULL texture = use default tick-mark crosshair)
-static Texture2D g_xhair[4];
+static Texture2D g_xhair[3];
 
 // Pickup billboards (NULL texture = use default colored sphere)
-// g_healthTex[0]=CHIKA0, [1]=EASTA0 — 50/50 picked per spawn via Pickup.variant
+// Health has 2 variants (CHIKA/EASTA), others are single textures keyed by pickup type.
 static Texture2D g_healthTex[2];
+// Ammo pickup textures indexed by Pickup.type:
+//   [0]=unused (health), [1]=shells (SBOXA), [2]=rockets (MNRBB), [3]=pistol (MCLPA), [4]=MG (MCLPB)
+static Texture2D g_ammoTex[5];
+
+// Chef walk-cycle billboards (AFABA/B/C/D — boss sprite frames). NULL = fall back to cube mesh.
+static Texture2D g_chefTex[4];
+static bool      g_chefOK = false;
+// Chef death animation (AFABG/H/I/J). Plays once, freezes on final frame.
+static Texture2D g_chefDeathTex[4];
+static bool      g_chefDeathOK = false;
+#define CHEF_DEATH_FRAME_TIME 0.18f   // seconds per death frame
+// Chef pain frame (AFABF0). Shown while flashT > 0.
+static Texture2D g_chefPainTex;
+static bool      g_chefPainOK = false;
 
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
 static Sound    g_sHurt, g_sPickup, g_sEmpty, g_sDie;
@@ -225,10 +250,11 @@ static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,25
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255}};
 
 // weapon tables
-static const char *WPN[]    = {"PISTOL","SHOTGUN","ROCKETS","MACHINEGUN"};
-static const float WR[]     = {0.34f, 0.59f, 0.96f, 0.09f};
-static const int   WD[]     = {26, 15, 0, 18};
-static const int   WPEL[]   = {1, 8, 1, 1};
+// Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3)
+static const char *WPN[]    = {"SHOTGUN", "MACHINE GUN", "ROCKETS"};
+static const float WR[]     = {0.59f, 0.09f, 0.96f};
+static const int   WD[]     = {15, 18, 0};
+static const int   WPEL[]   = {8, 1, 1};
 
 // ── SOUND ────────────────────────────────────────────────────────────────────
 static Sound MkSound(float *d, int n) {
@@ -505,6 +531,59 @@ static void Slide(Vector3 *pos, float dx, float dz, float rad) {
         !IsWall(pos->x-rad,nz+(dz>=0?rad:-rad))) pos->z=nz;
 }
 
+// ── PLATFORM COLLISION ──────────────────────────────────────────────────────
+// Returns true if the position (x, z) would penetrate a platform whose top is
+// more than STEP_H above currentY (i.e. too tall to walk up onto).
+static bool PlatBlocks(float x, float z, float currentY) {
+    for (int i = 0; i < g_platCount; i++) {
+        Platform *p = &g_plats[i];
+        if (x > p->x0 - PRAD && x < p->x1 + PRAD &&
+            z > p->z0 - PRAD && z < p->z1 + PRAD) {
+            if (currentY < p->top - STEP_H) return true;
+        }
+    }
+    return false;
+}
+
+// Return the highest platform top the player can stand on at (x, z) given
+// their current Y (i.e. any platform whose top is <= currentY + epsilon).
+// Default ground is 0.
+static float PlatGroundAt(float x, float z, float currentY) {
+    float best = 0.f;
+    for (int i = 0; i < g_platCount; i++) {
+        Platform *p = &g_plats[i];
+        if (x >= p->x0 && x <= p->x1 && z >= p->z0 && z <= p->z1) {
+            if (p->top > best && p->top <= currentY + 0.05f) best = p->top;
+        }
+    }
+    return best;
+}
+
+// Build the level's platforms. Called once at init.
+static void InitPlatforms(void) {
+    g_platCount = 0;
+    // Central corridor (rows 9-10) has the open space. Put a stair-up + platform + stair-down.
+    //
+    //   z=36 ──────────────────────────────────────────── z=44
+    //        [step1][step2][step3] [ big plat 1.35 ] [step4][step5]
+    //
+    // Each step = 0.45m tall (under STEP_H = 0.55) so you can walk up smoothly.
+    float z0 = 38.f, z1 = 42.f;  // stairs are 4m deep
+    g_plats[g_platCount++] = (Platform){52.f, z0, 55.f, z1, 0.45f};
+    g_plats[g_platCount++] = (Platform){55.f, z0, 58.f, z1, 0.90f};
+    g_plats[g_platCount++] = (Platform){58.f, z0, 61.f, z1, 1.35f};
+    // Big platform (full 8m wide, 8m deep — covers rows 9-10 mostly)
+    g_plats[g_platCount++] = (Platform){61.f, 36.f, 69.f, 44.f, 1.35f};
+    // Stair down
+    g_plats[g_platCount++] = (Platform){69.f, z0, 72.f, z1, 0.90f};
+    g_plats[g_platCount++] = (Platform){72.f, z0, 75.f, z1, 0.45f};
+
+    // Second feature: a tall lone platform near start-ish that you must JUMP onto
+    g_plats[g_platCount++] = (Platform){20.f, 24.f, 26.f, 28.f, 1.10f};
+    // and a "balcony" in the far corner (accessed via jump)
+    g_plats[g_platCount++] = (Platform){92.f, 60.f, 104.f, 68.f, 1.60f};
+}
+
 // ── PARTICLES ────────────────────────────────────────────────────────────────
 static void SpawnPart(Vector3 p, Vector3 v, Color c, float life, float sz, bool grav) {
     for (int i=0;i<MAX_PARTS;i++) if (!g_pt[i].active) {
@@ -573,23 +652,42 @@ static void UpdPicks(void) {
         pk->pos.y=0.5f+sinf(t*2.5f+i)*0.15f;
         float dx=pk->pos.x-g_p.pos.x, dz=pk->pos.z-g_p.pos.z;
         if (sqrtf(dx*dx+dz*dz)<1.2f) {
+            // Don't grab a health pickup if we're already at full HP
+            if (pk->type == 0 && g_p.hp >= g_p.maxHp) continue;
             pk->active=false; PlaySound(g_sPickup);
-            if (pk->type==0){g_p.hp=fminf(g_p.maxHp,g_p.hp+35);snprintf(g_msg,80,"+35 HEALTH");g_msgT=1.8f;}
-            else if (pk->type==1){g_p.shells=(int)fminf(99,g_p.shells+16);snprintf(g_msg,80,"+16 SHELLS");g_msgT=1.8f;}
-            else {g_p.rockets=(int)fminf(30,g_p.rockets+5);snprintf(g_msg,80,"+5 ROCKETS");g_msgT=1.8f;}
+            g_msgT=1.8f;
+            switch (pk->type) {
+                case 0: g_p.hp     =fminf(g_p.maxHp,g_p.hp+35);         snprintf(g_msg,80,"+35 HEALTH");  break;
+                case 1: g_p.shells =(int)fminf(99, g_p.shells +16);     snprintf(g_msg,80,"+16 SHELLS");  break;
+                case 2: g_p.rockets=(int)fminf(30, g_p.rockets+ 5);     snprintf(g_msg,80,"+5 ROCKETS");  break;
+                case 3: g_p.bullets=(int)fminf(200,g_p.bullets+24);     snprintf(g_msg,80,"+24 BULLETS"); break;
+                case 4: g_p.mgAmmo =(int)fminf(300,g_p.mgAmmo +50);     snprintf(g_msg,80,"+50 MG ROUNDS"); break;
+            }
         }
     }
 }
 static void DrawPicks(Camera3D cam) {
-    static Color tc[]={{255,60,60,255},{255,220,0,255},{255,140,0,255}};
+    // Fallback colours if a sprite fails to load
+    static Color tc[] = {
+        {255, 60, 60,255},  // health
+        {255,220,  0,255},  // shells
+        {255,140,  0,255},  // rockets
+        {220,220,120,255},  // bullets
+        {180,200,255,255},  // MG
+    };
+    // Size per ammo type (the sprites have different native sizes)
+    static const float sz[] = {0.9f, 0.7f, 0.65f, 0.45f, 0.85f};
     for (int i=0;i<g_pkc;i++) {
         Pickup *pk=&g_pk[i]; if (!pk->active) continue;
-        if (pk->type == 0 && g_healthTex[pk->variant].id) {
-            // Sprite billboard for health (always faces camera)
-            DrawBillboard(cam, g_healthTex[pk->variant], pk->pos, 0.9f, WHITE);
+        Texture2D tex = {0};
+        if (pk->type == 0 && g_healthTex[pk->variant].id) tex = g_healthTex[pk->variant];
+        else if (pk->type > 0 && pk->type < 5 && g_ammoTex[pk->type].id) tex = g_ammoTex[pk->type];
+
+        if (tex.id) {
+            DrawBillboard(cam, tex, pk->pos, sz[pk->type], WHITE);
         } else {
-            DrawSphere(pk->pos,0.22f,tc[pk->type]);
-            DrawCircle3D(pk->pos,0.36f,(Vector3){1,0,0},90.f,Fade(tc[pk->type],0.35f));
+            DrawSphere(pk->pos, 0.22f, tc[pk->type]);
+            DrawCircle3D(pk->pos, 0.36f, (Vector3){1,0,0}, 90.f, Fade(tc[pk->type], 0.35f));
         }
     }
 }
@@ -598,17 +696,29 @@ static void DrawPicks(Camera3D cam) {
 static void Msg(const char *s) { strncpy(g_msg,s,79); g_msgT=2.0f; }
 
 // ── ENEMIES ──────────────────────────────────────────────────────────────────
-static int Alive(void) { int n=0; for(int i=0;i<g_ec;i++) if(g_e[i].active) n++; return n; }
+// "Alive" = active AND not dying (corpse/dying enemies are still drawn but don't count)
+static int Alive(void) { int n=0; for(int i=0;i<g_ec;i++) if(g_e[i].active && !g_e[i].dying) n++; return n; }
 
 static void KillEnemy(int i) {
-    Enemy *e=&g_e[i]; e->active=false;
+    Enemy *e=&g_e[i];
+    // Keep the enemy active=true so the sprite keeps rendering — mark dying so
+    // AI/bullets/minimap/alive-count skip it.
+    e->dying = true; e->deathT = 0.f; e->hp = 0.f;
     Vector3 bp={e->pos.x,1.0f,e->pos.z}; Blood(bp,20); PlaySound(g_sDie);
     g_p.score+=e->score*g_wave; g_p.kills++;
-    if ((float)rand()/RAND_MAX<0.45f) {
-        int t=(float)rand()/RAND_MAX<0.5f?0:(float)rand()/RAND_MAX<0.6f?1:2;
-        SpawnPick(e->pos.x,e->pos.z,t);
+    if ((float)rand()/RAND_MAX<0.55f) {
+        // Drop chances: health 40%, shells 25%, MG 20%, rockets 15%
+        float r = (float)rand()/RAND_MAX;
+        int t = r<0.40f ? 0 : r<0.65f ? 1 : r<0.85f ? 4 : 2;
+        // Offset the drop so the pickup billboard doesn't intersect the corpse billboard
+        float ang = (float)rand()/RAND_MAX * 6.28318f;
+        float dist = 0.7f + (float)rand()/RAND_MAX * 0.4f;  // 0.7..1.1 away
+        float ox = cosf(ang)*dist, oz = sinf(ang)*dist;
+        // Make sure we didn't offset into a wall
+        if (IsWall(e->pos.x+ox, e->pos.z+oz)) { ox = -ox*0.4f; oz = -oz*0.4f; }
+        SpawnPick(e->pos.x+ox, e->pos.z+oz, t);
     }
-    static const char *names[]={"GRUNT","HEAVY","SPECTER"};
+    static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF"};
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[e->type],e->score*g_wave);
     Msg(buf);
     if (Alive()==0) {
@@ -645,7 +755,7 @@ static void KillEnemy(int i) {
 }
 
 static void DmgEnemy(int i, float d) {
-    Enemy *e=&g_e[i]; if (!e->active) return;
+    Enemy *e=&g_e[i]; if (!e->active || e->dying) return;
     e->hp-=d; e->flashT=0.12f; e->state=ES_CHASE;
     if (e->hp<=0) KillEnemy(i);
 }
@@ -653,6 +763,7 @@ static void DmgEnemy(int i, float d) {
 static void UpdEnemies(float dt) {
     for (int i=0;i<g_ec;i++) {
         Enemy *e=&g_e[i]; if (!e->active) continue;
+        if (e->dying) { e->deathT += dt; continue; }  // corpse: run death timer, skip AI
         if (e->flashT>0) e->flashT-=dt;
         float dx=g_p.pos.x-e->pos.x, dz=g_p.pos.z-e->pos.z;
         float dist=sqrtf(dx*dx+dz*dz);
@@ -660,9 +771,14 @@ static void UpdEnemies(float dt) {
         e->cd-=dt; e->stateT-=dt; e->legT+=dt*e->speed*2.8f;
         if (e->state==ES_PATROL) {
             Slide(&e->pos,e->pd.x*e->speed*dt,e->pd.z*e->speed*dt,0.42f);
+            // Snap enemy Y to highest reachable platform under them (auto-step stairs)
+            e->pos.y = PlatGroundAt(e->pos.x, e->pos.z, e->pos.y + STEP_H);
             if (e->stateT<0){float a=(float)rand()/RAND_MAX*6.28f;e->pd=(Vector3){sinf(a),0,cosf(a)};e->stateT=1.f+(float)rand()/RAND_MAX*2.5f;}
         } else if (e->state==ES_CHASE) {
-            if (dist>e->atkR) Slide(&e->pos,dx/dist*e->speed*dt,dz/dist*e->speed*dt,0.42f);
+            if (dist>e->atkR) {
+                Slide(&e->pos,dx/dist*e->speed*dt,dz/dist*e->speed*dt,0.42f);
+                e->pos.y = PlatGroundAt(e->pos.x, e->pos.z, e->pos.y + STEP_H);
+            }
             else e->state=ES_ATTACK;
         } else {
             if (dist>e->atkR*1.5f) e->state=ES_CHASE;
@@ -675,48 +791,92 @@ static void UpdEnemies(float dt) {
     }
 }
 
-static void DrawEnemies(void) {
-    for (int i=0;i<g_ec;i++) {
-        Enemy *e=&g_e[i]; if (!e->active) continue;
-        Color base=e->flashT>0?WHITE:ET_COL[e->type];
-        Color dark={(unsigned char)(base.r/2),(unsigned char)(base.g/2),(unsigned char)(base.b/2),255};
-        Color eye=ET_EYE[e->type];
+static void DrawEnemies(Camera3D cam) {
+    // Sort enemies by distance to camera (far first) so billboards blend correctly.
+    // Without back-to-front, a live enemy drawn before a closer live enemy gets clipped
+    // by the closer one's depth writes on transparent pixels.
+    static int order[MAX_ENEMIES];
+    static float dist[MAX_ENEMIES];
+    int n = 0;
+    for (int i = 0; i < g_ec; i++) {
+        if (!g_e[i].active) continue;
+        order[n] = i;
+        float dx = g_e[i].pos.x - cam.position.x;
+        float dz = g_e[i].pos.z - cam.position.z;
+        dist[n] = dx*dx + dz*dz;
+        n++;
+    }
+    // Insertion sort descending (small n, negligible cost)
+    for (int i = 1; i < n; i++) {
+        int oi = order[i]; float di = dist[i]; int j = i-1;
+        while (j >= 0 && dist[j] < di) { order[j+1] = order[j]; dist[j+1] = dist[j]; j--; }
+        order[j+1] = oi; dist[j+1] = di;
+    }
+
+    // Draw sprites with depth test ON but depth mask OFF so transparent pixels don't clip
+    // subsequent billboards. Walls (already depth-written) still occlude enemies correctly.
+    rlDrawRenderBatchActive();
+    rlDisableDepthMask();
+
+    for (int k = 0; k < n; k++) {
+        Enemy *e = &g_e[order[k]];
         float bh=(e->type==1)?1.1f:(e->type==2)?0.72f:0.9f;
-        float lk=sinf(e->legT)*0.14f, ak=sinf(e->legT+1.57f)*0.09f;
 
-        // face angle toward player
-        float dx=g_p.pos.x-e->pos.x, dz=g_p.pos.z-e->pos.z;
-        float faceDeg=atan2f(-dx,-dz)*RAD2DEG;
+        if (g_chefOK) {
+            // Size tuned per enemy type
+            float spriteH = (e->type==1) ? 2.3f : (e->type==2) ? 1.7f : 2.0f;
+            Vector3 pos = {e->pos.x, spriteH*0.5f, e->pos.z};
+            Texture2D tex;
+            bool isCorpse = e->dying && g_chefDeathOK;
+            if (isCorpse) {
+                // Death animation: 4 frames at CHEF_DEATH_FRAME_TIME each, freeze on last
+                int df = (int)(e->deathT / CHEF_DEATH_FRAME_TIME);
+                if (df > 3) df = 3;
+                tex = g_chefDeathTex[df];
+            } else if (e->flashT > 0.f && g_chefPainOK) {
+                // Pain frame while recently hit
+                tex = g_chefPainTex;
+            } else {
+                // Walking cycle driven by legT
+                int frame = (int)(e->legT * 0.6f) % 4;
+                if (frame < 0) frame += 4;
+                tex = g_chefTex[frame];
+            }
+            // Depth mask is globally disabled for the entire enemy pass (sorted back-to-front)
+            DrawBillboard(cam, tex, pos, spriteH, WHITE);
+            (void)isCorpse;
+        } else {
+            // Fallback cube mesh (unchanged)
+            Color base=e->flashT>0?WHITE:ET_COL[e->type];
+            Color dark={(unsigned char)(base.r/2),(unsigned char)(base.g/2),(unsigned char)(base.b/2),255};
+            Color eye=ET_EYE[e->type];
+            float lk=sinf(e->legT)*0.14f, ak=sinf(e->legT+1.57f)*0.09f;
+            float dx=g_p.pos.x-e->pos.x, dz=g_p.pos.z-e->pos.z;
+            float faceDeg=atan2f(-dx,-dz)*RAD2DEG;
+            rlPushMatrix();
+            rlTranslatef(e->pos.x, 0, e->pos.z);
+            rlRotatef(faceDeg, 0, 1, 0);
+            DrawCube((Vector3){-0.19f,0.22f, lk},0.22f,0.42f,0.22f,dark);
+            DrawCube((Vector3){ 0.19f,0.22f,-lk},0.22f,0.42f,0.22f,dark);
+            DrawCube((Vector3){0,bh/2.f+0.42f,0},0.72f,bh,0.52f,base);
+            DrawCube((Vector3){-0.5f,bh*0.6f+ak,0},0.2f,0.52f,0.2f,dark);
+            DrawCube((Vector3){ 0.5f,bh*0.6f-ak,0},0.2f,0.52f,0.2f,dark);
+            DrawCube((Vector3){0,bh+0.67f,0},0.52f,0.46f,0.46f,base);
+            DrawSphere((Vector3){-0.13f,bh+0.7f,-0.22f},0.075f,eye);
+            DrawSphere((Vector3){ 0.13f,bh+0.7f,-0.22f},0.075f,eye);
+            rlPopMatrix();
+        }
 
-        rlPushMatrix();
-        rlTranslatef(e->pos.x, 0, e->pos.z);
-        rlRotatef(faceDeg, 0, 1, 0);
-
-        // all parts in local space (enemy faces -Z by default)
-        // legs
-        DrawCube((Vector3){-0.19f,0.22f, lk},0.22f,0.42f,0.22f,dark);
-        DrawCube((Vector3){ 0.19f,0.22f,-lk},0.22f,0.42f,0.22f,dark);
-        // body
-        DrawCube((Vector3){0,bh/2.f+0.42f,0},0.72f,bh,0.52f,base);
-        // arms
-        DrawCube((Vector3){-0.5f,bh*0.6f+ak,0},0.2f,0.52f,0.2f,dark);
-        DrawCube((Vector3){ 0.5f,bh*0.6f-ak,0},0.2f,0.52f,0.2f,dark);
-        // head
-        DrawCube((Vector3){0,bh+0.67f,0},0.52f,0.46f,0.46f,base);
-        // eyes face forward (-Z in local space)
-        DrawSphere((Vector3){-0.13f,bh+0.7f,-0.22f},0.075f,eye);
-        DrawSphere((Vector3){ 0.13f,bh+0.7f,-0.22f},0.075f,eye);
-
-        rlPopMatrix();
-
-        // HP bar in world space so it doesn't rotate
-        if (e->hp<e->maxHp) {
+        // HP bar — world space, always upright (hidden once dying)
+        if (!e->dying && e->hp<e->maxHp) {
             float hp=e->hp/e->maxHp;
             float bary=bh+1.25f;
             DrawCube((Vector3){e->pos.x,bary,e->pos.z},0.82f,0.08f,0.02f,DARKGRAY);
             DrawCube((Vector3){e->pos.x-0.41f+0.41f*hp,bary,e->pos.z},0.82f*hp,0.08f,0.03f,GREEN);
         }
     }
+    rlDrawRenderBatchActive();
+    rlEnableDepthMask();
 }
 
 // ── BULLETS ──────────────────────────────────────────────────────────────────
@@ -741,7 +901,7 @@ static void UpdBullets(float dt) {
             if (b->rocket) {
                 Explode(b->pos);
                 for (int j=0;j<g_ec;j++) {
-                    if (!g_e[j].active) continue;
+                    if (!g_e[j].active || g_e[j].dying) continue;
                     float d=Vector3Distance(b->pos,g_e[j].pos);
                     if (d<5.f) DmgEnemy(j,200.f*(1.f-d/5.f));
                 }
@@ -751,14 +911,14 @@ static void UpdBullets(float dt) {
             b->active=false; continue;
         }
         for (int j=0;j<g_ec;j++) {
-            Enemy *e=&g_e[j]; if (!e->active) continue;
+            Enemy *e=&g_e[j]; if (!e->active || e->dying) continue;
             float _ex=b->pos.x-e->pos.x, _ez=b->pos.z-e->pos.z;
             float _xzdist=sqrtf(_ex*_ex+_ez*_ez);
             float _ydist=fabsf(b->pos.y-1.0f); // enemy mid-body ~y=1
             if ((_xzdist<0.9f && _ydist<1.2f) || Vector3Distance(b->pos,(Vector3){e->pos.x,1.f,e->pos.z})<0.9f) {
                 if (b->rocket) {
                     Explode(b->pos);
-                    for (int k=0;k<g_ec;k++){if(!g_e[k].active)continue;float d=Vector3Distance(b->pos,g_e[k].pos);if(d<5.f)DmgEnemy(k,200.f*(1.f-d/5.f));}
+                    for (int k=0;k<g_ec;k++){if(!g_e[k].active||g_e[k].dying)continue;float d=Vector3Distance(b->pos,g_e[k].pos);if(d<5.f)DmgEnemy(k,200.f*(1.f-d/5.f));}
                     float pd=Vector3Distance(b->pos,g_p.pos);
                     if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
                 } else { Blood(b->pos,6); DmgEnemy(j,b->dmg); }
@@ -779,13 +939,12 @@ static void DrawBullets(void) {
 static void Shoot(void) {
     if (g_p.shootCD>0) return;
     int w=g_p.weapon;
-    if (w==1&&g_p.shells<=0){PlaySound(g_sEmpty);return;}
+    if (w==0&&g_p.shells<=0){PlaySound(g_sEmpty);return;}
+    if (w==1&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);return;}
     if (w==2&&g_p.rockets<=0){PlaySound(g_sEmpty);return;}
-    if (w==3&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);return;}
-    if (w==0) PlaySound(g_sPistol);
-    else if (w==1){PlaySound(g_sShotgun);g_p.shells--;}
-    else if (w==2){PlaySound(g_sRocket);g_p.rockets--;}
-    else {PlaySound(g_sPistol);g_p.mgAmmo--;}
+    if (w==0){PlaySound(g_sShotgun);g_p.shells--;}
+    else if (w==1){PlaySound(g_sPistol);g_p.mgAmmo--;}  // MG reuses pistol snd
+    else {PlaySound(g_sRocket);g_p.rockets--;}
     g_p.shootCD=WR[w]; g_p.kickAnim=0.18f; g_p.shake=fmaxf(g_p.shake,0.07f);
     // muzzle flash light
     float cy=cosf(g_p.pitch), sy=sinf(g_p.pitch);
@@ -801,7 +960,7 @@ static void Shoot(void) {
         if (pels>1){rd.x+=((float)rand()/RAND_MAX-.5f)*sprd*2;rd.y+=((float)rand()/RAND_MAX-.5f)*sprd;rd.z+=((float)rand()/RAND_MAX-.5f)*sprd*2;rd=Vector3Normalize(rd);}
         float best=1e9f; int bi=-1; bool headshot=false;
         for (int j=0;j<g_ec;j++){
-            if (!g_e[j].active) continue;
+            if (!g_e[j].active || g_e[j].dying) continue;
             float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
             // check head sphere first (more damage)
             Vector3 hc={g_e[j].pos.x, bh+0.67f, g_e[j].pos.z};
@@ -831,7 +990,7 @@ static void Shoot(void) {
 // Frame[0] = idle.  Frame[1..count-1] = fire animation, played back during shootCD.
 static void DrawSpriteWeapon(void) {
     int w = g_p.weapon;
-    if (w < 0 || w >= 4) return;
+    if (w < 0 || w >= 3) return;
     WepSprite *ws = &g_wep[w];
     if (!ws->loaded) return;
 
@@ -855,7 +1014,7 @@ static void DrawSpriteWeapon(void) {
     float dstW    = tex.width  * ws->scale;
     float dstH    = tex.height * ws->scale;
     float dstX    = sw * 0.5f - dstW * 0.5f + sw * ws->xShift;  // crosshair + per-weapon shift
-    float dstY    = (float)sh - dstH + kickY + bobY + switchY;
+    float dstY    = (float)sh - dstH + kickY + bobY + switchY + sh * ws->yShift;
 
     DrawTexturePro(tex,
         (Rectangle){0, 0, (float)tex.width, (float)tex.height},
@@ -981,9 +1140,12 @@ static void DrawHUD(void) {
     // scanlines (subtle)
     for (int y=0;y<sh;y+=3) DrawLine(0,y,sw,y,(Color){0,0,0,18});
     // crosshair — per-weapon texture override, else default tick marks
+    // Rocket launcher: no crosshair (it's a rocket, you aim with the whole barrel)
     int cx=sw/2,cy=sh/2;
     int wpn=g_p.weapon;
-    if (wpn>=0 && wpn<4 && g_xhair[wpn].id) {
+    if (wpn == 2) {
+        // no crosshair for rocket
+    } else if (wpn>=0 && wpn<3 && g_xhair[wpn].id) {
         Texture2D xh = g_xhair[wpn];
         float xsc = 1.2f;
         float xw = xh.width*xsc, xh2 = xh.height*xsc;
@@ -1009,10 +1171,9 @@ static void DrawHUD(void) {
     DrawText(hpBuf,228,sh-43,18,hcol);
     // ammo
     char aBuf[16];
-    if (g_p.weapon==0) snprintf(aBuf,16,"INF");
-    else if (g_p.weapon==1) snprintf(aBuf,16,"%d",g_p.shells);
-    else if (g_p.weapon==2) snprintf(aBuf,16,"%d",g_p.rockets);
-    else snprintf(aBuf,16,"%d",g_p.mgAmmo);
+    if      (g_p.weapon==0) snprintf(aBuf,16,"%d",g_p.shells);
+    else if (g_p.weapon==1) snprintf(aBuf,16,"%d",g_p.mgAmmo);
+    else                    snprintf(aBuf,16,"%d",g_p.rockets);
     DrawText(WPN[g_p.weapon],sw-220,sh-58,13,SKYBLUE);
     DrawText(aBuf,sw-220,sh-46,36,YELLOW);
     // score / wave top right
@@ -1028,7 +1189,7 @@ static void DrawHUD(void) {
     DrawRectangle(sw/2-klw/2-6,sh-36,klw+12,22,(Color){8,8,12,200});
     DrawText(kl,sw/2-klw/2,sh-33,16,(Color){255,80,80,255});
     // weapon hint
-    DrawText("[ 1 ] PISTOL  [ 2 ] SHOTGUN  [ 3 ] ROCKETS  [ 4 ] MG",sw/2-190,sh-18,12,(Color){80,80,80,255});
+    DrawText("[ 1 ] SHOTGUN   [ 2 ] MACHINE GUN   [ 3 ] ROCKETS",sw/2-175,sh-18,12,(Color){80,80,80,255});
     // kill msg
     if (g_msgT>0) {
         unsigned char a=(unsigned char)(255.f*fminf(1.f,g_msgT));
@@ -1039,7 +1200,7 @@ static void DrawHUD(void) {
     {
         int cx2=sw-90, cy2=88;   // screen centre of minimap
         int radius=78;
-        float scale=2.8f;        // world units per pixel
+        float scale=0.95f;       // world units per pixel — fits entire 120×80 map in the radar
         float yaw=g_p.yaw+3.14159f; // camera yaw: forward direction angle
         float cosY=cosf(yaw), sinY=sinf(yaw);
 
@@ -1069,9 +1230,9 @@ static void DrawHUD(void) {
                 DrawRectangle(px3,py3,cs,cs,(Color){80,50,35,230});
         }
 
-        // Enemies
+        // Enemies (skip corpses on minimap)
         for (int i=0;i<g_ec;i++) {
-            Enemy *e=&g_e[i]; if (!e->active) continue;
+            Enemy *e=&g_e[i]; if (!e->active || e->dying) continue;
             float wx=e->pos.x-pw, wz=e->pos.z-pz;
             float sx2= wx*cosY - wz*sinY;
             float sy2= wx*sinY + wz*cosY;
@@ -1094,8 +1255,9 @@ static void DrawHUD(void) {
         DrawCircleLines(cx2,cy2,radius+1,(Color){100,80,60,180});
         DrawText("N",cx2-4,cy2-radius-14,12,(Color){180,180,180,200});
     }
-    // Ensure cursor stays hidden during gameplay
-    if (IsCursorHidden()==false) HideCursor();
+    // Ensure cursor stays hidden during gameplay — force every frame
+    // (otherwise alt-tab back in can show the OS cursor over the crosshair)
+    HideCursor();
 }
 
 // ── PLAYER ───────────────────────────────────────────────────────────────────
@@ -1124,18 +1286,61 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (IsKeyDown(KEY_A)||IsKeyDown(KEY_LEFT))  {mx+=cy;mz-=sy;}
     if (IsKeyDown(KEY_D)||IsKeyDown(KEY_RIGHT)) {mx-=cy;mz+=sy;}
     float mlen=sqrtf(mx*mx+mz*mz); if(mlen>0){mx/=mlen;mz/=mlen;}
-    Slide(&g_p.pos,mx*spd,mz*spd,PRAD);
+    // Per-axis movement with wall + platform blocking. Tall platforms block,
+    // stairs (within STEP_H) let you pass and the step-up happens in gravity.
+    {
+        float dx = mx * spd, dz = mz * spd;
+        float nx = g_p.pos.x + dx;
+        if (!IsWall(nx+(dx>=0?PRAD:-PRAD),g_p.pos.z) &&
+            !IsWall(nx+(dx>=0?PRAD:-PRAD),g_p.pos.z+PRAD) &&
+            !IsWall(nx+(dx>=0?PRAD:-PRAD),g_p.pos.z-PRAD) &&
+            !PlatBlocks(nx, g_p.pos.z, g_p.pos.y)) g_p.pos.x = nx;
+        float nz = g_p.pos.z + dz;
+        if (!IsWall(g_p.pos.x,nz+(dz>=0?PRAD:-PRAD)) &&
+            !IsWall(g_p.pos.x+PRAD,nz+(dz>=0?PRAD:-PRAD)) &&
+            !IsWall(g_p.pos.x-PRAD,nz+(dz>=0?PRAD:-PRAD)) &&
+            !PlatBlocks(g_p.pos.x, nz, g_p.pos.y)) g_p.pos.z = nz;
+    }
+    // Auto step-up onto low platforms as player walks onto them
+    if (g_p.onGround) {
+        float groundHere = PlatGroundAt(g_p.pos.x, g_p.pos.z, g_p.pos.y + STEP_H);
+        if (groundHere > g_p.pos.y && groundHere <= g_p.pos.y + STEP_H) {
+            g_p.pos.y = groundHere;
+            g_p.velY = 0.f;
+        }
+    }
 
-    // jump / gravity
+    // Push player out of any live enemies so you can't walk through them
+    const float ENEMY_RADIUS = 0.45f;
+    for (int i = 0; i < g_ec; i++) {
+        Enemy *e = &g_e[i];
+        if (!e->active || e->dying) continue;
+        float edx = g_p.pos.x - e->pos.x;
+        float edz = g_p.pos.z - e->pos.z;
+        float d2 = edx*edx + edz*edz;
+        float minD = PRAD + ENEMY_RADIUS;
+        if (d2 > 0.0001f && d2 < minD*minD) {
+            float d = sqrtf(d2);
+            float push = minD - d;
+            g_p.pos.x += (edx/d) * push;
+            g_p.pos.z += (edz/d) * push;
+        }
+    }
+
+    // jump / gravity with platform-aware ground
     if (IsKeyPressed(KEY_SPACE)&&g_p.onGround){g_p.velY=JUMP;g_p.onGround=false;}
     g_p.velY+=GRAV*dt; g_p.pos.y+=g_p.velY*dt;
-    if (g_p.pos.y<=0){g_p.pos.y=0;g_p.velY=0;g_p.onGround=true;}
+    float ground = PlatGroundAt(g_p.pos.x, g_p.pos.z, g_p.pos.y);
+    if (g_p.pos.y <= ground) {
+        g_p.pos.y = ground; g_p.velY = 0; g_p.onGround = true;
+    } else {
+        g_p.onGround = false;
+    }
 
     // weapon switch
     if (IsKeyPressed(KEY_ONE)  &&g_p.weapon!=0){g_p.weapon=0;g_p.switchAnim=0.3f;}
     if (IsKeyPressed(KEY_TWO)  &&g_p.weapon!=1){g_p.weapon=1;g_p.switchAnim=0.3f;}
     if (IsKeyPressed(KEY_THREE)&&g_p.weapon!=2){g_p.weapon=2;g_p.switchAnim=0.3f;}
-    if (IsKeyPressed(KEY_FOUR) &&g_p.weapon!=3){g_p.weapon=3;g_p.switchAnim=0.3f;}
 
     if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) Shoot();
 
@@ -1185,7 +1390,7 @@ static void InitGame(void) {
     srand((unsigned)time(NULL));
     memset(&g_p,0,sizeof(g_p));
     g_p.pos=(Vector3){1.5f*CELL,0,1.5f*CELL};
-    g_p.hp=g_p.maxHp=100; g_p.shells=32; g_p.rockets=8; g_p.mgAmmo=200; g_p.weapon=0;
+    g_p.hp=g_p.maxHp=100; g_p.shells=32; g_p.rockets=8; g_p.mgAmmo=120; g_p.weapon=0;
     g_wave=1; g_ec=0; g_pkc=0;
     memset(g_e,0,sizeof(g_e)); memset(g_b,0,sizeof(g_b));
     memset(g_pt,0,sizeof(g_pt)); memset(g_pk,0,sizeof(g_pk));
@@ -1210,6 +1415,8 @@ static void InitGame(void) {
     g_gs=GS_PLAY;
     HideCursor();
     SetMousePosition(GetScreenWidth()/2,GetScreenHeight()/2);
+    // Grace period: swallow the click that started the game so it doesn't fire a shot
+    g_p.shootCD = 0.3f;
     strcpy(g_msg,""); g_msgT=0;
 }
 
@@ -1255,15 +1462,12 @@ int main(void) {
         snprintf(appBase, sizeof(appBase), "%s../Resources/sprites/", GetApplicationDirectory());
 
         struct { int wepIdx; const char *folder; const char *files[MAX_WFRAMES]; int n; float scale; } packs[] = {
-            // PISTOL (luger): idle GA, then GB..GJ as fire/recover animation (ignore FA flash)
-            { 0, "luger",        {"LUGGA0.png","LUGGB0.png","LUGGC0.png","LUGGD0.png","LUGGE0.png",
-                                  "LUGGF0.png","LUGGG0.png","LUGGH0.png","LUGGI0.png","LUGGJ0.png"}, 10, 3.125f },
-            // SHOTGUN (browning): GA idle, then GE muzzle flash first, then GB/GC/GD recover
-            { 1, "browning",     {"BA5GA0.png","BA5GE0.png","BA5GB0.png","BA5GC0.png","BA5GD0.png"},  5, 4.4f },
-            // ROCKET LAUNCHER (panzerschreck): only a static ready pose
+            // 0 SHOTGUN (browning): GA idle then GE muzzle flash first, then GB/GC/GD recover
+            { 0, "browning",     {"BA5GA0.png","BA5GE0.png","BA5GB0.png","BA5GC0.png","BA5GD0.png"},  5, 4.4f },
+            // 1 MACHINE GUN (mp40/rif): single-frame with RIFGA muzzle overlay
+            { 1, "mp40",         {"RIFGB0.png"},                                                      1, 3.23f },
+            // 2 ROCKET LAUNCHER (panzerschreck): static ready pose
             { 2, "panzerschreck",{"PANZA0.png"},                                                      1, 2.5f },
-            // MACHINE GUN (mp40/rif): single-frame — GB only for idle and fire
-            { 3, "mp40",         {"RIFGB0.png"},                                                      1, 3.23f },
         };
         for (int p = 0; p < (int)(sizeof(packs)/sizeof(packs[0])); p++) {
             WepSprite *ws = &g_wep[packs[p].wepIdx];
@@ -1280,19 +1484,20 @@ int main(void) {
             }
         }
         // Per-weapon horizontal shifts (fraction of screen width)
-        g_wep[0].xShift =  0.02f;  // PISTOL: 2% right
-        g_wep[1].xShift = -0.01f;  // SHOTGUN: 1% left
-        g_wep[3].xShift = -0.06f;  // MG: 6% left
+        g_wep[0].xShift = -0.01f;  // SHOTGUN: 1% left
+        g_wep[1].xShift = -0.06f;  // MG:      6% left
+        g_wep[2].xShift =  0.10f;  // ROCKET: 10% right
+        g_wep[2].yShift = -0.12f;  // ROCKET: 12% up (was 10, +2% request)
 
         // MG muzzle flash: RIFGA0 is a full-canvas overlay aligned with RIFGB0
         {
             char fp[700];
             snprintf(fp, sizeof(fp), "%smp40/RIFGA0.png", appBase);
-            g_wep[3].flash = LoadTexture(fp);
-            if (g_wep[3].flash.id) {
-                SetTextureFilter(g_wep[3].flash, TEXTURE_FILTER_POINT);
-                SetTextureWrap  (g_wep[3].flash, TEXTURE_WRAP_CLAMP);
-                g_wep[3].hasFlash = true;
+            g_wep[1].flash = LoadTexture(fp);
+            if (g_wep[1].flash.id) {
+                SetTextureFilter(g_wep[1].flash, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_wep[1].flash, TEXTURE_WRAP_CLAMP);
+                g_wep[1].hasFlash = true;
             }
         }
 
@@ -1300,10 +1505,10 @@ int main(void) {
         {
             char fp[700];
             snprintf(fp, sizeof(fp), "%scrosshairs/SHOT.png", appBase);
-            g_xhair[1] = LoadTexture(fp);
-            if (g_xhair[1].id) {
-                SetTextureFilter(g_xhair[1], TEXTURE_FILTER_POINT);
-                SetTextureWrap  (g_xhair[1], TEXTURE_WRAP_CLAMP);
+            g_xhair[0] = LoadTexture(fp);  // shotgun is weapon 0 now
+            if (g_xhair[0].id) {
+                SetTextureFilter(g_xhair[0], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_xhair[0], TEXTURE_WRAP_CLAMP);
             }
         }
 
@@ -1318,6 +1523,60 @@ int main(void) {
                     SetTextureFilter(g_healthTex[i], TEXTURE_FILTER_POINT);
                     SetTextureWrap  (g_healthTex[i], TEXTURE_WRAP_CLAMP);
                 }
+            }
+        }
+
+        // Ammo pickup billboards — indexed by Pickup.type (0 is unused/health)
+        {
+            const char *ammoFiles[5] = { NULL, "SBOXA0.png", "MNRBB0.png", "MCLPA0.png", "MCLPB0.png" };
+            char fp[700];
+            for (int t = 1; t < 5; t++) {
+                snprintf(fp, sizeof(fp), "%spickups/%s", appBase, ammoFiles[t]);
+                g_ammoTex[t] = LoadTexture(fp);
+                if (g_ammoTex[t].id) {
+                    SetTextureFilter(g_ammoTex[t], TEXTURE_FILTER_POINT);
+                    SetTextureWrap  (g_ammoTex[t], TEXTURE_WRAP_CLAMP);
+                }
+            }
+        }
+
+        // Chef walking animation (4 frames from WolfenDoom bosses/AFAB*)
+        {
+            char fp[700];
+            const char *names[4] = {"AFABA0.png","AFABB0.png","AFABC0.png","AFABD0.png"};
+            g_chefOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, names[i]);
+                g_chefTex[i] = LoadTexture(fp);
+                if (g_chefTex[i].id == 0) { g_chefOK = false; continue; }
+                SetTextureFilter(g_chefTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_chefTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
+
+        // Chef death animation (G→H→I→J, freezes on J)
+        {
+            char fp[700];
+            const char *names[4] = {"AFABG0.png","AFABH0.png","AFABI0.png","AFABJ0.png"};
+            g_chefDeathOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, names[i]);
+                g_chefDeathTex[i] = LoadTexture(fp);
+                if (g_chefDeathTex[i].id == 0) { g_chefDeathOK = false; continue; }
+                SetTextureFilter(g_chefDeathTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_chefDeathTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
+
+        // Chef pain frame (shown briefly when taking damage)
+        {
+            char fp[700];
+            snprintf(fp, sizeof(fp), "%smonsters/AFABF0.png", appBase);
+            g_chefPainTex = LoadTexture(fp);
+            if (g_chefPainTex.id) {
+                SetTextureFilter(g_chefPainTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_chefPainTex, TEXTURE_WRAP_CLAMP);
+                g_chefPainOK = true;
             }
         }
     }
@@ -1336,6 +1595,11 @@ int main(void) {
     g_floorModel = MakeShaderModel(fm, tFloor);
     Mesh cm = BuildPlaneMesh(WALL_H, (float)COLS*CELL/6.f, (float)ROWS*CELL/6.f, true);
     g_ceilModel  = MakeShaderModel(cm, tCeil);
+
+    // Shared unit cube for platforms — lit via custom shader, textured with brick
+    Mesh platMesh = GenMeshCube(1.f, 1.f, 1.f);
+    g_platModel   = MakeShaderModel(platMesh, tBrick);
+    InitPlatforms();
 
     Camera3D cam={0};
     cam.fovy=90.f; cam.projection=CAMERA_PERSPECTIVE; cam.up=(Vector3){0,1,0};
@@ -1369,7 +1633,17 @@ int main(void) {
             DrawModel(g_wallModel,Vector3Zero(),1.f,WHITE);
             DrawModel(g_floorModel,Vector3Zero(),1.f,(Color){110,110,110,255});
             DrawModel(g_ceilModel,Vector3Zero(),1.f,(Color){70,70,90,255});
-            DrawEnemies();
+            // Platforms (stairs + raised decks) — unit cube mesh scaled per-platform
+            for (int pi = 0; pi < g_platCount; pi++) {
+                Platform *p = &g_plats[pi];
+                float sx = p->x1 - p->x0;
+                float sy = p->top;
+                float sz = p->z1 - p->z0;
+                Vector3 center = { (p->x0+p->x1)*0.5f, sy*0.5f, (p->z0+p->z1)*0.5f };
+                DrawModelEx(g_platModel, center, (Vector3){0,1,0}, 0.f,
+                            (Vector3){sx, sy, sz}, (Color){170,140,110,255});
+            }
+            DrawEnemies(cam);
             DrawBullets();
             DrawParts();
             DrawPicks(cam);
@@ -1393,7 +1667,7 @@ int main(void) {
             DrawText(t2,sw2/2-MeasureText(t2,16)/2,sh2/3+96,16,(Color){120,120,120,255});
             const char *ctrl="WASD / ARROWS — MOVE     MOUSE — LOOK     LMB — FIRE\n"
                              "SPACE — JUMP     SHIFT — SPRINT\n"
-                             "1 — PISTOL     2 — SHOTGUN     3 — ROCKETS     4 — MG";
+                             "1 — SHOTGUN     2 — MACHINE GUN     3 — ROCKETS";
             DrawText(ctrl,sw2/2-MeasureText("WASD / ARROWS — MOVE     MOUSE — LOOK     LMB — FIRE",15)/2,sh2/2+20,15,(Color){90,90,90,255});
             const char *st="[ ENTER  /  CLICK  TO  START ]";
             if (sinf(GetTime()*3.f)>0)
@@ -1415,14 +1689,19 @@ int main(void) {
     }
 
     UnloadModel(g_wallModel); UnloadModel(g_floorModel); UnloadModel(g_ceilModel);
+    UnloadModel(g_platModel);
     UnloadTexture(tBrick); UnloadTexture(tFloor); UnloadTexture(tCeil);
-    for (int w=0;w<4;w++) {
+    for (int w=0;w<3;w++) {
         for (int i=0;i<g_wep[w].count;i++)
             if (g_wep[w].frames[i].id) UnloadTexture(g_wep[w].frames[i]);
         if (g_wep[w].hasFlash && g_wep[w].flash.id) UnloadTexture(g_wep[w].flash);
         if (g_xhair[w].id) UnloadTexture(g_xhair[w]);
     }
     for (int i=0;i<2;i++) if (g_healthTex[i].id) UnloadTexture(g_healthTex[i]);
+    for (int i=0;i<5;i++) if (g_ammoTex[i].id)   UnloadTexture(g_ammoTex[i]);
+    for (int i=0;i<4;i++) if (g_chefTex[i].id)      UnloadTexture(g_chefTex[i]);
+    for (int i=0;i<4;i++) if (g_chefDeathTex[i].id) UnloadTexture(g_chefDeathTex[i]);
+    if (g_chefPainTex.id) UnloadTexture(g_chefPainTex);
     UnloadShader(g_shader);
     UnloadSound(g_sPistol); UnloadSound(g_sShotgun); UnloadSound(g_sRocket);
     UnloadSound(g_sExplode); UnloadSound(g_sHurt); UnloadSound(g_sPickup);
