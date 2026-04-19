@@ -25,15 +25,22 @@ Red Alert soundtrack.
 
 ## 🎮 Play
 
+**macOS** — builds an `.app` bundle:
+
 ```bash
-brew install raylib
-./run.sh               # kills any running instance, rebuilds, opens the app
+./run.sh               # auto-installs raylib via brew, rebuilds, opens the app
 ```
 
-Or just:
+Or grab the prebuilt [release](https://github.com/binRick/Iron-Fist/releases).
+
+**Windows** — a single self-contained `IronFist3D.exe`. All sprites and
+sounds are baked into the binary as a Win32 RCDATA resource and extracted to
+`%TEMP%/IronFist3D/` on first launch, so you only ship one file. Cross-build
+from macOS:
 
 ```bash
-make run
+brew install mingw-w64
+make windows           # produces dist-win/IronFist3D.exe
 ```
 
 ---
@@ -185,7 +192,7 @@ flowchart LR
     E2((Chef 2)) -->|seek + separation| P
     E3((Chef 3)) -->|seek + separation| P
 
-    E1 <-.push-away<br/>(sep weight 1.4).-> E2
+    E1 <-.push-away.-> E2
     E1 <-.push-away.-> E3
     E2 <-.push-away.-> E3
 ```
@@ -193,6 +200,27 @@ flowchart LR
 Within a 1.5m neighbour radius, each chasing chef sums a push-away vector
 from every other live chef, blends it 1.4× against the seek vector, and
 moves along the normalised result — fanning out instead of conga-lining.
+
+### Navigation around terrain
+
+Chasing chefs probe 1.5m ahead along their seek direction each tick:
+
+- If the probe hits a **walkable step** (height ≤ `STEP_H`), nothing special —
+  they just walk onto it. `PlatGroundAtR` lifts their y as soon as their
+  body overlaps the step, so they don't clip into the mesh at y=0.
+- If the probe hits a **too-tall platform**, they **skirt** it tangentially
+  — perpendicular to the enemy→platform-centre vector, blended 85/15 with the
+  pull toward the player. Each chef picks a skirt side from its hash so a
+  group fans around both sides instead of piling against one face.
+- The probe is staircase-aware: if there's a walkable step between the chef
+  and the unreachable platform top, it's *not* flagged as a blocker — the
+  chef will take the stairs up instead of detouring.
+- Wall collision is **circle-vs-grid**, so chefs don't snag on outside
+  corners from a diagonal graze (the old 3-point shoulder test false-blocked
+  on corner grazes and forced chefs to slide several metres before turning).
+- Dropping off a platform edge no longer strands a chef in the collision
+  safety margin around the base — `PlatPenetration` lets them walk away
+  from the edge but still stops them from pushing back into the margin.
 
 ---
 
@@ -318,6 +346,9 @@ flowchart TD
 | Shotgun damage falloff | 2.5× at 0m → 1.0× at 6m → 0.25× floor at 15m+                               |
 | Chef separation        | Boids-style, 1.5m neighbour radius, weight 1.4 vs seek                     |
 | Step-up collision      | Platforms ≤ 0.55m auto-climb, taller blocks like walls                     |
+| Enemy step-up          | Body-radius snap: chefs climb stairs as soon as their footprint overlaps a step |
+| Enemy path probe       | 1.5m look-ahead; skirt too-tall plats, walk through walkable stairs         |
+| Enemy wall collision   | Circle-vs-grid, so chefs don't snag on outside corners                     |
 | Enemy depenetration    | Player pushed out of overlapping live chefs each frame (radius 0.45m)      |
 | Floor decals           | Slow-landing blood particles stick at y=0.005 for 10–16s then fade          |
 | Bleeding trail         | Any chef with `hp < maxHp` drips blood every 0.08–0.33s (scales with HP)   |
@@ -330,9 +361,11 @@ flowchart TD
 
 ```
 game.c                    ← all the code
-Makefile                  ← builds IronFist3D.app with icon + sprites + sounds bundled
-run.sh                    ← kill running → make -B → open app
+Makefile                  ← macOS .app + Windows single-file .exe targets
+run.sh                    ← brew-installs deps → make -B → open app
 gen_icon.py               ← procedural iron-fist .icns
+pack_bundle.py            ← flattens sprites/ + sounds/ into dist-win/bundle.dat
+                            (embedded into the Windows exe via windres RCDATA)
 CLAUDE.md                 ← conventions / asset rules for future dev
 sprites/
   browning/ luger/ mp40/ panzerschreck/   weapon viewmodels
@@ -349,7 +382,8 @@ sounds/
 
 ## 🛠️ Build gotchas
 
-- raylib 5.x required (`brew install raylib`)
+- raylib 5.x required. `./run.sh` auto-installs `raylib` + `pkg-config` via
+  Homebrew if they're missing
 - The IDE will yell about missing `raylib.h` includes and `Vector3` types —
   those are false positives from the language server. The compiler has the
   include path. Ignore them
@@ -357,6 +391,9 @@ sounds/
   they'll render as `?`
 - macOS icon cache can be stubborn. If the Dock shows the old icon, run
   `killall Dock` after a build
+- Windows: the game includes `<windows.h>` would clobber raylib's `DrawText`,
+  `CloseWindow`, `Rectangle` macros — `game.c` forward-declares only the
+  handful of Win32 APIs needed for the RCDATA resource extraction instead
 
 ---
 
