@@ -62,8 +62,11 @@ run: game
 
 # ─── Windows cross-compile (mingw-w64) ──────────────────────────────────────
 # brew install mingw-w64. raylib prebuilt lives at vendor/{include,lib}/.
-# Output: dist-win/IronFist3D.exe plus sprites/ + sounds/ copied alongside.
+# Output: a single self-contained dist-win/IronFist3D.exe with all sprites +
+# sounds baked in as an RCDATA resource named "bundle". The exe extracts them
+# to %TEMP%/IronFist3D/ on first launch.
 WINCC   = x86_64-w64-mingw32-gcc
+WINRES  = x86_64-w64-mingw32-windres
 WINDIR  = dist-win
 WINEXE  = $(WINDIR)/IronFist3D.exe
 WINVENDOR = vendor
@@ -71,20 +74,23 @@ WINCFLAGS = -O2 -Wall -Wno-unused-result -I$(WINVENDOR)/include
 WINLDFLAGS = -L$(WINVENDOR)/lib -lraylib -lopengl32 -lgdi32 -lwinmm \
              -static-libgcc -static-libstdc++ -Wl,-subsystem,windows
 
-windows: $(WINEXE) $(WINDIR)/sprites $(WINDIR)/sounds
-	@echo "Built $(WINEXE) — zip $(WINDIR)/ and ship it"
+windows: $(WINEXE)
+	@echo "Built $(WINEXE) — single self-contained exe"
 
-$(WINEXE): game.c | $(WINDIR)
-	$(WINCC) $(WINCFLAGS) game.c $(WINLDFLAGS) -o $(WINEXE)
+$(WINDIR)/bundle.dat: pack_bundle.py sprites sounds | $(WINDIR)
+	python3 pack_bundle.py $@ sprites sounds
+
+$(WINDIR)/bundle.rc: | $(WINDIR)
+	@printf 'bundle RCDATA "bundle.dat"\n' > $@
+
+$(WINDIR)/bundle.o: $(WINDIR)/bundle.rc $(WINDIR)/bundle.dat
+	cd $(WINDIR) && $(WINRES) -i bundle.rc -O coff -o bundle.o
+
+$(WINEXE): game.c $(WINDIR)/bundle.o | $(WINDIR)
+	$(WINCC) $(WINCFLAGS) game.c $(WINDIR)/bundle.o $(WINLDFLAGS) -o $(WINEXE)
 
 $(WINDIR):
 	mkdir -p $(WINDIR)
-
-$(WINDIR)/sprites: sprites | $(WINDIR)
-	cp -r sprites $(WINDIR)/
-
-$(WINDIR)/sounds: sounds | $(WINDIR)
-	cp -r sounds $(WINDIR)/
 
 clean:
 	rm -rf $(APP) $(WINDIR) /tmp/ironfist.png /tmp/ironfist_icon.iconset
