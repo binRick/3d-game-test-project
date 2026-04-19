@@ -246,6 +246,37 @@ static bool      g_chefDeathOK = false;
 static Texture2D g_chefPainTex;
 static bool      g_chefPainOK = false;
 
+// Heavy chef (type 1) — TORM* sprites. Same layout as type-0 chef:
+//   A-D walk, F pain, G-J death.
+static Texture2D g_tormTex[4];
+static bool      g_tormOK = false;
+static Texture2D g_tormPainTex;
+static bool      g_tormPainOK = false;
+static Texture2D g_tormDeathTex[4];
+static bool      g_tormDeathOK = false;
+
+// Fast chef (type 2) — SCH2* sprites. Same A-D walk / F pain / G-J death layout.
+static Texture2D g_schTex[4];
+static bool      g_schOK = false;
+static Texture2D g_schPainTex;
+static bool      g_schPainOK = false;
+static Texture2D g_schDeathTex[4];
+static bool      g_schDeathOK = false;
+
+// Boss (enemy type 3) — AODE* sprites. Walk A-D, pain F, death G/H/L/M/N.
+static Texture2D g_bossTex[4];
+static bool      g_bossOK = false;
+static Texture2D g_bossPainTex;
+static bool      g_bossPainOK = false;
+static Texture2D g_bossDeathTex[5];
+static bool      g_bossDeathOK = false;
+#define BOSS_DEATH_FRAME_TIME 0.22f
+
+// Boss test mode — press B on menu. Spawns only bosses, respawns on kill
+// so you can iterate on boss behaviour without clearing chef waves.
+static bool      g_bossMode = false;
+static bool      g_bossInterlude = false;  // true between waves while a boss is up
+
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
 static Sound    g_sHurt, g_sPickup, g_sEmpty, g_sDie;
 // Additional chef death variants; g_sDie is variant 0, g_sDieAlt[i] are variants 1..N
@@ -299,16 +330,16 @@ static void LoadMusicVol(void) {
 static bool     g_needMouseRelease = false;  // mouse must be released once before firing
 static bool     g_lastHitHead = false;  // set while processing a headshot shot; KillEnemy reads it
 
-// enemy stat tables
-static const float ET_HP[]    = {65,145,42};
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f};  // chef rush speed (grunt, heavy, fast)
-static const float ET_DMG[]   = {10,24,8};
-static const float ET_RATE[]  = {1.5f,2.1f,1.0f};
-static const float ET_AR[]    = {24,20,30};
-static const float ET_ATK[]   = {3.6f,3.1f,4.2f};
-static const int   ET_SC[]    = {100,300,160};
-static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255}};
-static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255}};
+// enemy stat tables — type 0/1/2 chefs, type 3 = BOSS
+static const float ET_HP[]    = {65,   145,  42,   800 };
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f};  // boss rushes you
+static const float ET_DMG[]   = {10,   24,   8,    40  };
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f};
+static const float ET_AR[]    = {24,   20,   30,   40  };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f};  // boss gets in your face
+static const int   ET_SC[]    = {100,  300,  160,  2500};
+static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255}};
+static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255}};
 
 // weapon tables
 // Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3)
@@ -613,7 +644,7 @@ static float PlatGroundAt(float x, float z, float currentY) {
 // Per-axis move for enemies — blocks against walls AND tall platforms, matching
 // the player's movement rules. Enemies can still step onto platforms within STEP_H.
 static void EnemyMove(Enemy *e, float dx, float dz) {
-    const float r = 0.42f;
+    const float r = (e->type == 3) ? 0.85f : 0.42f;  // boss takes more space
     float nx = e->pos.x + dx;
     if (!IsWall(nx+(dx>=0?r:-r), e->pos.z) &&
         !IsWall(nx+(dx>=0?r:-r), e->pos.z+r) &&
@@ -731,7 +762,7 @@ static void Explode(Vector3 p) {
     for (int i=0;i<28;i++) {
         Vector3 v={(float)rand()/RAND_MAX*16-8,(float)rand()/RAND_MAX*9+1,(float)rand()/RAND_MAX*16-8};
         Color c=i<14?(Color){255,90,0,255}:(Color){255,210,0,255};
-        SpawnPart(p,v,c,0.55f+(float)rand()/RAND_MAX*0.5f,0.14f+(float)rand()/RAND_MAX*0.16f,true);
+        SpawnPart(p,v,c,0.55f+(float)rand()/RAND_MAX*0.5f,0.06f+(float)rand()/RAND_MAX*0.08f,true);
     }
     g_p.shake=fmaxf(g_p.shake,0.55f);
     // muzzle flash light slot 6 repurposed for explosion
@@ -745,14 +776,14 @@ static void UpdParts(float dt) {
         if (p->grav) p->vel.y+=GRAV*dt;
         p->pos=Vector3Add(p->pos,Vector3Scale(p->vel,dt));
         if (p->pos.y<0.05f && p->grav) {
-            // Stick to the floor once the droplet slows down — becomes a lasting stain
+            // Only small droplets (blood) become floor decals. Big fire/smoke
+            // particles from explosions just bounce and fade normally.
             float sp2 = p->vel.x*p->vel.x + p->vel.y*p->vel.y + p->vel.z*p->vel.z;
-            if (sp2 < 3.5f) {
+            if (sp2 < 3.5f && p->size < 0.08f) {
                 p->pos.y = 0.005f;
                 p->vel = (Vector3){0, 0, 0};
                 p->grav = false;
                 p->stuck = true;
-                // Long persistent stain with its own lifetime
                 p->life    = 10.f + (float)rand()/RAND_MAX * 6.f;
                 p->maxLife = p->life;
             } else {
@@ -768,8 +799,8 @@ static void DrawParts(void) {
         float t=p->life/p->maxLife;
         Color c=p->col; c.a=(unsigned char)(255*t);
         if (p->stuck) {
-            // Flat splat on the floor — wider than it is tall
-            float s = p->size * 3.5f;
+            // Flat splat on the floor — small droplet, wider than it is tall
+            float s = p->size * 1.8f;
             // Fade over final 25% of life
             float fade = (t < 0.25f) ? (t / 0.25f) : 1.f;
             c.a = (unsigned char)(255 * fade);
@@ -946,6 +977,55 @@ static void KillEnemy(int i) {
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[e->type],e->score*g_wave);
     Msg(buf);
     if (Alive()==0) {
+        // Test mode: respawn a boss forever so we can iterate on combat
+        if (g_bossMode) {
+            Msg("BOSS DOWN - RESPAWN");
+            Enemy *ne = &g_e[g_ec++];
+            *ne = (Enemy){0};
+            float bx = 20.f*CELL/2.f + 4.f*CELL;
+            float bz = 10.f*CELL/2.f + 4.f*CELL;
+            ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
+            ne->type = 3; ne->state = ES_PATROL;
+            ne->hp = ne->maxHp = ET_HP[3];
+            ne->speed = ET_SPD[3]; ne->dmg = ET_DMG[3];
+            ne->rate = ne->cd = ET_RATE[3];
+            ne->alertR = ET_AR[3]; ne->atkR = ET_ATK[3];
+            ne->score = ET_SC[3]; ne->active = true;
+            float ang = (float)rand()/RAND_MAX * 6.28f;
+            ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
+            ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
+            return;
+        }
+
+        // Normal flow:
+        //   1. Chefs clear → spawn a boss (interlude begins)
+        //   2. Boss dies  → wave++, spawn next wave of chefs
+        if (!g_bossInterlude) {
+            g_bossInterlude = true;
+            if (g_sNextWaveOK) { SetSoundVolume(g_sNextWave, 1.5f); PlaySound(g_sNextWave); }
+            char bmsg[64]; snprintf(bmsg, 64, "-- BOSS FIGHT --");
+            Msg(bmsg);
+            Enemy *ne = &g_e[g_ec++];
+            *ne = (Enemy){0};
+            float bx = 20.f*CELL/2.f + 4.f*CELL;
+            float bz = 10.f*CELL/2.f + 4.f*CELL;
+            ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
+            ne->type = 3; ne->state = ES_PATROL;
+            // Boss scales with wave like chefs do
+            float hm = 1.f + g_wave*0.12f;
+            ne->hp = ne->maxHp = ET_HP[3] * hm;
+            ne->speed = ET_SPD[3] + g_wave*0.10f;
+            ne->dmg = ET_DMG[3];
+            ne->rate = ne->cd = ET_RATE[3];
+            ne->alertR = ET_AR[3]; ne->atkR = ET_ATK[3];
+            ne->score = ET_SC[3]; ne->active = true;
+            float ang = (float)rand()/RAND_MAX * 6.28f;
+            ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
+            ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
+            return;
+        }
+        // Boss just died — bump wave and kick off the next chef round
+        g_bossInterlude = false;
         g_wave++;
         if (g_sNextWaveOK) {
             SetSoundVolume(g_sNextWave, 1.5f);
@@ -965,7 +1045,8 @@ static void KillEnemy(int i) {
                 int type=g_wave<2?0:rng<0.5f?0:rng<0.78f?2:1;
                 Enemy *ne=&g_e[g_ec++];
                 *ne=(Enemy){0};
-                ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top ne->type=type;
+                ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top
+                ne->type=type;
                 ne->state=ES_PATROL;
                 float hm=1.f+g_wave*0.12f;
                 ne->hp=ne->maxHp=ET_HP[type]*hm;
@@ -1094,27 +1175,99 @@ static void DrawEnemies(Camera3D cam) {
         Enemy *e = &g_e[order[k]];
         float bh=(e->type==1)?1.1f:(e->type==2)?0.72f:0.9f;
 
+        // BOSS (type 3) — draws via ATR3 sprites, 4× the size of a chef
+        if (e->type == 3 && g_bossOK) {
+            float spriteH = 3.0f;  // smaller than before so HP bar sits near the head
+            Vector3 pos = {e->pos.x, spriteH*0.5f, e->pos.z};
+            Texture2D tex;
+            bool isCorpse = e->dying && g_bossDeathOK;
+            if (isCorpse) {
+                int df = (int)(e->deathT / BOSS_DEATH_FRAME_TIME);
+                if (df > 3) df = 3;               // 4 death frames (G/H/I/J)
+                tex = g_bossDeathTex[df];
+            } else if (e->flashT > 0.f && g_bossPainOK) {
+                tex = g_bossPainTex;
+            } else {
+                int frame = (int)(e->legT * 0.5f) % 4;
+                if (frame < 0) frame += 4;
+                tex = g_bossTex[frame];
+            }
+            // Boss writes depth for his opaque pixels so pickups/enemies behind
+            // him don't bleed through. Flush the batch around the toggle.
+            if (!isCorpse) { rlDrawRenderBatchActive(); rlEnableDepthMask(); }
+            DrawBillboard(cam, tex, pos, spriteH, WHITE);
+            if (!isCorpse) { rlDrawRenderBatchActive(); rlDisableDepthMask(); }
+            // HP bar floats just above the head
+            if (!e->dying && e->hp < e->maxHp) {
+                float hp = e->hp / e->maxHp;
+                float bary = spriteH + 0.35f;
+                Vector3 HF = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+                Vector3 HR = Vector3Normalize(Vector3CrossProduct(HF, cam.up));
+                Vector3 HU = Vector3CrossProduct(HR, HF);
+                const float W = 2.4f, H = 0.20f;
+                Vector3 center = {e->pos.x, bary, e->pos.z};
+                Vector3 bgTL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU, H*0.5f)));
+                Vector3 bgTR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU, H*0.5f)));
+                Vector3 bgBR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU,-H*0.5f)));
+                Vector3 bgBL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU,-H*0.5f)));
+                rlBegin(RL_TRIANGLES);
+                rlColor4ub(25,25,25,250);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z); rlVertex3f(bgTR.x,bgTR.y,bgTR.z);
+                Vector3 fTR = Vector3Add(bgTL, Vector3Scale(HR, W*hp));
+                Vector3 fBR = Vector3Add(bgBL, Vector3Scale(HR, W*hp));
+                rlColor4ub(220,40,40,255);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(fBR.x,fBR.y,fBR.z);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(fBR.x,fBR.y,fBR.z); rlVertex3f(fTR.x,fTR.y,fTR.z);
+                rlEnd();
+            }
+            continue;  // skip chef/fallback drawing for this enemy
+        }
+
         if (g_chefOK) {
             // Size tuned per enemy type
             float spriteH = (e->type==1) ? 2.3f : (e->type==2) ? 1.7f : 2.0f;
             Vector3 pos = {e->pos.x, spriteH*0.5f, e->pos.z};
+
+            // Pick the sprite set for this chef type.
+            // Defaults: type 0 = AFAB chef. type 1 = TORM. type 2 = SCH2.
+            // Any set that fails to load falls back to the chef set.
+            Texture2D *walkTex   = g_chefTex;
+            Texture2D *deathTex  = g_chefDeathTex;
+            Texture2D painTex    = g_chefPainTex;
+            bool  walkOK = g_chefOK;
+            bool  deathOK = g_chefDeathOK;
+            bool  painOK = g_chefPainOK;
+            if (e->type == 1 && g_tormOK) {
+                walkTex  = g_tormTex;
+                deathTex = g_tormDeathTex;
+                painTex  = g_tormPainTex;
+                walkOK   = g_tormOK;
+                deathOK  = g_tormDeathOK;
+                painOK   = g_tormPainOK;
+            } else if (e->type == 2 && g_schOK) {
+                walkTex  = g_schTex;
+                deathTex = g_schDeathTex;
+                painTex  = g_schPainTex;
+                walkOK   = g_schOK;
+                deathOK  = g_schDeathOK;
+                painOK   = g_schPainOK;
+            }
+            (void)walkOK;
+
             Texture2D tex;
-            bool isCorpse = e->dying && g_chefDeathOK;
+            bool isCorpse = e->dying && deathOK;
             if (isCorpse) {
-                // Death animation: 4 frames at CHEF_DEATH_FRAME_TIME each, freeze on last
                 int df = (int)(e->deathT / CHEF_DEATH_FRAME_TIME);
                 if (df > 3) df = 3;
-                tex = g_chefDeathTex[df];
-            } else if (e->flashT > 0.f && g_chefPainOK) {
-                // Pain frame while recently hit
-                tex = g_chefPainTex;
+                tex = deathTex[df];
+            } else if (e->flashT > 0.f && painOK) {
+                tex = painTex;
             } else {
-                // Walking cycle driven by legT
                 int frame = (int)(e->legT * 0.6f) % 4;
                 if (frame < 0) frame += 4;
-                tex = g_chefTex[frame];
+                tex = walkTex[frame];
             }
-            // Depth mask is globally disabled for the entire enemy pass (sorted back-to-front)
             DrawBillboard(cam, tex, pos, spriteH, WHITE);
             (void)isCorpse;
         } else {
@@ -1210,8 +1363,12 @@ static void UpdBullets(float dt) {
             Enemy *e=&g_e[j]; if (!e->active || e->dying) continue;
             float _ex=b->pos.x-e->pos.x, _ez=b->pos.z-e->pos.z;
             float _xzdist=sqrtf(_ex*_ex+_ez*_ez);
-            float _ydist=fabsf(b->pos.y-1.0f); // enemy mid-body ~y=1
-            if ((_xzdist<0.9f && _ydist<1.2f) || Vector3Distance(b->pos,(Vector3){e->pos.x,1.f,e->pos.z})<0.9f) {
+            // Per-type hit volume — boss is much bigger than a chef
+            float _bodyY   = (e->type==3) ? 2.0f : 1.0f;
+            float _bodyR   = (e->type==3) ? 1.5f : 0.9f;
+            float _bodyH   = (e->type==3) ? 2.3f : 1.2f;
+            float _ydist=fabsf(b->pos.y-_bodyY);
+            if ((_xzdist<_bodyR && _ydist<_bodyH) || Vector3Distance(b->pos,(Vector3){e->pos.x,_bodyY,e->pos.z})<_bodyR) {
                 if (b->rocket) {
                     Explode(b->pos);
                     g_killsThisShot = 0;
@@ -1219,7 +1376,7 @@ static void UpdBullets(float dt) {
                     if (g_killsThisShot>=2 && g_sMultiOK){ SetSoundVolume(g_sMulti,8.0f); PlaySound(g_sMulti); Msg("MULTI KILL!"); }
                     float pd=Vector3Distance(b->pos,g_p.pos);
                     if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
-                } else { Blood(b->pos,6); DmgEnemy(j,b->dmg); }
+                } else { Blood(b->pos, e->type==3 ? 40 : 6); DmgEnemy(j,b->dmg); }
                 b->active=false; break;
             }
         }
@@ -1263,19 +1420,29 @@ static void Shoot(void) {
         float best=1e9f; int bi=-1; bool headshot=false;
         for (int j=0;j<g_ec;j++){
             if (!g_e[j].active || g_e[j].dying) continue;
-            float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
-            // check head sphere first (more damage)
-            Vector3 hc={g_e[j].pos.x, bh+0.67f, g_e[j].pos.z};
-            float ht=RSphere(eyePos,rd,hc,0.26f);
+            // Per-type head position + hitbox sizes (boss is much bigger)
+            float headY, headR, bodyY, bodyR;
+            if (g_e[j].type == 3) {          // BOSS
+                headY = 2.5f; headR = 0.45f;
+                bodyY = 1.4f; bodyR = 0.95f;
+            } else {
+                float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
+                headY = bh + 0.67f; headR = 0.26f;
+                bodyY = 0.85f;      bodyR = 0.68f;
+            }
+            Vector3 hc={g_e[j].pos.x, headY, g_e[j].pos.z};
+            float ht=RSphere(eyePos,rd,hc,headR);
             if (ht>0&&ht<best){best=ht;bi=j;headshot=true;}
-            // then body
-            Vector3 bc={g_e[j].pos.x,0.85f,g_e[j].pos.z};
-            float bt=RSphere(eyePos,rd,bc,0.68f);
+            Vector3 bc={g_e[j].pos.x, bodyY, g_e[j].pos.z};
+            float bt=RSphere(eyePos,rd,bc,bodyR);
             if (bt>0&&bt<best){best=bt;bi=j;headshot=false;}
         }
         if (bi>=0){
             Vector3 hp=Vector3Add(eyePos,Vector3Scale(rd,best));
-            Blood(hp, headshot ? 25 : 14);  // spray from impact point
+            // Boss bleeds 4x as much as a chef per pellet — it's a big target
+            int bloodCount = headshot ? 25 : 14;
+            if (g_e[bi].type == 3) bloodCount *= 4;
+            Blood(hp, bloodCount);
             float dmg=(float)WD[w]*(headshot?2.5f:1.0f);
             // Shotgun damage falloff curve:
             //   0m  → 2.5x (point-blank)
@@ -1640,13 +1807,13 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     }
 
     // Push player out of any live enemies so you can't walk through them
-    const float ENEMY_RADIUS = 0.45f;
     for (int i = 0; i < g_ec; i++) {
         Enemy *e = &g_e[i];
         if (!e->active || e->dying) continue;
         float edx = g_p.pos.x - e->pos.x;
         float edz = g_p.pos.z - e->pos.z;
         float d2 = edx*edx + edz*edz;
+        float ENEMY_RADIUS = (e->type == 3) ? 0.95f : 0.45f;  // boss is bigger
         float minD = PRAD + ENEMY_RADIUS;
         if (d2 > 0.0001f && d2 < minD*minD) {
             float d = sqrtf(d2);
@@ -1725,21 +1892,48 @@ static void InitGame(void) {
     memset(g_e,0,sizeof(g_e)); memset(g_b,0,sizeof(g_b));
     memset(g_pt,0,sizeof(g_pt)); memset(g_pk,0,sizeof(g_pk));
     SeedPicks();
-    // spawn wave 1
-    for (int k=0;k<16&&g_ec<MAX_ENEMIES;k++) {
-        for (int tries=0;tries<120;tries++) {
-            int r=1+rand()%(ROWS-2), c=1+rand()%(COLS-2);
-            if (MAP[r][c]) continue;
-            float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
-            if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
-            Enemy *ne=&g_e[g_ec++]; *ne=(Enemy){0};
-            ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top ne->type=0; ne->state=ES_PATROL;
-            ne->hp=ne->maxHp=ET_HP[0]; ne->speed=ET_SPD[0];
-            ne->dmg=ET_DMG[0]; ne->rate=ne->cd=ET_RATE[0];
-            ne->alertR=ET_AR[0]; ne->atkR=ET_ATK[0]; ne->score=ET_SC[0]; ne->active=true;
-            float ang=(float)rand()/RAND_MAX*6.28f; ne->pd=(Vector3){sinf(ang),0,cosf(ang)};
-            ne->stateT=1.f+(float)rand()/RAND_MAX*2.f;
-            break;
+
+    if (g_bossMode) {
+        // BOSS TEST: spawn one boss straight away, no chefs.
+        Enemy *ne = &g_e[g_ec++];
+        *ne = (Enemy){0};
+        float bx = 20.f*CELL/2.f + 4.f*CELL;   // far-centre position
+        float bz = 10.f*CELL/2.f + 4.f*CELL;
+        ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
+        ne->type = 3;                           // boss
+        ne->state = ES_PATROL;
+        ne->hp = ne->maxHp = ET_HP[3];
+        ne->speed = ET_SPD[3];
+        ne->dmg = ET_DMG[3];
+        ne->rate = ne->cd = ET_RATE[3];
+        ne->alertR = ET_AR[3];
+        ne->atkR = ET_ATK[3];
+        ne->score = ET_SC[3];
+        ne->active = true;
+        float ang = (float)rand()/RAND_MAX * 6.28f;
+        ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
+        ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
+    } else {
+        // Normal mode: spawn wave 1 (16 chefs)
+        for (int k=0;k<16&&g_ec<MAX_ENEMIES;k++) {
+            for (int tries=0;tries<120;tries++) {
+                int r=1+rand()%(ROWS-2), c=1+rand()%(COLS-2);
+                if (MAP[r][c]) continue;
+                float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
+                if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
+                // Wave 1 mix: 70% regular chef, 20% fast, 10% heavy
+                float rng = (float)rand()/RAND_MAX;
+                int type = rng < 0.70f ? 0 : rng < 0.90f ? 2 : 1;
+                Enemy *ne=&g_e[g_ec++]; *ne=(Enemy){0};
+                ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
+                ne->type=type; ne->state=ES_PATROL;
+                ne->hp=ne->maxHp=ET_HP[type]; ne->speed=ET_SPD[type];
+                ne->dmg=ET_DMG[type]; ne->rate=ne->cd=ET_RATE[type];
+                ne->alertR=ET_AR[type]; ne->atkR=ET_ATK[type]; ne->score=ET_SC[type]; ne->active=true;
+                float ang=(float)rand()/RAND_MAX*6.28f; ne->pd=(Vector3){sinf(ang),0,cosf(ang)};
+                ne->stateT=1.f+(float)rand()/RAND_MAX*2.f;
+                break;
+            }
         }
     }
     g_gs=GS_PLAY;
@@ -1748,6 +1942,7 @@ static void InitGame(void) {
     // Block firing until mouse released — stops menu-click from triggering a shot
     g_needMouseRelease = true;
     g_hadVisibleEnemy = false;  // reset so the first spotted enemy triggers the stinger
+    g_bossInterlude = false;    // not in a boss fight yet
     strcpy(g_msg,""); g_msgT=0;
 }
 
@@ -1994,13 +2189,119 @@ int main(void) {
                 g_chefPainOK = true;
             }
         }
+
+        // HEAVY CHEF (type 1) — TORM* WolfenDoom boss sprites.
+        {
+            char fp[700];
+            const char *wnames[4] = {"TORMA0.png","TORMB0.png","TORMC0.png","TORMD0.png"};
+            g_tormOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, wnames[i]);
+                g_tormTex[i] = LoadTexture(fp);
+                if (g_tormTex[i].id == 0) { g_tormOK = false; continue; }
+                SetTextureFilter(g_tormTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_tormTex[i], TEXTURE_WRAP_CLAMP);
+            }
+            snprintf(fp, sizeof(fp), "%smonsters/TORMF0.png", appBase);
+            g_tormPainTex = LoadTexture(fp);
+            if (g_tormPainTex.id) {
+                SetTextureFilter(g_tormPainTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_tormPainTex, TEXTURE_WRAP_CLAMP);
+                g_tormPainOK = true;
+            }
+            const char *dnames[4] = {"TORMG0.png","TORMH0.png","TORMI0.png","TORMJ0.png"};
+            g_tormDeathOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, dnames[i]);
+                g_tormDeathTex[i] = LoadTexture(fp);
+                if (g_tormDeathTex[i].id == 0) { g_tormDeathOK = false; continue; }
+                SetTextureFilter(g_tormDeathTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_tormDeathTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
+
+        // FAST CHEF (type 2) — SCH2* WolfenDoom boss sprites.
+        {
+            char fp[700];
+            const char *wnames[4] = {"SCH2A0.png","SCH2B0.png","SCH2C0.png","SCH2D0.png"};
+            g_schOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, wnames[i]);
+                g_schTex[i] = LoadTexture(fp);
+                if (g_schTex[i].id == 0) { g_schOK = false; continue; }
+                SetTextureFilter(g_schTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_schTex[i], TEXTURE_WRAP_CLAMP);
+            }
+            snprintf(fp, sizeof(fp), "%smonsters/SCH2F0.png", appBase);
+            g_schPainTex = LoadTexture(fp);
+            if (g_schPainTex.id) {
+                SetTextureFilter(g_schPainTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_schPainTex, TEXTURE_WRAP_CLAMP);
+                g_schPainOK = true;
+            }
+            const char *sdnames[4] = {"SCH2G0.png","SCH2H0.png","SCH2I0.png","SCH2J0.png"};
+            g_schDeathOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, sdnames[i]);
+                g_schDeathTex[i] = LoadTexture(fp);
+                if (g_schDeathTex[i].id == 0) { g_schDeathOK = false; continue; }
+                SetTextureFilter(g_schDeathTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_schDeathTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
+
+        // BOSS — BTCN monster (WolfenDoom). A-D walk, F pain, G/H/I/J death.
+        {
+            char fp[700];
+            const char *wnames[4] = {"BTCNA0.png","BTCNB0.png","BTCNC0.png","BTCND0.png"};
+            g_bossOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, wnames[i]);
+                g_bossTex[i] = LoadTexture(fp);
+                if (g_bossTex[i].id == 0) { g_bossOK = false; continue; }
+                SetTextureFilter(g_bossTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_bossTex[i], TEXTURE_WRAP_CLAMP);
+            }
+            // Pain frame
+            snprintf(fp, sizeof(fp), "%smonsters/BTCNF0.png", appBase);
+            g_bossPainTex = LoadTexture(fp);
+            if (g_bossPainTex.id) {
+                SetTextureFilter(g_bossPainTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_bossPainTex, TEXTURE_WRAP_CLAMP);
+                g_bossPainOK = true;
+            }
+            // Death frames: G → H → I → J (freeze on J)
+            const char *dnames[4] = {"BTCNG0.png","BTCNH0.png","BTCNI0.png","BTCNJ0.png"};
+            g_bossDeathOK = true;
+            for (int i = 0; i < 4; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, dnames[i]);
+                g_bossDeathTex[i] = LoadTexture(fp);
+                if (g_bossDeathTex[i].id == 0) { g_bossDeathOK = false; continue; }
+                SetTextureFilter(g_bossDeathTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_bossDeathTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
     }
 
     // Set ambient
     float amb[4]={0.40f,0.32f,0.46f,1.f};
     SetShaderValue(g_shader,u_ambient,amb,SHADER_UNIFORM_VEC4);
 
-    Texture2D tBrick = MkBrick();
+    // Try to load the bundled BRIK texture first; fall back to procedural.
+    Texture2D tBrick;
+    {
+        char fp[700];
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sprites/textures/BRIK_B01.png",
+                 GetApplicationDirectory());
+        tBrick = LoadTexture(fp);
+        if (tBrick.id == 0) {
+            tBrick = MkBrick();
+        } else {
+            GenTextureMipmaps(&tBrick);
+            SetTextureFilter(tBrick, TEXTURE_FILTER_TRILINEAR);
+            SetTextureWrap  (tBrick, TEXTURE_WRAP_REPEAT);
+        }
+    }
     Texture2D tFloor = MkFloor();
     Texture2D tCeil  = MkCeil();
 
@@ -2041,8 +2342,14 @@ int main(void) {
         }
 
         if (g_gs==GS_MENU) {
-            if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                g_bossMode = false;
                 InitGame();
+            }
+            if (IsKeyPressed(KEY_B)) {
+                g_bossMode = true;
+                InitGame();
+            }
         } else if (g_gs==GS_PLAY) {
             if (IsKeyPressed(KEY_ESCAPE)){g_gs=GS_MENU;}
             UpdPlayer(dt,&cam);
@@ -2137,6 +2444,8 @@ int main(void) {
             const char *st="[ ENTER  /  CLICK  TO  START ]";
             if (sinf(GetTime()*3.f)>0)
                 DrawText(st,sw2/2-MeasureText(st,22)/2,sh2*3/4,22,RED);
+            const char *bt="[ B FOR BOSS TEST ]";
+            DrawText(bt,sw2/2-MeasureText(bt,16)/2,sh2*3/4+36,16,(Color){200,120,120,255});
             DrawFPS(10,10);
         } else if (g_gs==GS_DEAD) {
             int sw2=GetScreenWidth(),sh2=GetScreenHeight();
@@ -2167,6 +2476,15 @@ int main(void) {
     for (int i=0;i<4;i++) if (g_chefTex[i].id)      UnloadTexture(g_chefTex[i]);
     for (int i=0;i<4;i++) if (g_chefDeathTex[i].id) UnloadTexture(g_chefDeathTex[i]);
     if (g_chefPainTex.id) UnloadTexture(g_chefPainTex);
+    for (int i=0;i<4;i++) if (g_tormTex[i].id)      UnloadTexture(g_tormTex[i]);
+    for (int i=0;i<4;i++) if (g_tormDeathTex[i].id) UnloadTexture(g_tormDeathTex[i]);
+    if (g_tormPainTex.id) UnloadTexture(g_tormPainTex);
+    for (int i=0;i<4;i++) if (g_schTex[i].id)       UnloadTexture(g_schTex[i]);
+    for (int i=0;i<4;i++) if (g_schDeathTex[i].id)  UnloadTexture(g_schDeathTex[i]);
+    if (g_schPainTex.id)  UnloadTexture(g_schPainTex);
+    for (int i=0;i<4;i++) if (g_bossTex[i].id)      UnloadTexture(g_bossTex[i]);
+    for (int i=0;i<5;i++) if (g_bossDeathTex[i].id) UnloadTexture(g_bossDeathTex[i]);
+    if (g_bossPainTex.id) UnloadTexture(g_bossPainTex);
     UnloadShader(g_shader);
     UnloadSound(g_sPistol); UnloadSound(g_sShotgun); UnloadSound(g_sRocket);
     UnloadSound(g_sExplode); UnloadSound(g_sHurt); UnloadSound(g_sPickup);
