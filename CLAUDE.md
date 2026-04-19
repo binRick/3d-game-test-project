@@ -18,6 +18,64 @@ user wants to know they're testing the latest code every time.
 
 Requires `brew install raylib` on the host.
 
+## Debug log (pathing / AI bug reports)
+
+The game accepts a `--debug` command-line flag. When set, it opens
+`/tmp/ironfist-debug.log` for writing and dumps a 5 Hz snapshot of the
+player + every active enemy on each tick. **The log is NOT written by
+default — debug mode is off unless `--debug` is passed.**
+
+- `run.sh` passes `--args --debug` so `./run.sh` launches with logging on.
+- `./debug.sh` runs `tail -F` on the log — open it in a second Terminal
+  tab while playing.
+
+Each tick writes one block like:
+
+```
+[t=  23.40s] wave=2 bossMode=0 bossFight=0  player: pos=(55.12, 1.35, 40.00) yaw=1.47rad (84deg) hp=85/100 weapon=1
+  #00 CHEF  alive pos=( 50.12,  0.00,  38.20) to-player=(+0.98, +0.21) dist= 5.10 state=CHASE  hp=  45/  65 pd=(+0.71, +0.71) flashT=0.00 bleedT=0.18
+  #01 BOSS  alive pos=(114.00,  0.00,   6.00) to-player=(-0.88, +0.48) dist=66.50 state=PATROL hp= 800/ 800 pd=(+0.20, +0.98) flashT=0.00 bleedT=0.00
+  (alive=2)
+```
+
+**Field meanings** (important — user will paste chunks of this log when
+describing bugs, and you should read them as authoritative game state):
+
+- `t=Xs` — seconds since window init (raylib `GetTime()`)
+- `wave=N` — current wave number
+- `bossMode=0|1` — true when the player started in boss-test-mode (press
+  **B** on the menu). In this mode there are no chef waves, just a lone
+  boss that respawns on death.
+- `bossFight=0|1` — true only during the between-waves boss interlude of a
+  normal run. **Always 0 in boss-test-mode** even though a boss is live —
+  check `bossMode` for that case. At least one of the two is true whenever
+  a boss is alive.
+- `player pos=(x, y, z)` — world coords. y=0 is the floor, y=1.35 means
+  standing on a platform, etc.
+- `yaw` — in radians; `(Ndeg)` is the degree form. 0 = +z direction.
+- `weapon` — 0=shotgun, 1=MG, 2=launcher
+- Per-enemy row:
+  - `#NN` — slot index in `g_e[]`
+  - `CHEF / HEAVY / FAST / BOSS` — `e->type` 0/1/2/3
+  - `alive / DYING` — `dying` flag (corpse vs live AI)
+  - `pos=(x, y, z)` — enemy world coords; `y` being >0 means they're on a
+    platform / step
+  - `to-player=(dx, dz)` — unit vector from enemy toward player, `dist` in
+    metres. Useful for spotting direction vs actual movement bugs.
+  - `state=PATROL/CHASE/ATTACK` — AI state
+  - `hp=A/B` — current / max HP
+  - `pd=(x, z)` — patrol direction (used in PATROL state). In CHASE state
+    `pd` is stale; rely on `to-player` instead.
+  - `flashT` — seconds remaining on pain-frame flash (set to 0.12 on every
+    damage tick)
+  - `bleedT` — countdown to next blood drip (only counts down while
+    `hp < maxHp`)
+
+When the user reports an AI bug and pastes a log excerpt, use the coords
+and state to localise the bug precisely — e.g. a chef stuck at the same
+pos across several ticks while `state=CHASE` and `to-player` points into
+a wall tells you exactly where pathing is failing.
+
 ## Asset layout — IMPORTANT
 
 All assets live under typed subdirectories at the project root. The Makefile

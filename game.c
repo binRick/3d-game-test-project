@@ -787,7 +787,10 @@ static float PlatGroundAtR(float x, float z, float currentY, float rad) {
 // Per-axis move for enemies — blocks against walls AND tall platforms, matching
 // the player's movement rules. Enemies can still step onto platforms within STEP_H.
 static void EnemyMove(Enemy *e, float dx, float dz) {
-    const float r = (e->type == 3) ? 0.85f : 0.42f;  // boss takes more space
+    // Boss is a ~3m-wide billboard, so give him a collision radius that
+    // roughly matches his sprite footprint — otherwise his body stops 0.85m
+    // from a wall but the sprite keeps extending 0.65m INTO the wall.
+    const float r = (e->type == 3) ? 1.2f : 0.42f;
     // Compare penetration instead of a hard block — an enemy already inside a
     // platform's margin (e.g. just fell off its edge) can still move AWAY from
     // it, they just can't push FURTHER in. No free re-entry either.
@@ -1093,6 +1096,63 @@ static void PickBossSpawn(float *bx, float *bz) {
     *bz = corners[i].row * CELL + CELL * 0.5f;
 }
 
+// ── DEBUG LOG ────────────────────────────────────────────────────────────────
+// Overwrites /tmp/ironfist-debug.log at 5 Hz with the player + enemy snapshot.
+// Tail it in another terminal via debug.sh when you hit a pathing weirdness
+// and want to describe it precisely. Format is append-by-frame so scrollback
+// shows the run-up to whatever you're investigating.
+#define DEBUG_LOG_PATH "/tmp/ironfist-debug.log"
+static FILE *g_dbgLog = NULL;
+static double g_dbgLastT = 0.0;
+
+static const char *StateName(EnemyState s) {
+    return s==ES_PATROL ? "PATROL" : s==ES_CHASE ? "CHASE" : "ATTACK";
+}
+static const char *TypeName(int t) {
+    return t==0 ? "CHEF" : t==1 ? "HEAVY" : t==2 ? "FAST" : t==3 ? "BOSS" : "?";
+}
+
+static void DebugLogTick(void) {
+    if (!g_dbgLog) return;
+    double now = GetTime();
+    if (now - g_dbgLastT < 0.2) return;   // 5 Hz
+    g_dbgLastT = now;
+
+    fprintf(g_dbgLog,
+        "[t=%7.2fs] wave=%d bossMode=%d bossFight=%d  player: pos=(%.2f, %.2f, %.2f) "
+        "yaw=%.2frad (%.0fdeg) hp=%.0f/%.0f weapon=%d\n",
+        now, g_wave, g_bossMode ? 1 : 0, g_bossInterlude ? 1 : 0,
+        g_p.pos.x, g_p.pos.y, g_p.pos.z,
+        g_p.yaw, g_p.yaw * 180.0f / 3.14159265f,
+        g_p.hp, g_p.maxHp, g_p.weapon);
+
+    int alive = 0;
+    for (int i = 0; i < g_ec; i++) {
+        Enemy *e = &g_e[i];
+        if (!e->active) continue;
+        // Facing direction: toward player for chase, patrol dir otherwise
+        float dx = g_p.pos.x - e->pos.x, dz = g_p.pos.z - e->pos.z;
+        float d  = sqrtf(dx*dx + dz*dz);
+        float fxdir = 0.f, fzdir = 0.f;
+        if (d > 0.01f) { fxdir = dx/d; fzdir = dz/d; }
+        fprintf(g_dbgLog,
+            "  #%02d %-5s %-5s pos=(%6.2f, %5.2f, %6.2f) "
+            "to-player=(%+.2f, %+.2f) dist=%5.2f state=%-6s "
+            "hp=%4.0f/%4.0f pd=(%+.2f, %+.2f) flashT=%.2f bleedT=%.2f\n",
+            i, TypeName(e->type),
+            e->dying ? "DYING" : "alive",
+            e->pos.x, e->pos.y, e->pos.z,
+            fxdir, fzdir, d,
+            StateName(e->state),
+            e->hp, e->maxHp,
+            e->pd.x, e->pd.z,
+            e->flashT, e->bleedT);
+        if (!e->dying) alive++;
+    }
+    fprintf(g_dbgLog, "  (alive=%d)\n\n", alive);
+    fflush(g_dbgLog);
+}
+
 static void KillEnemy(int i) {
     Enemy *e=&g_e[i];
     // Keep the enemy active=true so the sprite keeps rendering — mark dying so
@@ -1246,26 +1306,38 @@ static void UpdEnemies(float dt) {
         Enemy *e=&g_e[i]; if (!e->active) continue;
         if (e->dying) { e->deathT += dt; continue; }  // corpse: run death timer, skip AI
         if (e->flashT>0) e->flashT-=dt;
-        // Wounded chefs leak blood as they move (drips behind them)
+        // Wounded enemies leak blood as they move (drips land behind them and
+        // become floor decals). Boss scales up: 4× the body, so spawn several
+        // drops per tick, larger, and wider Y spread so the trail is visible.
         if (e->hp < e->maxHp) {
             e->bleedT -= dt;
             if (e->bleedT <= 0.f) {
-                Vector3 dripPos = {
-                    e->pos.x + ((float)rand()/RAND_MAX - 0.5f) * 0.4f,
-                    0.5f + (float)rand()/RAND_MAX * 0.5f,
-                    e->pos.z + ((float)rand()/RAND_MAX - 0.5f) * 0.4f
-                };
-                Vector3 dripVel = {
-                    ((float)rand()/RAND_MAX - 0.5f) * 0.6f,
-                    0.2f,
-                    ((float)rand()/RAND_MAX - 0.5f) * 0.6f
-                };
-                unsigned char br = 95 + rand() % 55;
-                SpawnPart(dripPos, dripVel, (Color){br, 0, 0, 255},
-                          1.5f + (float)rand()/RAND_MAX, 0.045f, true);
-                // More frequent drips when more hurt
+                bool isBoss = (e->type == 3);
+                int   drops      = isBoss ? 4    : 1;
+                float bodyRad    = isBoss ? 1.4f : 0.4f;
+                float yBase      = isBoss ? 0.5f : 0.5f;
+                float ySpread    = isBoss ? 2.8f : 0.5f;
+                float dropSize   = isBoss ? 0.075f : 0.045f;
+                for (int d = 0; d < drops; d++) {
+                    Vector3 dripPos = {
+                        e->pos.x + ((float)rand()/RAND_MAX - 0.5f) * bodyRad,
+                        yBase + (float)rand()/RAND_MAX * ySpread,
+                        e->pos.z + ((float)rand()/RAND_MAX - 0.5f) * bodyRad
+                    };
+                    Vector3 dripVel = {
+                        ((float)rand()/RAND_MAX - 0.5f) * 0.6f,
+                        0.2f,
+                        ((float)rand()/RAND_MAX - 0.5f) * 0.6f
+                    };
+                    unsigned char br = 95 + rand() % 55;
+                    SpawnPart(dripPos, dripVel, (Color){br, 0, 0, 255},
+                              1.5f + (float)rand()/RAND_MAX, dropSize, true);
+                }
+                // More frequent drips when more hurt. Boss drips ~2× as often
+                // as a chef so the trail keeps up with his higher move speed.
                 float healthFrac = e->hp / e->maxHp;
-                e->bleedT = 0.08f + healthFrac * 0.25f;
+                float bleedMult  = isBoss ? 0.5f : 1.f;
+                e->bleedT = (0.08f + healthFrac * 0.25f) * bleedMult;
             }
         }
         float dx=g_p.pos.x-e->pos.x, dz=g_p.pos.z-e->pos.z;
@@ -1277,7 +1349,7 @@ static void UpdEnemies(float dt) {
             // Snap enemy Y to highest reachable platform under them (auto-step stairs).
             // Use body-radius margin so the chef steps up as soon as his footprint
             // overlaps a step, not only once his centre crosses the strict edge.
-            float er = (e->type == 3) ? 0.85f : 0.42f;
+            float er = (e->type == 3) ? 1.2f : 0.42f;
             e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, er);
             if (e->stateT<0){float a=(float)rand()/RAND_MAX*6.28f;e->pd=(Vector3){sinf(a),0,cosf(a)};e->stateT=1.f+(float)rand()/RAND_MAX*2.5f;}
         } else if (e->state==ES_CHASE) {
@@ -1307,9 +1379,18 @@ static void UpdEnemies(float dt) {
                 // Obstacle avoidance: if a too-tall platform is on the path to
                 // the player, skirt around it tangentially (always the same side
                 // per-enemy, so the enemy doesn't oscillate between left/right).
-                const float r = (e->type == 3) ? 0.85f : 0.42f;
+                // IMPORTANT: the probe direction is the RAW seek-to-player unit
+                // vector — NOT the separation-blended sx/sz. With several chefs
+                // clustered near a platform face, the separation vector can flip
+                // the blended direction away from the player frame-to-frame,
+                // making the skirt activate on some frames and not others. That
+                // caused the whole cluster to jitter in place. Separation still
+                // perturbs the *final* motion; it just doesn't get a vote on
+                // whether "is the platform blocking my path to the player".
+                const float r = (e->type == 3) ? 1.2f : 0.42f;
                 const float probe = 1.5f;
-                float px = e->pos.x + sx*probe, pz = e->pos.z + sz*probe;
+                float seekX = dx/dist, seekZ = dz/dist;
+                float px = e->pos.x + seekX*probe, pz = e->pos.z + seekZ*probe;
                 // Effective Y at the probe: if a walkable step sits there, the
                 // enemy will lift to its top when they walk onto it. Without
                 // this, a staircase gets flagged as a blocker because the next
@@ -1342,29 +1423,70 @@ static void UpdEnemies(float dt) {
                     if (el > 0.01f) { ex /= el; ez /= el; }
                     int bias = ((i * 2654435761u) & 1) ? 1 : -1;
                     float tx = -ez * bias, tz = ex * bias;
-                    // 85% tangent + 15% pull toward player so enemy still makes
-                    // progress around the obstacle instead of orbiting it.
-                    float bxv = tx*0.85f + (dx/dist)*0.15f;
-                    float bzv = tz*0.85f + (dz/dist)*0.15f;
-                    float bl = sqrtf(bxv*bxv + bzv*bzv);
-                    if (bl > 0.01f) { sx = bxv/bl; sz = bzv/bl; }
-                    // If the chosen skirt side is itself blocked (another
-                    // platform or wall nearby), flip to the other side.
+                    // Use PURE tangent — no pull-toward-player blend. With a
+                    // small player-pull the tangent was getting tipped into
+                    // the platform's margin on the adjacent side, triggering
+                    // a flip to the opposite tangent, which was ALSO blocked,
+                    // so chefs would jitter at the edge of a platform. Pure
+                    // tangent keeps constant distance from the plat centre;
+                    // as the enemy moves the radial rotates and the tangent
+                    // with it, so they naturally round the plat. The skirt
+                    // deactivates once their raw seek probe no longer hits it.
+                    sx = tx; sz = tz;
+                    // If even the pure tangent side is blocked by another
+                    // platform or a wall, flip to the opposite tangent so we
+                    // at least try the other way round.
                     float qx = e->pos.x + sx*probe, qz = e->pos.z + sz*probe;
                     if (PlatBlocks(qx, qz, e->pos.y, r + 0.1f) || IsWall(qx, qz)) {
-                        tx = -tx; tz = -tz;
-                        bxv = tx*0.85f + (dx/dist)*0.15f;
-                        bzv = tz*0.85f + (dz/dist)*0.15f;
-                        bl = sqrtf(bxv*bxv + bzv*bzv);
-                        if (bl > 0.01f) { sx = bxv/bl; sz = bzv/bl; }
+                        sx = -tx; sz = -tz;
+                    }
+                }
+                // Wall skirt — if the probe 1.5m ahead along the seek direction
+                // lands in a wall cell, rotate the seek progressively until we
+                // find a clear direction. This handles both cases:
+                //   1. enemy pressed against a wall (boss) — rotation finds a
+                //      tangent direction that doesn't require walking into it
+                //   2. wall sits between enemy and player — rotation discovers
+                //      a path around the wall's corner.
+                // Previously we pushed away from nearby walls, but that pointed
+                // an enemy AWAY from the player when a wall was directly between
+                // them (e.g. chef stuck south of a wall with player north).
+                {
+                    float wProbeX = e->pos.x + sx*probe;
+                    float wProbeZ = e->pos.z + sz*probe;
+                    if (IsWallCircle(wProbeX, wProbeZ, r + 0.1f)) {
+                        int bias = ((i * 2654435761u) & 1) ? 1 : -1;
+                        // Try rotating ±30°, ±60°, ±90°, ±120°; first clear direction wins
+                        float angs[] = { 0.52f*bias, -0.52f*bias,
+                                         1.05f*bias, -1.05f*bias,
+                                         1.57f*bias, -1.57f*bias,
+                                         2.09f*bias, -2.09f*bias };
+                        for (int a = 0; a < 8; a++) {
+                            float c = cosf(angs[a]), s = sinf(angs[a]);
+                            float tx = sx*c - sz*s;
+                            float tz = sx*s + sz*c;
+                            float qx = e->pos.x + tx*probe, qz = e->pos.z + tz*probe;
+                            if (!IsWallCircle(qx, qz, r + 0.1f)) {
+                                sx = tx; sz = tz;
+                                break;
+                            }
+                        }
                     }
                 }
                 EnemyMove(e, sx*e->speed*dt, sz*e->speed*dt);
                 e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, r);
             }
-            else e->state=ES_ATTACK;
+            // Only enter ATTACK when the player is on roughly the same level —
+            // otherwise a chef on the floor next to a raised platform would
+            // melee-loop at the wall while the player hovers above on the deck.
+            // Forcing CHASE makes the enemy pathfind around to the stairs.
+            else if (fabsf(g_p.pos.y - e->pos.y) <= STEP_H + 0.1f) e->state=ES_ATTACK;
         } else {
-            if (dist>e->atkR*1.5f) e->state=ES_CHASE;
+            // Same y-reachability check — if the player has jumped or climbed
+            // onto a different level, break out of ATTACK and go back to CHASE
+            // so the enemy resumes pathfinding.
+            if (dist>e->atkR*1.5f ||
+                fabsf(g_p.pos.y - e->pos.y) > STEP_H + 0.1f) e->state=ES_CHASE;
             if (e->cd<=0) {
                 g_p.hp-=e->dmg; g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
                 PlaySound(g_sHurt); e->cd=e->rate;
@@ -1408,7 +1530,10 @@ static void DrawEnemies(Camera3D cam) {
         // BOSS (type 3) — draws via ATR3 sprites, 4× the size of a chef
         if (e->type == 3 && g_bossOK) {
             float spriteH = 3.0f;  // smaller than before so HP bar sits near the head
-            Vector3 pos = {e->pos.x, spriteH*0.5f, e->pos.z};
+            // e->pos.y is the enemy's feet: 0 on floor, platform-top when on a
+            // platform. Centre the billboard at feet + spriteH/2 so he stands
+            // ON the platform instead of sinking feet through its top surface.
+            Vector3 pos = {e->pos.x, e->pos.y + spriteH*0.5f, e->pos.z};
             Texture2D tex;
             bool isCorpse = e->dying && g_bossDeathOK;
             if (isCorpse) {
@@ -1430,7 +1555,7 @@ static void DrawEnemies(Camera3D cam) {
             // HP bar floats just above the head
             if (!e->dying && e->hp < e->maxHp) {
                 float hp = e->hp / e->maxHp;
-                float bary = spriteH + 0.35f;
+                float bary = e->pos.y + spriteH + 0.35f;
                 Vector3 HF = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
                 Vector3 HR = Vector3Normalize(Vector3CrossProduct(HF, cam.up));
                 Vector3 HU = Vector3CrossProduct(HR, HF);
@@ -1457,7 +1582,10 @@ static void DrawEnemies(Camera3D cam) {
         if (g_chefOK) {
             // Size tuned per enemy type
             float spriteH = (e->type==1) ? 2.3f : (e->type==2) ? 1.7f : 2.0f;
-            Vector3 pos = {e->pos.x, spriteH*0.5f, e->pos.z};
+            // Lift billboard to sit on the enemy's actual feet height (e->pos.y).
+            // Was pinned to spriteH*0.5 which meant chefs walking on a platform
+            // were drawn sunk into it (feet stuck at floor y=0).
+            Vector3 pos = {e->pos.x, e->pos.y + spriteH*0.5f, e->pos.z};
 
             // Pick the sprite set for this chef type.
             // Defaults: type 0 = AFAB chef. type 1 = TORM. type 2 = SCH2.
@@ -1660,10 +1788,12 @@ static void Shoot(void) {
                 headY = bh + 0.67f; headR = 0.26f;
                 bodyY = 0.85f;      bodyR = 0.68f;
             }
-            Vector3 hc={g_e[j].pos.x, headY, g_e[j].pos.z};
+            // headY/bodyY are offsets above the enemy's FEET, so they track
+            // the sprite when it rides up onto a platform (e->pos.y > 0).
+            Vector3 hc={g_e[j].pos.x, g_e[j].pos.y + headY, g_e[j].pos.z};
             float ht=RSphere(eyePos,rd,hc,headR);
             if (ht>0&&ht<best){best=ht;bi=j;headshot=true;}
-            Vector3 bc={g_e[j].pos.x, bodyY, g_e[j].pos.z};
+            Vector3 bc={g_e[j].pos.x, g_e[j].pos.y + bodyY, g_e[j].pos.z};
             float bt=RSphere(eyePos,rd,bc,bodyR);
             if (bt>0&&bt<best){best=bt;bi=j;headshot=false;}
         }
@@ -2124,11 +2254,13 @@ static void InitGame(void) {
     SeedPicks();
 
     if (g_bossMode) {
-        // BOSS TEST: spawn one boss straight away, no chefs.
+        // BOSS TEST: spawn one boss straight away, no chefs. Drop him in a
+        // random open map corner (same helper as the wave-end + respawn paths)
+        // — the old hardcoded (56, 36) put his body into a wall corner so he
+        // couldn't move.
         Enemy *ne = &g_e[g_ec++];
         *ne = (Enemy){0};
-        float bx = 20.f*CELL/2.f + 4.f*CELL;   // far-centre position
-        float bz = 10.f*CELL/2.f + 4.f*CELL;
+        float bx, bz; PickBossSpawn(&bx, &bz);
         ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
         ne->type = 3;                           // boss
         ne->state = ES_PATROL;
@@ -2177,10 +2309,27 @@ static void InitGame(void) {
 }
 
 // ── MAIN ─────────────────────────────────────────────────────────────────────
-int main(void) {
+int main(int argc, char **argv) {
 #ifdef _WIN32
     ExtractBundle();  // unpack embedded sprites/sounds to %TEMP%/IronFist3D/
 #endif
+    // Opt-in debug log — fresh file each run, 5 Hz tick snapshot of player +
+    // enemy state. Enable with --debug; tail /tmp/ironfist-debug.log via
+    // debug.sh in another terminal.
+    bool debugMode = false;
+    for (int a = 1; a < argc; a++) {
+        if (strcmp(argv[a], "--debug") == 0) debugMode = true;
+    }
+    if (debugMode) {
+        // "w" truncates any existing file, but be explicit — a prior crashed
+        // run could leave stale content, and seeing a fresh header confirms
+        // this launch owns the log.
+        g_dbgLog = fopen(DEBUG_LOG_PATH, "w");
+        if (g_dbgLog) {
+            fprintf(g_dbgLog, "# Iron Fist 3D debug log — new session\n\n");
+            fflush(g_dbgLog);
+        }
+    }
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(SW,SH,"IRON FIST 3D");
     HideCursor();
@@ -2581,6 +2730,7 @@ int main(void) {
 
     while (!WindowShouldClose()) {
         float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
+        DebugLogTick();
         if (g_musicOK) {
             UpdateMusicStream(g_music);   // feed the streaming decoder
             // Music volume: - / + (and numpad equivalents)
@@ -2781,6 +2931,7 @@ int main(void) {
     if (g_sMGPickupOK)     UnloadSound(g_sMGPickup);
     if (g_sOneLeftOK)      UnloadSound(g_sOneLeft);
     if (g_musicOK) { StopMusicStream(g_music); UnloadMusicStream(g_music); }
+    if (g_dbgLog) { fclose(g_dbgLog); g_dbgLog = NULL; }
     CloseAudioDevice(); CloseWindow();
     return 0;
 }
