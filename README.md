@@ -14,11 +14,11 @@ arena with Q3-style stairs, launcher splash damage, and an honest-to-god C&C
 Red Alert soundtrack.
 
 ```
-    ╔════════════════════════════════════════╗
+    ╔══════════════════════════════════════════╗
     ║  1 - SHOTGUN     2 - MG     3 - LAUNCHER ║
     ║  WASD move  ·  MOUSE aim  ·  LMB fire    ║
     ║  SPACE jump · SHIFT sprint · -/+ music   ║
-    ╚════════════════════════════════════════╝
+    ╚══════════════════════════════════════════╝
 ```
 
 ---
