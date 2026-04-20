@@ -1,5 +1,9 @@
 # ⚔️ IRON FIST 3D
 
+### ▶️ [Play in your browser — ironfist.ximg.app/play.html](https://ironfist.ximg.app/play.html)
+
+No install, no download. WebGL 2 required.
+
 ![gameplay](docs/screenshot-1.png)
 
 | | |
@@ -24,12 +28,6 @@ Red Alert soundtrack.
 ---
 
 ## 🎮 Play
-
-### ▶️ [Play in your browser — ironfist.ximg.app/play.html](https://ironfist.ximg.app/play.html)
-
-No install, no download. WebGL 2 required.
-
----
 
 **macOS** — builds an `.app` bundle:
 
