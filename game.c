@@ -1233,6 +1233,19 @@ static void KillEnemy(int i) {
     static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF"};
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[e->type],e->score*g_wave);
     Msg(buf);
+    // Hype text when the wave is down to its final chef. Matches the same
+    // guard as the sOneLeft stinger above so audio + text always fire on the
+    // same transition.
+    if (!g_bossInterlude && Alive() == 1 && e->type != 3) {
+        static const char *hype[] = {
+            "LAST ONE STANDING!",
+            "ONE LEFT - FINISH THEM!",
+            "FINAL CHEF - HUNT IT DOWN!",
+            "LONE SURVIVOR - END THIS!",
+            "ONE REMAINS - NO MERCY!",
+        };
+        Msg(hype[rand() % (int)(sizeof(hype)/sizeof(hype[0]))]);
+    }
     if (Alive()==0) {
         // Test mode: respawn a boss forever so we can iterate on combat
         if (g_bossMode) {
