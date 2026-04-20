@@ -25,6 +25,12 @@ Red Alert soundtrack.
 
 ## 🎮 Play
 
+### ▶️ [Play in your browser — ironfist.ximg.app/play.html](https://ironfist.ximg.app/play.html)
+
+No install, no download. WebGL 2 required.
+
+---
+
 **macOS** — builds an `.app` bundle:
 
 ```bash
@@ -43,8 +49,10 @@ brew install mingw-w64
 make windows           # produces dist-win/IronFist3D.exe
 ```
 
-**Browser** — Emscripten / WebAssembly build. The same `game.c` compiles to
-`dist-web/index.html` (+ `.js` / `.wasm` / `.data`). WebGL 2 required.
+**Browser** — Emscripten / WebAssembly build. Hosted at
+[ironfist.ximg.app/play.html](https://ironfist.ximg.app/play.html), or build
+locally: the same `game.c` compiles to `dist-web/index.html` (+ `.js` /
+`.wasm` / `.data`). WebGL 2 required.
 
 ```bash
 # one-time: install emsdk, activate it, and source the env
