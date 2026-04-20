@@ -43,6 +43,26 @@ brew install mingw-w64
 make windows           # produces dist-win/IronFist3D.exe
 ```
 
+**Browser** — Emscripten / WebAssembly build. The same `game.c` compiles to
+`dist-web/index.html` (+ `.js` / `.wasm` / `.data`). WebGL 2 required.
+
+```bash
+# one-time: install emsdk, activate it, and source the env
+git clone https://github.com/emscripten-core/emsdk vendor/emsdk
+./vendor/emsdk/emsdk install latest
+./vendor/emsdk/emsdk activate latest
+source ./vendor/emsdk/emsdk_env.sh
+
+make web-raylib        # clone + build raylib source for PLATFORM_WEB (first time)
+make web-serve         # build + http://localhost:8000/
+```
+
+Differences from the native builds:
+
+- Mouse look + audio require a user gesture, handled by a click-to-start gate.
+- Music volume does not persist across page reloads (no filesystem).
+- No `--debug` flag / debug log.
+
 ---
 
 ## 🏛️ Architecture

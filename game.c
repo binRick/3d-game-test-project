@@ -4,6 +4,9 @@
 #include "rlgl.h"
 #include <math.h>
 #include <stdio.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
 
 // Resource layout differs between platforms:
 //   macOS  — resources live at <app>/Contents/Resources/ (one dir up from MacOS/)
@@ -135,7 +138,17 @@ static const int MAP[ROWS][COLS] = {
 };
 
 // ── EMBEDDED SHADERS ─────────────────────────────────────────────────────────
-static const char *VS = "#version 330 core\n"
+// Desktop: GLSL 330 core. Web (Emscripten / WebGL 2): GLSL ES 300, which is
+// source-compatible with 330 apart from the version line and a required
+// float precision declaration in the fragment shader.
+#if defined(PLATFORM_WEB)
+  #define GLSL_VERSION   "#version 300 es\n"
+  #define GLSL_PRECISION "precision mediump float;\n"
+#else
+  #define GLSL_VERSION   "#version 330 core\n"
+  #define GLSL_PRECISION ""
+#endif
+static const char *VS = GLSL_VERSION
 "in vec3 vertexPosition;\n"
 "in vec2 vertexTexCoord;\n"
 "in vec3 vertexNormal;\n"
@@ -153,8 +166,7 @@ static const char *VS = "#version 330 core\n"
 "  gl_Position = mvp*vec4(vertexPosition,1.0);\n"
 "}\n";
 
-static const char *FS =
-"#version 330 core\n"
+static const char *FS = GLSL_VERSION GLSL_PRECISION
 "in vec3 fragPos;\n"
 "in vec2 fragUV;\n"
 "in vec3 fragNorm;\n"
@@ -390,6 +402,12 @@ static float    g_musicVol = 0.36f;  // adjustable via - / + (persisted to disk)
 #define VOL_CONFIG_FILE ".ironfist3d.cfg"
 
 static void SaveMusicVol(void) {
+#ifdef __EMSCRIPTEN__
+    // Web: MEMFS doesn't persist across page reloads. Skip; the volume
+    // will reset to the default on next load. (Could be upgraded to
+    // localStorage via EM_JS if persistence is wanted.)
+    return;
+#else
     const char *home = getenv("HOME"); if (!home) home = getenv("USERPROFILE");
     if (!home) return;
     char path[512];
@@ -398,8 +416,12 @@ static void SaveMusicVol(void) {
     if (!f) return;
     fprintf(f, "%f\n", g_musicVol);
     fclose(f);
+#endif
 }
 static void LoadMusicVol(void) {
+#ifdef __EMSCRIPTEN__
+    return;
+#else
     const char *home = getenv("HOME"); if (!home) home = getenv("USERPROFILE");
     if (!home) return;
     char path[512];
@@ -409,6 +431,7 @@ static void LoadMusicVol(void) {
     float v;
     if (fscanf(f, "%f", &v) == 1 && v >= 0.f && v <= 1.5f) g_musicVol = v;
     fclose(f);
+#endif
 }
 static bool     g_needMouseRelease = false;  // mouse must be released once before firing
 static bool     g_lastHitHead = false;  // set while processing a headshot shot; KillEnemy reads it
@@ -2308,6 +2331,173 @@ static void InitGame(void) {
     strcpy(g_msg,""); g_msgT=0;
 }
 
+// File-scope camera + per-frame step. `g_cam` needs to outlive a single main()
+// invocation because on the web build emscripten_set_main_loop keeps calling
+// StepFrame after main has returned (the while-loop model doesn't work in a
+// single-threaded browser context).
+static Camera3D g_cam;
+
+static void StepFrame(void) {
+    float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
+    DebugLogTick();
+    if (g_musicOK) {
+        UpdateMusicStream(g_music);   // feed the streaming decoder
+        // Music volume: - / + (and numpad equivalents)
+        bool vDown = IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT);
+        bool vUp   = IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD);
+        if (vDown) g_musicVol = fmaxf(0.f,  g_musicVol - 0.1f);
+        if (vUp)   g_musicVol = fminf(1.5f, g_musicVol + 0.1f);
+        if (vDown || vUp) {
+            SetMusicVolume(g_music, g_musicVol);
+            SaveMusicVol();  // persist to disk
+            char buf[48]; snprintf(buf, 48, "MUSIC VOL %d%%", (int)(g_musicVol * 100.f + 0.5f));
+            Msg(buf);
+        }
+    }
+
+    if (g_gs==GS_MENU) {
+        if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            g_bossMode = false;
+            InitGame();
+        }
+        if (IsKeyPressed(KEY_B)) {
+            g_bossMode = true;
+            InitGame();
+        }
+    } else if (g_gs==GS_PLAY) {
+        if (IsKeyPressed(KEY_ESCAPE)){g_gs=GS_MENU;}
+        UpdPlayer(dt,&g_cam);
+        UpdEnemies(dt);
+        UpdBullets(dt);
+        UpdParts(dt);
+        UpdPicks();
+
+        // "Distant enemy" stinger — plays once when the first enemy comes into sight
+        // after a period of having none visible. Uses dot-product FOV cone + wall raycast.
+        {
+            bool anyVisible = false;
+            float cy = cosf(g_p.pitch);
+            float syw = sinf(g_p.yaw + 3.14159f), cyw = cosf(g_p.yaw + 3.14159f);
+            float fx = syw * cy, fz = cyw * cy;     // camera forward XZ (normalized)
+            for (int i = 0; i < g_ec && !anyVisible; i++) {
+                Enemy *e = &g_e[i];
+                if (!e->active || e->dying) continue;
+                float dx = e->pos.x - g_p.pos.x;
+                float dz = e->pos.z - g_p.pos.z;
+                float dist = sqrtf(dx*dx + dz*dz);
+                if (dist < 0.1f || dist > 50.f) continue;   // too close / too far
+                float dot = (dx*fx + dz*fz) / dist;          // cone: >= 0.6 ~= 53° half-FOV
+                if (dot < 0.6f) continue;
+                // Simple raycast: step along the line of sight, bail if we hit a wall
+                bool blocked = false;
+                int steps = (int)(dist / 0.5f);
+                for (int s = 1; s < steps; s++) {
+                    float t = s / (float)steps;
+                    if (IsWall(g_p.pos.x + dx*t, g_p.pos.z + dz*t)) { blocked = true; break; }
+                }
+                if (!blocked) anyVisible = true;
+            }
+            if (anyVisible && !g_hadVisibleEnemy && g_sEnemyAlertCount > 0) {
+                // 10-second cooldown — otherwise a sprinkle of line-of-sight
+                // flips (chef rounding a corner, re-emerging) would stack
+                // stingers on top of each other.
+                static double lastAlertT = -1000.0;
+                const double ALERT_COOLDOWN = 10.0;
+                double now = GetTime();
+                bool anyPlaying = false;
+                for (int a = 0; a < g_sEnemyAlertCount; a++) {
+                    if (g_sEnemyAlertOK[a] && IsSoundPlaying(g_sEnemyAlert[a])) {
+                        anyPlaying = true; break;
+                    }
+                }
+                if (!anyPlaying && (now - lastAlertT) >= ALERT_COOLDOWN) {
+                    // Pick a random loaded alert stinger
+                    int pick = rand() % g_sEnemyAlertCount;
+                    for (int tries = 0; tries < g_sEnemyAlertCount; tries++) {
+                        int a = (pick + tries) % g_sEnemyAlertCount;
+                        if (g_sEnemyAlertOK[a]) {
+                            SetSoundVolume(g_sEnemyAlert[a], 2.0f);
+                            PlaySound(g_sEnemyAlert[a]);
+                            lastAlertT = now;
+                            break;
+                        }
+                    }
+                }
+            }
+            g_hadVisibleEnemy = anyVisible;
+        }
+    } else if (g_gs==GS_DEAD) {
+        if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
+    }
+
+    BeginDrawing();
+    ClearBackground((Color){4,3,6,255});
+
+    if (g_gs==GS_PLAY||g_gs==GS_DEAD) {
+        BeginMode3D(g_cam);
+        DrawModel(g_wallModel,Vector3Zero(),1.f,WHITE);
+        DrawModel(g_floorModel,Vector3Zero(),1.f,(Color){110,110,110,255});
+        DrawModel(g_ceilModel,Vector3Zero(),1.f,(Color){70,70,90,255});
+        // Platforms (stairs + raised decks) — unit cube mesh scaled per-platform
+        for (int pi = 0; pi < g_platCount; pi++) {
+            Platform *p = &g_plats[pi];
+            float sx = p->x1 - p->x0;
+            float sy = p->top;
+            float sz = p->z1 - p->z0;
+            Vector3 center = { (p->x0+p->x1)*0.5f, sy*0.5f, (p->z0+p->z1)*0.5f };
+            DrawModelEx(g_platModel, center, (Vector3){0,1,0}, 0.f,
+                        (Vector3){sx, sy, sz}, (Color){170,140,110,255});
+        }
+        DrawEnemies(g_cam);
+        DrawBullets();
+        DrawParts();
+        DrawPicks(g_cam);
+        // Ceiling lights drawn LAST so the additive glow shines over enemies,
+        // pickups, and bullets — otherwise opaque billboards cover the light cones.
+        DrawCeilingLights(g_cam);
+        DrawWeapon3D(g_cam);
+        EndMode3D();
+        DrawSpriteWeapon();
+        DrawHUD();
+    }
+
+    if (g_gs==GS_MENU) {
+        int sw2=GetScreenWidth(),sh2=GetScreenHeight();
+        ClearBackground(BLACK);
+        // grid lines for style
+        for (int x=0;x<sw2;x+=60) DrawLine(x,0,x,sh2,(Color){20,0,0,80});
+        for (int y=0;y<sh2;y+=60) DrawLine(0,y,sw2,y,(Color){20,0,0,80});
+        const char *t1="IRON FIST 3D";
+        int tw=MeasureText(t1,80);
+        DrawText(t1,sw2/2-tw/2+3,sh2/3+3,80,(Color){100,0,0,255});
+        DrawText(t1,sw2/2-tw/2,sh2/3,80,RED);
+        const char *t2="S L A U G H T E R  S T Y L E";
+        DrawText(t2,sw2/2-MeasureText(t2,16)/2,sh2/3+96,16,(Color){120,120,120,255});
+        const char *ctrl="WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE\n"
+                         "SPACE - JUMP     SHIFT - SPRINT     - / + - MUSIC VOL\n"
+                         "1 - SHOTGUN     2 - MACHINE GUN     3 - LAUNCHER";
+        DrawText(ctrl,sw2/2-MeasureText("WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE",15)/2,sh2/2+20,15,(Color){90,90,90,255});
+        const char *st="[ ENTER  /  CLICK  TO  START ]";
+        if (sinf(GetTime()*3.f)>0)
+            DrawText(st,sw2/2-MeasureText(st,22)/2,sh2*3/4,22,RED);
+        const char *bt="[ B FOR BOSS TEST ]";
+        DrawText(bt,sw2/2-MeasureText(bt,16)/2,sh2*3/4+36,16,(Color){200,120,120,255});
+        DrawFPS(10,10);
+    } else if (g_gs==GS_DEAD) {
+        int sw2=GetScreenWidth(),sh2=GetScreenHeight();
+        DrawRectangle(0,0,sw2,sh2,(Color){100,0,0,130});
+        const char *d="YOU DIED";
+        DrawText(d,sw2/2-MeasureText(d,88)/2+4,sh2/3+4,88,(Color){80,0,0,255});
+        DrawText(d,sw2/2-MeasureText(d,88)/2,sh2/3,88,RED);
+        char sc2[64]; snprintf(sc2,64,"SCORE: %d     WAVE: %d",g_p.score,g_wave);
+        DrawText(sc2,sw2/2-MeasureText(sc2,24)/2,sh2/2+10,24,YELLOW);
+        if (sinf(GetTime()*3.f)>0)
+            DrawText("[ ENTER  /  SPACE  TO  PLAY  AGAIN ]",sw2/2-190,sh2*2/3,20,WHITE);
+    }
+    if (g_gs==GS_PLAY) DrawFPS(GetScreenWidth()-58,GetScreenHeight()-18);
+    EndDrawing();
+}
+
 // ── MAIN ─────────────────────────────────────────────────────────────────────
 int main(int argc, char **argv) {
 #ifdef _WIN32
@@ -2721,173 +2911,23 @@ int main(int argc, char **argv) {
     g_platModel   = MakeShaderModel(platMesh, tBrick);
     InitPlatforms();
 
-    Camera3D cam={0};
-    cam.fovy=90.f; cam.projection=CAMERA_PERSPECTIVE; cam.up=(Vector3){0,1,0};
-    cam.position=(Vector3){1.5f*CELL,EYE_H,1.5f*CELL};
-    cam.target=(Vector3){1.5f*CELL+1,EYE_H,1.5f*CELL};
+    g_cam = (Camera3D){0};
+    g_cam.fovy=90.f; g_cam.projection=CAMERA_PERSPECTIVE; g_cam.up=(Vector3){0,1,0};
+    g_cam.position=(Vector3){1.5f*CELL,EYE_H,1.5f*CELL};
+    g_cam.target=(Vector3){1.5f*CELL+1,EYE_H,1.5f*CELL};
 
     g_gs=GS_MENU;
 
-    while (!WindowShouldClose()) {
-        float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
-        DebugLogTick();
-        if (g_musicOK) {
-            UpdateMusicStream(g_music);   // feed the streaming decoder
-            // Music volume: - / + (and numpad equivalents)
-            bool vDown = IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT);
-            bool vUp   = IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD);
-            if (vDown) g_musicVol = fmaxf(0.f,  g_musicVol - 0.1f);
-            if (vUp)   g_musicVol = fminf(1.5f, g_musicVol + 0.1f);
-            if (vDown || vUp) {
-                SetMusicVolume(g_music, g_musicVol);
-                SaveMusicVol();  // persist to disk
-                char buf[48]; snprintf(buf, 48, "MUSIC VOL %d%%", (int)(g_musicVol * 100.f + 0.5f));
-                Msg(buf);
-            }
-        }
+#ifdef __EMSCRIPTEN__
+    // Browser main loop: hand control back to the runtime after each frame so
+    // the event loop can deliver input + repaint. simulate_infinite_loop=1
+    // unwinds here via a JS exception, so the cleanup code below never runs
+    // on web (that's fine — page teardown reclaims GL/audio resources).
+    emscripten_set_main_loop(StepFrame, 0, 1);
+    return 0;
+#endif
 
-        if (g_gs==GS_MENU) {
-            if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                g_bossMode = false;
-                InitGame();
-            }
-            if (IsKeyPressed(KEY_B)) {
-                g_bossMode = true;
-                InitGame();
-            }
-        } else if (g_gs==GS_PLAY) {
-            if (IsKeyPressed(KEY_ESCAPE)){g_gs=GS_MENU;}
-            UpdPlayer(dt,&cam);
-            UpdEnemies(dt);
-            UpdBullets(dt);
-            UpdParts(dt);
-            UpdPicks();
-
-            // "Distant enemy" stinger — plays once when the first enemy comes into sight
-            // after a period of having none visible. Uses dot-product FOV cone + wall raycast.
-            {
-                bool anyVisible = false;
-                float cy = cosf(g_p.pitch);
-                float syw = sinf(g_p.yaw + 3.14159f), cyw = cosf(g_p.yaw + 3.14159f);
-                float fx = syw * cy, fz = cyw * cy;     // camera forward XZ (normalized)
-                for (int i = 0; i < g_ec && !anyVisible; i++) {
-                    Enemy *e = &g_e[i];
-                    if (!e->active || e->dying) continue;
-                    float dx = e->pos.x - g_p.pos.x;
-                    float dz = e->pos.z - g_p.pos.z;
-                    float dist = sqrtf(dx*dx + dz*dz);
-                    if (dist < 0.1f || dist > 50.f) continue;   // too close / too far
-                    float dot = (dx*fx + dz*fz) / dist;          // cone: >= 0.6 ~= 53° half-FOV
-                    if (dot < 0.6f) continue;
-                    // Simple raycast: step along the line of sight, bail if we hit a wall
-                    bool blocked = false;
-                    int steps = (int)(dist / 0.5f);
-                    for (int s = 1; s < steps; s++) {
-                        float t = s / (float)steps;
-                        if (IsWall(g_p.pos.x + dx*t, g_p.pos.z + dz*t)) { blocked = true; break; }
-                    }
-                    if (!blocked) anyVisible = true;
-                }
-                if (anyVisible && !g_hadVisibleEnemy && g_sEnemyAlertCount > 0) {
-                    // 10-second cooldown — otherwise a sprinkle of line-of-sight
-                    // flips (chef rounding a corner, re-emerging) would stack
-                    // stingers on top of each other.
-                    static double lastAlertT = -1000.0;
-                    const double ALERT_COOLDOWN = 10.0;
-                    double now = GetTime();
-                    bool anyPlaying = false;
-                    for (int a = 0; a < g_sEnemyAlertCount; a++) {
-                        if (g_sEnemyAlertOK[a] && IsSoundPlaying(g_sEnemyAlert[a])) {
-                            anyPlaying = true; break;
-                        }
-                    }
-                    if (!anyPlaying && (now - lastAlertT) >= ALERT_COOLDOWN) {
-                        // Pick a random loaded alert stinger
-                        int pick = rand() % g_sEnemyAlertCount;
-                        for (int tries = 0; tries < g_sEnemyAlertCount; tries++) {
-                            int a = (pick + tries) % g_sEnemyAlertCount;
-                            if (g_sEnemyAlertOK[a]) {
-                                SetSoundVolume(g_sEnemyAlert[a], 2.0f);
-                                PlaySound(g_sEnemyAlert[a]);
-                                lastAlertT = now;
-                                break;
-                            }
-                        }
-                    }
-                }
-                g_hadVisibleEnemy = anyVisible;
-            }
-        } else if (g_gs==GS_DEAD) {
-            if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
-        }
-
-        BeginDrawing();
-        ClearBackground((Color){4,3,6,255});
-
-        if (g_gs==GS_PLAY||g_gs==GS_DEAD) {
-            BeginMode3D(cam);
-            DrawModel(g_wallModel,Vector3Zero(),1.f,WHITE);
-            DrawModel(g_floorModel,Vector3Zero(),1.f,(Color){110,110,110,255});
-            DrawModel(g_ceilModel,Vector3Zero(),1.f,(Color){70,70,90,255});
-            // Platforms (stairs + raised decks) — unit cube mesh scaled per-platform
-            for (int pi = 0; pi < g_platCount; pi++) {
-                Platform *p = &g_plats[pi];
-                float sx = p->x1 - p->x0;
-                float sy = p->top;
-                float sz = p->z1 - p->z0;
-                Vector3 center = { (p->x0+p->x1)*0.5f, sy*0.5f, (p->z0+p->z1)*0.5f };
-                DrawModelEx(g_platModel, center, (Vector3){0,1,0}, 0.f,
-                            (Vector3){sx, sy, sz}, (Color){170,140,110,255});
-            }
-            DrawEnemies(cam);
-            DrawBullets();
-            DrawParts();
-            DrawPicks(cam);
-            // Ceiling lights drawn LAST so the additive glow shines over enemies,
-            // pickups, and bullets — otherwise opaque billboards cover the light cones.
-            DrawCeilingLights(cam);
-            DrawWeapon3D(cam);
-            EndMode3D();
-            DrawSpriteWeapon();
-            DrawHUD();
-        }
-
-        if (g_gs==GS_MENU) {
-            int sw2=GetScreenWidth(),sh2=GetScreenHeight();
-            ClearBackground(BLACK);
-            // grid lines for style
-            for (int x=0;x<sw2;x+=60) DrawLine(x,0,x,sh2,(Color){20,0,0,80});
-            for (int y=0;y<sh2;y+=60) DrawLine(0,y,sw2,y,(Color){20,0,0,80});
-            const char *t1="IRON FIST 3D";
-            int tw=MeasureText(t1,80);
-            DrawText(t1,sw2/2-tw/2+3,sh2/3+3,80,(Color){100,0,0,255});
-            DrawText(t1,sw2/2-tw/2,sh2/3,80,RED);
-            const char *t2="S L A U G H T E R  S T Y L E";
-            DrawText(t2,sw2/2-MeasureText(t2,16)/2,sh2/3+96,16,(Color){120,120,120,255});
-            const char *ctrl="WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE\n"
-                             "SPACE - JUMP     SHIFT - SPRINT     - / + - MUSIC VOL\n"
-                             "1 - SHOTGUN     2 - MACHINE GUN     3 - LAUNCHER";
-            DrawText(ctrl,sw2/2-MeasureText("WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE",15)/2,sh2/2+20,15,(Color){90,90,90,255});
-            const char *st="[ ENTER  /  CLICK  TO  START ]";
-            if (sinf(GetTime()*3.f)>0)
-                DrawText(st,sw2/2-MeasureText(st,22)/2,sh2*3/4,22,RED);
-            const char *bt="[ B FOR BOSS TEST ]";
-            DrawText(bt,sw2/2-MeasureText(bt,16)/2,sh2*3/4+36,16,(Color){200,120,120,255});
-            DrawFPS(10,10);
-        } else if (g_gs==GS_DEAD) {
-            int sw2=GetScreenWidth(),sh2=GetScreenHeight();
-            DrawRectangle(0,0,sw2,sh2,(Color){100,0,0,130});
-            const char *d="YOU DIED";
-            DrawText(d,sw2/2-MeasureText(d,88)/2+4,sh2/3+4,88,(Color){80,0,0,255});
-            DrawText(d,sw2/2-MeasureText(d,88)/2,sh2/3,88,RED);
-            char sc2[64]; snprintf(sc2,64,"SCORE: %d     WAVE: %d",g_p.score,g_wave);
-            DrawText(sc2,sw2/2-MeasureText(sc2,24)/2,sh2/2+10,24,YELLOW);
-            if (sinf(GetTime()*3.f)>0)
-                DrawText("[ ENTER  /  SPACE  TO  PLAY  AGAIN ]",sw2/2-190,sh2*2/3,20,WHITE);
-        }
-        if (g_gs==GS_PLAY) DrawFPS(GetScreenWidth()-58,GetScreenHeight()-18);
-        EndDrawing();
-    }
+    while (!WindowShouldClose()) StepFrame();
 
     UnloadModel(g_wallModel); UnloadModel(g_floorModel); UnloadModel(g_ceilModel);
     UnloadModel(g_platModel);

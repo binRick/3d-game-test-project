@@ -1,22 +1,62 @@
 # Iron Fist 3D — project notes
 
-Native macOS FPS built in C with raylib. Single-file source (`game.c`) +
-procedurally-generated resources + WolfenDoom / classic-games sprites & sounds.
-Runs as an `.app` bundle with a custom icon.
+FPS built in C with raylib from a single source file (`game.c`), targeting
+three platforms from the same codebase:
+
+- **macOS** — primary dev target; ships as an `.app` bundle.
+- **Windows** — mingw-w64 cross-compile; single self-contained `.exe` with
+  assets bundled as an RCDATA resource.
+- **Web** — Emscripten / WebAssembly build, runs in any WebGL-2 browser.
+
+Three platform dispatches live in `game.c`:
+
+- Asset path: `#if defined(__APPLE__)` picks `../Resources/` (app bundle),
+  Windows extracts to `%TEMP%/IronFist3D/`, else flat `sprites/`/`sounds/`.
+- Shaders: `#if defined(PLATFORM_WEB)` emits GLSL ES 300 (WebGL 2) instead
+  of GLSL 330 core. Everything else in the shader source is identical.
+- Main loop: `#ifdef __EMSCRIPTEN__` calls `emscripten_set_main_loop(StepFrame,
+  0, 1)` instead of the native `while (!WindowShouldClose())`. The loop body
+  is factored into `StepFrame()` so both paths share it exactly.
 
 ## Build & run
 
 ```
 ./run.sh           # kills any running instance, `make -B`, `open IronFist3D.app`
-make               # just build
-make run           # build + open
-make clean         # wipe the .app
+make               # just build (macOS)
+make run           # build + open (macOS)
+make windows       # cross-compile dist-win/IronFist3D.exe (mingw-w64)
+make web-raylib    # clone + build raylib source for PLATFORM_WEB (first time only)
+make web           # emcc → dist-web/index.html (+ .js/.wasm/.data)
+make web-serve     # build + `python3 -m http.server` on localhost:8000
+make clean         # wipe .app / dist-win / dist-web
 ```
 
 `run.sh` ALWAYS does a full recompile (`make -B`). Don't change that — the
 user wants to know they're testing the latest code every time.
 
-Requires `brew install raylib` on the host.
+Native (macOS) requires `brew install raylib`. Windows target requires
+`brew install mingw-w64` + prebuilt raylib in `vendor/{include,lib}/`.
+Web target requires emsdk activated (`source vendor/emsdk/emsdk_env.sh`)
+and raylib source built via `make web-raylib`.
+
+## Web build specifics
+
+- **No persistence.** `SaveMusicVol` / `LoadMusicVol` short-circuit under
+  `__EMSCRIPTEN__` — MEMFS doesn't survive page reloads. Upgrade path is
+  localStorage via `EM_JS`; deliberately unshipped for v1.
+- **No `--debug` flag.** The debug log is opt-in via argv which doesn't apply
+  on web. `g_dbgLog` stays NULL, `DebugLogTick` no-ops.
+- **Click-to-start gate** in `web/shell.html` satisfies the Web Audio
+  autoplay + Pointer Lock user-gesture requirement before the first frame
+  runs.
+- **`g_cam` is file-scope** so it outlives `main()` — on web,
+  `emscripten_set_main_loop` continues calling `StepFrame()` after main
+  returns via the JS runtime, and a main-local camera would be dangling.
+  The native loop also uses `g_cam` for consistency.
+- **ASYNCIFY is on** so raylib's internal blocking waits (music-stream
+  init, etc.) work in the browser. Trade-off: ~30% slower + bigger .wasm;
+  if profiling says it hurts, audit what's actually blocking and pull
+  those calls out of the hot path.
 
 ## Debug log (pathing / AI bug reports)
 

@@ -92,5 +92,69 @@ $(WINEXE): game.c $(WINDIR)/bundle.o | $(WINDIR)
 $(WINDIR):
 	mkdir -p $(WINDIR)
 
+# ─── Web build (Emscripten / WebAssembly) ──────────────────────────────────
+# Requires:
+#   1. emsdk installed, activated, and env sourced:
+#        git clone https://github.com/emscripten-core/emsdk vendor/emsdk
+#        ./vendor/emsdk/emsdk install latest && ./vendor/emsdk/emsdk activate latest
+#        source ./vendor/emsdk/emsdk_env.sh
+#   2. raylib source cloned + built for PLATFORM_WEB (handled by `make web-raylib`):
+#        make web-raylib      # clones into vendor/raylib-src/ and builds libraylib.a
+#
+# Then:
+#   make web          # builds dist-web/index.html + .js + .wasm + .data
+#   make web-serve    # builds, then serves dist-web/ on http://localhost:8000/
+#
+# The game uses pointer-lock for mouse look + Web Audio for sound; both need
+# a user gesture, satisfied by the shell's "click to start" overlay.
+WEBDIR       = dist-web
+RAYLIB_SRC  ?= vendor/raylib-src
+RAYLIB_WEB_A = $(RAYLIB_SRC)/src/libraylib.a
+WEBSHELL     = web/shell.html
+
+# GRAPHICS_API_OPENGL_ES3 pairs with WebGL 2, which supports the GLSL ES 300
+# shaders we emit when PLATFORM_WEB is defined. USE_GLFW=3 is raylib's
+# required windowing backend on web.
+WEBCFLAGS = -O2 -Wall -Wno-unused-result \
+            -I$(RAYLIB_SRC)/src \
+            -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3
+WEBLDFLAGS = -s USE_GLFW=3 \
+             -s MIN_WEBGL_VERSION=2 -s MAX_WEBGL_VERSION=2 \
+             -s FORCE_FILESYSTEM=1 \
+             -s ALLOW_MEMORY_GROWTH=1 \
+             -s INITIAL_MEMORY=128MB \
+             -s STACK_SIZE=1MB \
+             -s ASYNCIFY \
+             --preload-file sprites \
+             --preload-file sounds \
+             --shell-file $(WEBSHELL)
+
+web: $(WEBDIR)/index.html
+	@echo "Built $(WEBDIR)/index.html — serve with: make web-serve"
+
+$(WEBDIR):
+	mkdir -p $(WEBDIR)
+
+$(RAYLIB_SRC):
+	@mkdir -p vendor
+	git clone --depth 1 https://github.com/raysan5/raylib.git $@
+
+$(RAYLIB_WEB_A): | $(RAYLIB_SRC)
+	@command -v emcc >/dev/null || { echo "error: emcc not on PATH — source emsdk_env.sh first"; exit 1; }
+	cd $(RAYLIB_SRC)/src && emmake $(MAKE) PLATFORM=PLATFORM_WEB GRAPHICS=GRAPHICS_API_OPENGL_ES3 -B
+
+web-raylib: $(RAYLIB_WEB_A)
+
+$(WEBDIR)/index.html: game.c $(RAYLIB_WEB_A) $(WEBSHELL) sprites sounds | $(WEBDIR)
+	@command -v emcc >/dev/null || { echo "error: emcc not on PATH — source emsdk_env.sh first"; exit 1; }
+	emcc game.c $(RAYLIB_WEB_A) $(WEBCFLAGS) $(WEBLDFLAGS) -o $@
+
+web-serve: web
+	@echo "Serving $(WEBDIR) at http://localhost:8000/ — Ctrl-C to stop"
+	@cd $(WEBDIR) && python3 -m http.server 8000
+
+web-clean:
+	rm -rf $(WEBDIR)
+
 clean:
-	rm -rf $(APP) $(WINDIR) /tmp/ironfist.png /tmp/ironfist_icon.iconset
+	rm -rf $(APP) $(WINDIR) $(WEBDIR) /tmp/ironfist.png /tmp/ironfist_icon.iconset
