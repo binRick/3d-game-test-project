@@ -2155,11 +2155,23 @@ static void DrawHUD(void) {
 // ── PLAYER ───────────────────────────────────────────────────────────────────
 static void UpdPlayer(float dt, Camera3D *cam) {
     if (g_p.dead) return;
-    // --- MOUSE LOOK (reliable SetMousePosition technique) ---
+    // --- MOUSE LOOK ---
+    // Native: the SetMousePosition re-center trick dodges some macOS GLFW
+    //         mouse-delta accumulation quirks, so keep it.
+    // Web:    browsers can't warp the OS cursor for security reasons, so
+    //         SetMousePosition is a no-op and the re-centered delta is
+    //         always zero. Under Pointer Lock (engaged by DisableCursor
+    //         after a user gesture) GetMouseDelta returns the raw movement
+    //         delivered by the browser's pointer-lock event — use it.
+#ifdef __EMSCRIPTEN__
+    Vector2 md = GetMouseDelta();
+    float mdx = md.x, mdy = md.y;
+#else
     int cx2=GetScreenWidth()/2, cy2=GetScreenHeight()/2;
     Vector2 mp=GetMousePosition();
     float mdx=mp.x-(float)cx2, mdy=mp.y-(float)cy2;
     SetMousePosition(cx2,cy2);
+#endif
     g_p.yaw   -= mdx*SENS;
     g_p.pitch  = Clamp(g_p.pitch - mdy*SENS, -MAX_PITCH, MAX_PITCH);
     // weapon sway — gun lags behind mouse movement (inertia feel)
