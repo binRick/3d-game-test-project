@@ -10,7 +10,7 @@ No install, no download. WebGL 2 required.
 |:-:|:-:|
 | ![](docs/screenshot-2.png) | ![](docs/screenshot-3.png) |
 
-**A native macOS Duke-Nukem-style FPS built from scratch in C with raylib.**
+**A Duke-Nukem-style FPS built from scratch in C with raylib — native on macOS and Windows, WebAssembly in the browser.**
 
 One `game.c` file. No engine. No scripting layer. Real OpenGL, real audio, real
 3D collision. You fight an escalating horde of **chefs** through an industrial
