@@ -284,6 +284,7 @@ static Pickup   g_pk[MAX_PICKS];  static int g_pkc;
 static int      g_wave;
 static GameState g_gs;
 static char     g_msg[80]; static float g_msgT;
+static char     g_hypeMsg[80]; static float g_hypeT; static float g_hypeDur;
 static Model    g_wallModel, g_floorModel, g_ceilModel;
 
 // ── PLATFORMS (Q3-style 3D level geometry on top of the 2D floor) ───────────
@@ -1235,7 +1236,8 @@ static void KillEnemy(int i) {
     Msg(buf);
     // Hype text when the wave is down to its final chef. Matches the same
     // guard as the sOneLeft stinger above so audio + text always fire on the
-    // same transition.
+    // same transition. Routed through the dedicated hype banner (bigger,
+    // longer, flashing) instead of the regular Msg slot.
     if (!g_bossInterlude && Alive() == 1 && e->type != 3) {
         static const char *hype[] = {
             "LAST ONE STANDING!",
@@ -1244,7 +1246,10 @@ static void KillEnemy(int i) {
             "LONE SURVIVOR - END THIS!",
             "ONE REMAINS - NO MERCY!",
         };
-        Msg(hype[rand() % (int)(sizeof(hype)/sizeof(hype[0]))]);
+        strncpy(g_hypeMsg, hype[rand() % (int)(sizeof(hype)/sizeof(hype[0]))], 79);
+        g_hypeMsg[79] = 0;
+        g_hypeDur = 4.5f;
+        g_hypeT   = g_hypeDur;
     }
     if (Alive()==0) {
         // Test mode: respawn a boss forever so we can iterate on combat
@@ -1254,7 +1259,7 @@ static void KillEnemy(int i) {
             *ne = (Enemy){0};
             float bx, bz; PickBossSpawn(&bx, &bz);
             ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
-            ne->type = 3; ne->state = ES_PATROL;
+            ne->type = 3; ne->state = ES_CHASE;  // hunts on spawn — no wander phase
             ne->hp = ne->maxHp = ET_HP[3];
             ne->speed = ET_SPD[3]; ne->dmg = ET_DMG[3];
             ne->rate = ne->cd = ET_RATE[3];
@@ -1278,7 +1283,7 @@ static void KillEnemy(int i) {
             *ne = (Enemy){0};
             float bx, bz; PickBossSpawn(&bx, &bz);
             ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
-            ne->type = 3; ne->state = ES_PATROL;
+            ne->type = 3; ne->state = ES_CHASE;  // hunts on spawn — no wander phase
             // Boss scales with wave like chefs do
             float hm = 1.f + g_wave*0.12f;
             ne->hp = ne->maxHp = ET_HP[3] * hm;
@@ -2085,6 +2090,25 @@ static void DrawHUD(void) {
         int tw=MeasureText(g_msg,20);
         DrawText(g_msg,sw/2-tw/2,sh/3,20,(Color){255,100,100,a});
     }
+    // Hype banner — bigger, longer, flashing. Used for "last chef" stinger.
+    if (g_hypeT>0) {
+        // Alpha: full until the last 0.9s, then linear fade out.
+        float aF = fminf(1.f, g_hypeT/0.9f);
+        // Color strobe yellow <-> white at ~5Hz for arcade-style flash.
+        float t = (float)GetTime();
+        bool onBeat = (sinf(t*31.4f) > 0.f);
+        Color c = onBeat ? (Color){255,230, 40,(unsigned char)(255.f*aF)}
+                         : (Color){255,255,255,(unsigned char)(255.f*aF)};
+        // Scale pulse: 1.0..1.12 at ~3Hz for a bit of throb.
+        float pulse = 1.f + 0.12f*(0.5f + 0.5f*sinf(t*19.0f));
+        int fs = (int)(44.f*pulse + 0.5f);
+        int tw = MeasureText(g_hypeMsg, fs);
+        int tx = sw/2 - tw/2;
+        int ty = sh/4;
+        // Shadow first, then colour — cheap outline for readability over any bg.
+        DrawText(g_hypeMsg, tx+3, ty+3, fs, (Color){0,0,0,(unsigned char)(200.f*aF)});
+        DrawText(g_hypeMsg, tx,   ty,   fs, c);
+    }
     // ── MINIMAP (player-centred, rotates so forward=up) ──────────────────────────
     {
         int cx2=sw-90, cy2=88;   // screen centre of minimap
@@ -2256,6 +2280,7 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (g_p.switchAnim>0)g_p.switchAnim=fmaxf(0,g_p.switchAnim-dt*5.f);
     if (g_p.shake>0)     g_p.shake=fmaxf(0,g_p.shake-dt*4.f);
     if (g_msgT>0)        g_msgT-=dt;
+    if (g_hypeT>0)       g_hypeT-=dt;
     bool moving=(mlen>0)&&g_p.onGround;
     if (moving) g_p.bobT+=dt*(sprint?10.f:7.f);
 
@@ -2354,6 +2379,7 @@ static void InitGame(void) {
     g_hadVisibleEnemy = false;  // reset so the first spotted enemy triggers the stinger
     g_bossInterlude = false;    // not in a boss fight yet
     strcpy(g_msg,""); g_msgT=0;
+    g_hypeMsg[0]=0; g_hypeT=0; g_hypeDur=0;
 }
 
 // File-scope camera + per-frame step. `g_cam` needs to outlive a single main()

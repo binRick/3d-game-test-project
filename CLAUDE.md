@@ -1,6 +1,6 @@
 # Iron Fist 3D — project notes
 
-FPS built in C with raylib from a single source file (`game.c`), targeting
+FPS built in C with raylib from a single source file (`src/game.c`), targeting
 three platforms from the same codebase:
 
 - **macOS** — primary dev target; ships as an `.app` bundle.
@@ -8,7 +8,7 @@ three platforms from the same codebase:
   assets bundled as an RCDATA resource.
 - **Web** — Emscripten / WebAssembly build, runs in any WebGL-2 browser.
 
-Three platform dispatches live in `game.c`:
+Three platform dispatches live in `src/game.c`:
 
 - Asset path: `#if defined(__APPLE__)` picks `../Resources/` (app bundle),
   Windows extracts to `%TEMP%/IronFist3D/`, else flat `sprites/`/`sounds/`.
@@ -153,7 +153,7 @@ are source dumps — gitignored. Pull assets from them into `sprites/` or
 
 ## Code conventions
 
-- **Single file** (`game.c`) — keep it that way unless the user explicitly
+- **Single file** (`src/game.c`) — keep it that way unless the user explicitly
   asks to split it. The file is large but navigable via section banner
   comments like `// ── PLATFORMS ───────`.
 - **raylib 5.x** API. Use `rlgl` directly when you need to flush batches,

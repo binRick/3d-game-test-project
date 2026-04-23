@@ -12,7 +12,7 @@ No install, no download. WebGL 2 required.
 
 **A Duke-Nukem-style FPS built from scratch in C with raylib — native on macOS and Windows, WebAssembly in the browser.**
 
-One `game.c` file. No engine. No scripting layer. Real OpenGL, real audio, real
+One `src/game.c` file. No engine. No scripting layer. Real OpenGL, real audio, real
 3D collision. You fight an escalating horde of **chefs** through an industrial
 arena with Q3-style stairs, launcher splash damage, and an honest-to-god C&C
 Red Alert soundtrack.
@@ -49,7 +49,7 @@ make windows           # produces dist-win/IronFist3D.exe
 
 **Browser** — Emscripten / WebAssembly build. Hosted at
 [ironfist.ximg.app/play.html](https://ironfist.ximg.app/play.html), or build
-locally: the same `game.c` compiles to `dist-web/index.html` (+ `.js` /
+locally: the same `src/game.c` compiles to `dist-web/index.html` (+ `.js` /
 `.wasm` / `.data`). WebGL 2 required.
 
 ```bash
@@ -386,7 +386,7 @@ flowchart TD
 ## 📁 Repo layout
 
 ```
-game.c                    ← all the code
+src/game.c                ← all the code
 Makefile                  ← macOS .app + Windows single-file .exe targets
 run.sh                    ← brew-installs deps → make -B → open app
 gen_icon.py               ← procedural iron-fist .icns
@@ -418,7 +418,7 @@ sounds/
 - macOS icon cache can be stubborn. If the Dock shows the old icon, run
   `killall Dock` after a build
 - Windows: the game includes `<windows.h>` would clobber raylib's `DrawText`,
-  `CloseWindow`, `Rectangle` macros — `game.c` forward-declares only the
+  `CloseWindow`, `Rectangle` macros — `src/game.c` forward-declares only the
   handful of Win32 APIs needed for the RCDATA resource extraction instead
 
 ---

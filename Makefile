@@ -10,6 +10,7 @@ BIN     = $(APP)/Contents/MacOS/IronFist3D
 ICNS    = $(APP)/Contents/Resources/icon.icns
 SPRITES = $(APP)/Contents/Resources/sprites
 SOUNDS  = $(APP)/Contents/Resources/sounds
+SRC     = src/game.c
 
 game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES) $(SOUNDS)
 	@echo "Built $(APP) — run with: open $(APP)"
@@ -20,8 +21,8 @@ $(APP)/Contents/MacOS:
 $(APP)/Contents/Resources:
 	mkdir -p $(APP)/Contents/Resources
 
-$(BIN): game.c | $(APP)/Contents/MacOS
-	$(CC) $(CFLAGS) game.c $(LDFLAGS) -o $(BIN)
+$(BIN): $(SRC) | $(APP)/Contents/MacOS
+	$(CC) $(CFLAGS) $(SRC) $(LDFLAGS) -o $(BIN)
 
 $(APP)/Contents/Info.plist: | $(APP)/Contents/MacOS
 	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $@
@@ -86,8 +87,8 @@ $(WINDIR)/bundle.rc: | $(WINDIR)
 $(WINDIR)/bundle.o: $(WINDIR)/bundle.rc $(WINDIR)/bundle.dat
 	cd $(WINDIR) && $(WINRES) -i bundle.rc -O coff -o bundle.o
 
-$(WINEXE): game.c $(WINDIR)/bundle.o | $(WINDIR)
-	$(WINCC) $(WINCFLAGS) game.c $(WINDIR)/bundle.o $(WINLDFLAGS) -o $(WINEXE)
+$(WINEXE): $(SRC) $(WINDIR)/bundle.o | $(WINDIR)
+	$(WINCC) $(WINCFLAGS) $(SRC) $(WINDIR)/bundle.o $(WINLDFLAGS) -o $(WINEXE)
 
 $(WINDIR):
 	mkdir -p $(WINDIR)
@@ -145,9 +146,9 @@ $(RAYLIB_WEB_A): | $(RAYLIB_SRC)
 
 web-raylib: $(RAYLIB_WEB_A)
 
-$(WEBDIR)/index.html: game.c $(RAYLIB_WEB_A) $(WEBSHELL) sprites sounds | $(WEBDIR)
+$(WEBDIR)/index.html: $(SRC) $(RAYLIB_WEB_A) $(WEBSHELL) sprites sounds | $(WEBDIR)
 	@command -v emcc >/dev/null || { echo "error: emcc not on PATH — source emsdk_env.sh first"; exit 1; }
-	emcc game.c $(RAYLIB_WEB_A) $(WEBCFLAGS) $(WEBLDFLAGS) -o $@
+	emcc $(SRC) $(RAYLIB_WEB_A) $(WEBCFLAGS) $(WEBLDFLAGS) -o $@
 
 web-serve: web
 	@echo "Serving $(WEBDIR) at http://localhost:8000/ — Ctrl-C to stop"
