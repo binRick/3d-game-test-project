@@ -2571,8 +2571,17 @@ int main(int argc, char **argv) {
             fflush(g_dbgLog);
         }
     }
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    // FLAG_WINDOW_RESIZABLE so users can drag to any size; every draw call
+    // pulls GetScreenWidth/Height live so the HUD and minimap re-lay out
+    // automatically. SW/SH stays as the fallback/initial size.
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(SW,SH,"IRON FIST 3D");
+    // Default to maximised on native desktop launches — on high-DPI Windows
+    // monitors 1280x720 looks tiny otherwise. Skipped on web: the Emscripten
+    // shell owns canvas sizing.
+#ifndef PLATFORM_WEB
+    MaximizeWindow();
+#endif
     HideCursor();
     // Generate iron fist icon
     {
