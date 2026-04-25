@@ -175,7 +175,7 @@ static const char *FS = GLSL_VERSION GLSL_PRECISION
 "uniform vec3 viewPos;\n"
 "uniform vec4 ambient;\n"
 "struct Light{ int enabled; vec3 pos; vec3 color; float radius; };\n"
-"#define NL 8\n"
+"#define NL 22\n"
 "uniform Light lights[NL];\n"
 "out vec4 outColor;\n"
 "void main(){\n"
@@ -200,10 +200,33 @@ static const char *FS = GLSL_VERSION GLSL_PRECISION
 "}\n";
 
 // ── LIGHTING ─────────────────────────────────────────────────────────────────
-#define NUM_LIGHTS 8
+// Slot layout (NUM_LIGHTS must match the shader's NL):
+//   [0..NUM_LAMPS)                    static ceiling lamps
+//   [NUM_LAMPS..NUM_LAMPS+NUM_BARRELS) flaming-barrel lights (animated)
+//   MUZZLE_LIGHT                      rocket boom + gun flash
+//   PULSE_LIGHT                       player damage pulse
+#define NUM_LAMPS         14
+#define NUM_BARRELS       6
+#define NUM_LIGHTS        (NUM_LAMPS + NUM_BARRELS + 2)
+#define BARREL_LIGHT_BASE NUM_LAMPS
+#define MUZZLE_LIGHT      (NUM_LAMPS + NUM_BARRELS)
+#define PULSE_LIGHT       (NUM_LAMPS + NUM_BARRELS + 1)
 typedef struct { Vector3 pos; Vector3 color; float radius; int enabled; } LightDef;
 static Shader    g_shader;
 static LightDef  g_lights[NUM_LIGHTS];
+// Per-lamp destroyed flag for slots 0..5 (the static ceiling lights). Kept
+// separate from g_lights[i].enabled because slots 6/7 are also toggled
+// every frame for muzzle flash + explosion glow, and we need a stable bit
+// that says "this fixture has been shot off — draw it as broken".
+static bool      g_lampBroken[NUM_LAMPS];
+
+// Flaming barrel scenery — billboarded sprite + per-barrel point light.
+// Position fixed at game start, light flickers per frame.
+typedef struct { Vector3 pos; float phase; bool active; } Barrel;
+static Barrel    g_barrels[NUM_BARRELS];
+static int       g_barrelCount = 0;
+static Texture2D g_barrelTex[3];     // fcana0/fcanb0/fcanc0 — 3-frame fire cycle
+static bool      g_barrelOK = false;
 
 // shader uniform locations
 static int u_viewPos, u_ambient;
@@ -231,20 +254,31 @@ static void InitShader(void) {
         snprintf(buf, 64, "lights[%d].radius",  i); u_lRadius[i]  = GetShaderLocation(g_shader, buf);
     }
 
-    // Fixed scene lights – industrial/hell palette
-    // Mounted just below the ceiling so the visible fixture sits flush
-    LightDef scene[6] = {
+    // Fixed scene lights – industrial/hell palette across the arena.
+    // Mounted just below the ceiling so the visible fixture sits flush.
+    // Cell coords (col, row) checked against MAP — must be MAP[r][c]==0.
+    LightDef scene[NUM_LAMPS] = {
+        // Original six
         {{ 5*CELL, WALL_H-0.15f,  2*CELL}, {1.0f, 0.65f, 0.2f},  40.f, 1},
         {{14*CELL, WALL_H-0.15f,  9*CELL}, {0.2f, 0.5f,  1.0f},  50.f, 1},
         {{24*CELL, WALL_H-0.15f,  5*CELL}, {1.0f, 0.15f, 0.1f},  40.f, 1},
         {{ 5*CELL, WALL_H-0.15f, 16*CELL}, {0.15f,1.0f,  0.3f},  40.f, 1},
         {{24*CELL, WALL_H-0.15f, 16*CELL}, {0.9f, 0.3f,  1.0f},  40.f, 1},
         {{14*CELL, WALL_H-0.15f, 17*CELL}, {1.0f, 0.8f,  0.3f},  40.f, 1},
+        // Eight extras spread across the upper + middle bands
+        {{ 2*CELL, WALL_H-0.15f,  6*CELL}, {1.0f, 0.55f, 0.15f}, 35.f, 1},  // amber, NW
+        {{ 9*CELL, WALL_H-0.15f,  9*CELL}, {0.3f, 0.7f,  1.0f},  35.f, 1},  // ice blue, mid-W
+        {{19*CELL, WALL_H-0.15f,  9*CELL}, {0.3f, 1.0f,  0.4f},  35.f, 1},  // green, mid-E
+        {{27*CELL, WALL_H-0.15f,  9*CELL}, {1.0f, 0.3f,  0.85f}, 35.f, 1},  // magenta, far-E
+        {{ 2*CELL, WALL_H-0.15f, 13*CELL}, {1.0f, 0.2f,  0.15f}, 35.f, 1},  // red, SW
+        {{ 9*CELL, WALL_H-0.15f, 13*CELL}, {1.0f, 0.85f, 0.55f}, 35.f, 1},  // warm white
+        {{20*CELL, WALL_H-0.15f, 13*CELL}, {0.2f, 0.9f,  0.85f}, 35.f, 1},  // teal
+        {{27*CELL, WALL_H-0.15f, 13*CELL}, {1.0f, 0.7f,  0.25f}, 35.f, 1},  // orange, SE
     };
-    for (int i = 0; i < 6; i++) g_lights[i] = scene[i];
-    // slots 6-7 reserved (muzzle flash, player damage pulse)
-    g_lights[6] = (LightDef){{0,0,0},{0,0,0}, 0.f, 0};
-    g_lights[7] = (LightDef){{0,0,0},{0,0,0}, 0.f, 0};
+    for (int i = 0; i < NUM_LAMPS; i++) g_lights[i] = scene[i];
+    // Reserved dynamic slots — muzzle/explosion glow + player damage pulse
+    g_lights[MUZZLE_LIGHT] = (LightDef){{0,0,0},{0,0,0}, 0.f, 0};
+    g_lights[PULSE_LIGHT]  = (LightDef){{0,0,0},{0,0,0}, 0.f, 0};
     for (int i = 0; i < NUM_LIGHTS; i++) ShaderSetLight(i);
 }
 
@@ -258,6 +292,12 @@ typedef struct {
     float hp, maxHp;
     float shootCD, kickAnim, bobT, hurtFlash, shake, switchAnim;
     int   weapon, bullets, shells, rockets, mgAmmo, score, kills;
+    float quadT;     // QUAD DAMAGE remaining (seconds). >0 = 4x outgoing damage.
+    float hasteT;    // SPEED BOOST remaining (seconds). >0 = 1.6x movement speed.
+    // Peak timer at last grant — used as the meter's "100%" reference so the
+    // bar starts full on grab and refills when stacking. Reset to 0 once the
+    // power-up expires so the next pickup reads as a fresh full meter.
+    float quadPeak, hastePeak;
 } Player;
 
 typedef struct {
@@ -286,6 +326,10 @@ static GameState g_gs;
 static char     g_msg[80]; static float g_msgT;
 static char     g_hypeMsg[80]; static float g_hypeT; static float g_hypeDur;
 static Model    g_wallModel, g_floorModel, g_ceilModel;
+
+// Forward decl — TriggerMultiKill is defined alongside Shoot() but called
+// from the earlier rocket-splash branches in UpdBullets.
+static void TriggerMultiKill(void);
 
 // ── PLATFORMS (Q3-style 3D level geometry on top of the 2D floor) ───────────
 typedef struct { float x0, z0, x1, z1, top; } Platform;
@@ -348,6 +392,18 @@ static bool      g_schPainOK = false;
 static Texture2D g_schDeathTex[4];
 static bool      g_schDeathOK = false;
 
+// Cultist (enemy type 4) — SSCT* WolfenDoom occult sprites. 8-directional.
+// Doom rotation pairs: each "DirFrame" is 5 unique PNGs covering the 8 view
+// angles via mirror (rot 1/5 are unique, rot 2/8, 3/7, 4/6 share with flip).
+typedef struct { Texture2D rot[5]; bool ok; } DirFrame;
+static DirFrame  g_cultWalk[4];   // A-D walk cycle
+static bool      g_cultOK = false;
+static DirFrame  g_cultPain;      // E pain frame
+static bool      g_cultPainOK = false;
+static Texture2D g_cultDeathTex[5];  // I0..M0 death (corpse — single rot)
+static bool      g_cultDeathOK = false;
+#define CULT_DEATH_FRAME_TIME 0.22f
+
 // Boss (enemy type 3) — AODE* sprites. Walk A-D, pain F, death G/H/L/M/N.
 static Texture2D g_bossTex[4];
 static bool      g_bossOK = false;
@@ -380,6 +436,8 @@ static Sound    g_sFatality;      // MK announcer fatality sfx — plays on kill
 static bool     g_sFatalityOK = false;
 static Sound    g_sMulti;         // UT "Holy Shit!" — multi-kill (>=2 enemies in one shot)
 static bool     g_sMultiOK = false;
+static Sound    g_sMonster;       // "Monster Kill" — 4+ enemies in one shot
+static bool     g_sMonsterOK = false;
 static Sound    g_sFirstBlood;    // UT "First Blood!" — plays on first enemy kill each run
 static bool     g_sFirstBloodOK = false;
 // Enemy-sighted stingers — one is picked at random each time the first enemy
@@ -437,16 +495,16 @@ static void LoadMusicVol(void) {
 static bool     g_needMouseRelease = false;  // mouse must be released once before firing
 static bool     g_lastHitHead = false;  // set while processing a headshot shot; KillEnemy reads it
 
-// enemy stat tables — type 0/1/2 chefs, type 3 = BOSS
-static const float ET_HP[]    = {65,   145,  42,   800 };
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f};  // boss rushes you
-static const float ET_DMG[]   = {10,   24,   8,    40  };
-static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f};
-static const float ET_AR[]    = {24,   20,   30,   40  };
-static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f};  // boss gets in your face
-static const int   ET_SC[]    = {100,  300,  160,  2500};
-static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255}};
-static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255}};
+// enemy stat tables — type 0/1/2 chefs, type 3 = BOSS, type 4 = CULTIST
+static const float ET_HP[]    = {65,   145,  42,   800,  80  };
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f};  // boss rushes you
+static const float ET_DMG[]   = {10,   24,   8,    40,   14  };
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f};
+static const float ET_AR[]    = {24,   20,   30,   40,   30  };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f};  // boss gets in your face
+static const int   ET_SC[]    = {100,  300,  160,  2500, 220 };
+static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255}};
+static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
 // Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3)
@@ -944,7 +1002,7 @@ static void Explode(Vector3 p) {
     }
     g_p.shake=fmaxf(g_p.shake,0.55f);
     // muzzle flash light slot 6 repurposed for explosion
-    g_lights[6]=(LightDef){p,{1.0f,0.5f,0.1f},14.f,1}; ShaderSetLight(6);
+    g_lights[MUZZLE_LIGHT]=(LightDef){p,{1.0f,0.5f,0.1f},14.f,1}; ShaderSetLight(MUZZLE_LIGHT);
 }
 static void UpdParts(float dt) {
     for (int i=0;i<MAX_PARTS;i++) {
@@ -1002,6 +1060,73 @@ static void SeedPicks(void) {
         int c=POS[i][0],r=POS[i][1];
         if (r<ROWS&&c<COLS&&MAP[r][c]==0) SpawnPick(c*CELL+CELL/2.f,r*CELL+CELL/2.f,TYP[i]);
     }
+    // One QUAD + one SPEED at fixed map positions so a fresh run always has
+    // a power-up to find. Wave bumps spawn fresh ones at random open cells.
+    if (MAP[5][27]==0)  SpawnPick(27*CELL+CELL/2.f, 5*CELL+CELL/2.f, 5);  // QUAD, far NE
+    if (MAP[14][2]==0)  SpawnPick( 2*CELL+CELL/2.f,14*CELL+CELL/2.f, 6);  // SPEED, far SW
+}
+
+// Place flaming barrels at random open cells, spaced apart and away from
+// the player spawn. Each barrel claims one shader-light slot in the
+// BARREL_LIGHT_BASE..BARREL_LIGHT_BASE+NUM_BARRELS range; per-frame light
+// updates happen in StepFrame's flicker pass.
+static void SpawnBarrels(void) {
+    g_barrelCount = 0;
+    const float MIN_BARREL_SEP = 6.f;   // visual breathing room between barrels
+    const float MIN_PLAYER_SEP = 8.f;   // don't put one in the player's face
+    for (int idx = 0; idx < NUM_BARRELS; idx++) {
+        bool placed = false;
+        for (int tries = 0; tries < 80 && !placed; tries++) {
+            int r = 1 + rand()%(ROWS-2), c = 1 + rand()%(COLS-2);
+            if (MAP[r][c]) continue;
+            float wx = c*CELL + CELL/2.f, wz = r*CELL + CELL/2.f;
+            if (hypotf(wx - g_p.pos.x, wz - g_p.pos.z) < MIN_PLAYER_SEP) continue;
+            bool tooClose = false;
+            for (int k = 0; k < g_barrelCount; k++) {
+                if (hypotf(wx - g_barrels[k].pos.x, wz - g_barrels[k].pos.z) < MIN_BARREL_SEP) {
+                    tooClose = true; break;
+                }
+            }
+            if (tooClose) continue;
+            g_barrels[g_barrelCount].pos    = (Vector3){wx, 0.5f, wz};
+            g_barrels[g_barrelCount].phase  = (float)rand()/RAND_MAX * 6.28318f;
+            g_barrels[g_barrelCount].active = true;
+            g_barrelCount++;
+            placed = true;
+        }
+    }
+    // Disable any unused barrel light slots so leftovers from a prior run
+    // don't keep glowing in mid-air.
+    for (int i = 0; i < NUM_BARRELS; i++) {
+        if (i >= g_barrelCount) {
+            g_lights[BARREL_LIGHT_BASE + i].enabled = 0;
+            ShaderSetLight(BARREL_LIGHT_BASE + i);
+        }
+    }
+}
+
+// Drop a power-up at a random open cell at least 6m from the player AND not
+// stacked on an existing live pickup (overlap reads as one chunky billboard
+// and the player can't tell which they're grabbing). Called on wave bumps
+// so power-ups refresh through the run instead of running out.
+static void SpawnPowerupRandom(int type) {
+    const float MIN_PICKUP_SEP = 1.6f;  // ~2x grab radius — clear visual gap
+    for (int tries=0; tries<60; tries++) {
+        int r=1+rand()%(ROWS-2), c=1+rand()%(COLS-2);
+        if (MAP[r][c]) continue;
+        float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
+        if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z) < 6.f) continue;
+        bool tooClose = false;
+        for (int i=0; i<g_pkc; i++) {
+            if (!g_pk[i].active) continue;
+            if (hypotf(wx - g_pk[i].pos.x, wz - g_pk[i].pos.z) < MIN_PICKUP_SEP) {
+                tooClose = true; break;
+            }
+        }
+        if (tooClose) continue;
+        SpawnPick(wx, wz, type);
+        return;
+    }
 }
 static void UpdPicks(void) {
     float t=GetTime();
@@ -1023,17 +1148,52 @@ static void UpdPicks(void) {
                 case 2: g_p.rockets=(int)fminf(30, g_p.rockets+ 5);     snprintf(g_msg,80,"+5 ROCKETS");  break;
                 case 3: g_p.bullets=(int)fminf(200,g_p.bullets+24);     snprintf(g_msg,80,"+24 BULLETS"); break;
                 case 4: g_p.mgAmmo =(int)fminf(300,g_p.mgAmmo +50);     snprintf(g_msg,80,"+50 MG ROUNDS"); break;
+                // Power-ups: stack additively so two crates back-to-back is rewarded.
+                case 5: g_p.quadT  = fminf(60.f, g_p.quadT  + 25.f);
+                        if (g_p.quadT  > g_p.quadPeak)  g_p.quadPeak  = g_p.quadT;
+                        strncpy(g_hypeMsg, "QUAD DAMAGE!", 79); g_hypeMsg[79]=0;
+                        g_hypeDur = 2.5f; g_hypeT = g_hypeDur; break;
+                case 6: g_p.hasteT = fminf(60.f, g_p.hasteT + 20.f);
+                        if (g_p.hasteT > g_p.hastePeak) g_p.hastePeak = g_p.hasteT;
+                        strncpy(g_hypeMsg, "SPEED BOOST!", 79); g_hypeMsg[79]=0;
+                        g_hypeDur = 2.5f; g_hypeT = g_hypeDur; break;
             }
         }
     }
 }
+// Animated flaming-barrel sprites — 3-frame cycle, per-barrel phase offset
+// so they don't all pulse together. Drawn before the ceiling-light cones
+// so the additive cones layer over the flame's opaque pixels.
+static void DrawBarrels(Camera3D cam) {
+    if (!g_barrelOK) return;
+    float t = (float)GetTime();
+    const float spriteH = 1.8f;
+    for (int i = 0; i < g_barrelCount; i++) {
+        Barrel *b = &g_barrels[i];
+        if (!b->active) continue;
+        int frame = ((int)((t + b->phase) * 10.f)) % 3;
+        if (frame < 0) frame += 3;
+        Vector3 pos = {b->pos.x, b->pos.y + spriteH*0.5f - 0.5f, b->pos.z};
+        DrawBillboard(cam, g_barrelTex[frame], pos, spriteH, WHITE);
+    }
+}
+
 // Volumetric-ish ceiling lights: visible fixture + translucent cone beam below.
-// Uses the first 6 entries of g_lights (the static scene lights; slots 6-7 are dynamic).
+// Iterates the static scene lights (slots [0..NUM_LAMPS)); the trailing
+// MUZZLE_LIGHT / PULSE_LIGHT slots are dynamic and not drawn here.
 static void DrawCeilingLights(Camera3D cam) {
     (void)cam;
     // Fixture geometry + light cone — additive blending for the "god ray" glow
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < NUM_LAMPS; i++) {
         LightDef *L = &g_lights[i];
+        if (g_lampBroken[i]) {
+            // Shot-out fixture — keep the housing visible (charred dark grey)
+            // with a tiny dim ember inside, so the spot doesn't read as empty.
+            Vector3 fixturePos = L->pos;
+            DrawCube(fixturePos, 0.7f, 0.15f, 0.7f, (Color){35, 30, 28, 255});
+            DrawSphere((Vector3){fixturePos.x, fixturePos.y - 0.05f, fixturePos.z}, 0.10f, (Color){90,40,20,255});
+            continue;
+        }
         if (!L->enabled) continue;
         Color col = {
             (unsigned char)(fminf(L->color.x,1.f)*255),
@@ -1052,7 +1212,7 @@ static void DrawCeilingLights(Camera3D cam) {
     rlDrawRenderBatchActive();
     BeginBlendMode(BLEND_ADDITIVE);
     rlDisableDepthMask();
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < NUM_LAMPS; i++) {
         LightDef *L = &g_lights[i];
         if (!L->enabled) continue;
         Color base = {
@@ -1083,11 +1243,26 @@ static void DrawPicks(Camera3D cam) {
         {255,140,  0,255},  // rockets
         {220,220,120,255},  // bullets
         {180,200,255,255},  // MG
+        {200, 60,220,255},  // QUAD damage (magenta)
+        { 40,200,255,255},  // SPEED boost (cyan)
     };
     // Size per ammo type (the sprites have different native sizes)
     static const float sz[] = {0.9f, 0.7f, 0.65f, 0.45f, 0.85f};
+    float t = (float)GetTime();
     for (int i=0;i<g_pkc;i++) {
         Pickup *pk=&g_pk[i]; if (!pk->active) continue;
+        // Power-ups have no sprite assets — draw a pulsing sphere with a
+        // larger halo ring so they read as "special" against ammo crates.
+        if (pk->type == 5 || pk->type == 6) {
+            float pulse = 0.85f + 0.25f*sinf(t*4.f + (float)i);
+            Color c = tc[pk->type];
+            DrawSphere(pk->pos, 0.34f * pulse, c);
+            // Two stacked halo rings rotating in opposite directions for that
+            // "this is a power-up" tell. Additive feels too much; semi-transparent.
+            DrawCircle3D(pk->pos, 0.65f, (Vector3){1,0,0}, 90.f + t*40.f, Fade(c, 0.55f));
+            DrawCircle3D(pk->pos, 0.55f, (Vector3){0,0,1}, 90.f - t*60.f, Fade(c, 0.45f));
+            continue;
+        }
         Texture2D tex = {0};
         if (pk->type == 0 && g_healthTex[pk->variant].id) tex = g_healthTex[pk->variant];
         else if (pk->type > 0 && pk->type < 5 && g_ammoTex[pk->type].id) tex = g_ammoTex[pk->type];
@@ -1133,7 +1308,7 @@ static const char *StateName(EnemyState s) {
     return s==ES_PATROL ? "PATROL" : s==ES_CHASE ? "CHASE" : "ATTACK";
 }
 static const char *TypeName(int t) {
-    return t==0 ? "CHEF" : t==1 ? "HEAVY" : t==2 ? "FAST" : t==3 ? "BOSS" : "?";
+    return t==0 ? "CHEF" : t==1 ? "HEAVY" : t==2 ? "FAST" : t==3 ? "BOSS" : t==4 ? "CULT" : "?";
 }
 
 static void DebugLogTick(void) {
@@ -1231,8 +1406,9 @@ static void KillEnemy(int i) {
         if (IsWall(e->pos.x+ox, e->pos.z+oz)) { ox = -ox*0.4f; oz = -oz*0.4f; }
         SpawnPick(e->pos.x+ox, e->pos.z+oz, t);
     }
-    static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF"};
-    char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[e->type],e->score*g_wave);
+    static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST"};
+    int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
+    char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
     // Hype text when the wave is down to its final chef. Matches the same
     // guard as the sOneLeft stinger above so audio + text always fire on the
@@ -1306,6 +1482,10 @@ static void KillEnemy(int i) {
         }
         char wbuf[64]; snprintf(wbuf,64,"-- WAVE %d INCOMING --",g_wave);
         Msg(wbuf);
+        // Refresh one of each power-up at a random open cell so a long run
+        // always has a quad or speed to chase.
+        SpawnPowerupRandom(5);
+        SpawnPowerupRandom(6);
         // spawn next wave
         int cnt=10+g_wave*4;
         for (int k=0;k<cnt&&g_ec<MAX_ENEMIES;k++) {
@@ -1315,7 +1495,18 @@ static void KillEnemy(int i) {
                 float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
                 if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
                 float rng=(float)rand()/RAND_MAX;
-                int type=g_wave<2?0:rng<0.5f?0:rng<0.78f?2:1;
+                // Wave roll:
+                //   wave 1     → all chef (type 0)
+                //   wave 2     → chef + fast + heavy mix
+                //   wave 3+    → cultist (type 4) starts appearing as 20% slot
+                //                replacing some heavy/fast slots so total stays ~same.
+                int type;
+                if (g_wave < 2)            type = 0;
+                else if (g_wave < 3)       type = (rng < 0.5f) ? 0 : (rng < 0.78f) ? 2 : 1;
+                else                       type = (rng < 0.40f) ? 0
+                                                : (rng < 0.65f) ? 2
+                                                : (rng < 0.80f) ? 1
+                                                :                4;   // CULTIST
                 Enemy *ne=&g_e[g_ec++];
                 *ne=(Enemy){0};
                 ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top
@@ -1620,6 +1811,110 @@ static void DrawEnemies(Camera3D cam) {
             continue;  // skip chef/fallback drawing for this enemy
         }
 
+        // CULTIST (type 4) — 8-directional sprites. Walk A-D, pain E, death I-M.
+        // Sprite slot picked from the angle of the player relative to the
+        // cultist's facing direction (forward = pd in PATROL, toward player
+        // in CHASE/ATTACK). Mirror pairs (rot 2/8, 3/7, 4/6) drawn via a
+        // negative source.width on DrawBillboardPro so we don't carry double
+        // the textures in memory.
+        if (e->type == 4 && g_cultOK) {
+            // Standing pose is ~107 px tall = 2 m. Use that ratio for ALL
+            // frames so death sprites — which shrink in pixel height as the
+            // corpse collapses — also shrink in world height, sitting on
+            // the floor instead of stretched up to fill a fixed 2 m box.
+            const float PX_PER_M = 107.f / 2.0f;
+            float spriteH = 2.0f;
+
+            Texture2D tex = {0};
+            bool flip = false;
+            bool isCorpse = e->dying && g_cultDeathOK;
+            if (isCorpse) {
+                int df = (int)(e->deathT / CULT_DEATH_FRAME_TIME);
+                if (df > 4) df = 4;
+                tex = g_cultDeathTex[df];
+            } else {
+                // Cultist's facing direction
+                Vector3 facing;
+                if (e->state == ES_PATROL) {
+                    facing = e->pd;
+                } else {
+                    float fdx = g_p.pos.x - e->pos.x, fdz = g_p.pos.z - e->pos.z;
+                    float l = sqrtf(fdx*fdx + fdz*fdz);
+                    facing = (l > 0.001f) ? (Vector3){fdx/l, 0, fdz/l} : (Vector3){0, 0, 1};
+                }
+                // Player position relative to cultist's forward — relAngle in
+                // [-180, 180] degrees, 0 = player straight ahead of cultist.
+                float enemyYaw  = atan2f(facing.x, facing.z);
+                float pdx = g_p.pos.x - e->pos.x, pdz = g_p.pos.z - e->pos.z;
+                float playerYaw = atan2f(pdx, pdz);
+                float rel = playerYaw - enemyYaw;
+                while (rel >  PI) rel -= 2.f*PI;
+                while (rel < -PI) rel += 2.f*PI;
+                float relDeg = rel * RAD2DEG;
+
+                // Bin into 8 octants — rot 1 centered on 0°.
+                float a = relDeg + 22.5f;
+                while (a < 0)    a += 360.f;
+                while (a >= 360) a -= 360.f;
+                int idx = (int)(a / 45.f) % 8;
+                // Doom convention: 0=rot1 front, 4=rot5 back. Rotations 6/7/8
+                // mirror 4/3/2 respectively (same image flipped horizontally).
+                static const int   slots[8] = {0, 1, 2, 3, 4, 3, 2, 1};
+                static const bool  flips[8] = {false,false,false,false,false,true,true,true};
+                int slot = slots[idx];
+                flip = flips[idx];
+
+                DirFrame *frame;
+                if (e->flashT > 0.f && g_cultPainOK) {
+                    frame = &g_cultPain;
+                } else {
+                    int wf = (int)(e->legT * 0.6f) % 4;
+                    if (wf < 0) wf += 4;
+                    frame = &g_cultWalk[wf];
+                }
+                if (frame->ok) tex = frame->rot[slot];
+            }
+
+            if (tex.id) {
+                // Per-frame world-height from pixel-height. Walk frames stay
+                // at ~2 m; final corpse (M0, 64 px) ends up ~1.20 m and lies
+                // visibly on the ground.
+                spriteH = (float)tex.height / PX_PER_M;
+                Vector3 pos = {e->pos.x, e->pos.y + spriteH * 0.5f, e->pos.z};
+                Rectangle src = {0, 0, (float)tex.width, (float)tex.height};
+                if (flip) src.width = -src.width;
+                float aspect = (float)tex.width / (float)tex.height;
+                Vector2 size   = {spriteH * aspect, spriteH};
+                Vector2 origin = {size.x * 0.5f, size.y * 0.5f};
+                DrawBillboardPro(cam, tex, src, pos, (Vector3){0,1,0}, size, origin, 0.f, WHITE);
+            }
+            // HP bar (mirrors the chef path) — only when alive and damaged
+            if (!e->dying && e->hp < e->maxHp) {
+                float hp = e->hp / e->maxHp;
+                float bary = e->pos.y + spriteH + 0.25f;
+                Vector3 HF = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+                Vector3 HR = Vector3Normalize(Vector3CrossProduct(HF, cam.up));
+                Vector3 HU = Vector3CrossProduct(HR, HF);
+                const float W = 0.82f, H = 0.10f;
+                Vector3 center = {e->pos.x, bary, e->pos.z};
+                Vector3 bgTL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU, H*0.5f)));
+                Vector3 bgTR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU, H*0.5f)));
+                Vector3 bgBR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU,-H*0.5f)));
+                Vector3 bgBL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU,-H*0.5f)));
+                rlBegin(RL_TRIANGLES);
+                rlColor4ub(25,25,25,250);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z); rlVertex3f(bgTR.x,bgTR.y,bgTR.z);
+                Vector3 fTR = Vector3Add(bgTL, Vector3Scale(HR, W*hp));
+                Vector3 fBR = Vector3Add(bgBL, Vector3Scale(HR, W*hp));
+                rlColor4ub(220,40,40,255);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(fBR.x,fBR.y,fBR.z);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(fBR.x,fBR.y,fBR.z); rlVertex3f(fTR.x,fTR.y,fTR.z);
+                rlEnd();
+            }
+            continue;  // skip chef/fallback drawing for this enemy
+        }
+
         if (g_chefOK) {
             // Size tuned per enemy type
             float spriteH = (e->type==1) ? 2.3f : (e->type==2) ? 1.7f : 2.0f;
@@ -1731,6 +2026,76 @@ static float RSphere(Vector3 ro, Vector3 rd, Vector3 sc, float sr) {
     float b=Vector3DotProduct(oc,rd), c=Vector3DotProduct(oc,oc)-sr*sr, h=b*b-c;
     if (h<0) return -1; return -b-sqrtf(h);
 }
+
+// Destroy a ceiling lamp: shader light off, broken-flag on, fireball + glass
+// shards. Idempotent — safe to call repeatedly (a rocket splash that catches
+// an already-broken lamp does nothing).
+static void DestroyLamp(int idx) {
+    if (idx < 0 || idx >= NUM_LAMPS) return;
+    if (g_lampBroken[idx]) return;
+    g_lampBroken[idx] = true;
+    g_lights[idx].enabled = 0;
+    ShaderSetLight(idx);
+    Vector3 p = g_lights[idx].pos;
+    Explode(p);
+    // Glass shards — small, tumbling, white-grey. Fall under gravity.
+    for (int i = 0; i < 18; i++) {
+        Vector3 v = {
+            ((float)rand()/RAND_MAX - 0.5f) * 6.f,
+            (float)rand()/RAND_MAX * 4.f + 1.f,
+            ((float)rand()/RAND_MAX - 0.5f) * 6.f
+        };
+        unsigned char br = 200 + rand() % 55;
+        SpawnPart(p, v, (Color){br, br, br, 255},
+                  0.6f + (float)rand()/RAND_MAX * 0.5f,
+                  0.04f + (float)rand()/RAND_MAX * 0.04f, true);
+    }
+}
+
+// Detonate a flaming barrel: 5m splash to enemies and player, chains to
+// nearby lamps and other barrels. Idempotent — second call on the same
+// barrel does nothing, so the chain reaction terminates cleanly even if
+// several barrels are within each other's blast radius. Recursion is
+// bounded by NUM_BARRELS (each barrel deactivates before chaining).
+static void DetonateBarrel(int idx) {
+    if (idx < 0 || idx >= g_barrelCount) return;
+    Barrel *b = &g_barrels[idx];
+    if (!b->active) return;
+    b->active = false;
+    g_lights[BARREL_LIGHT_BASE + idx].enabled = 0;
+    g_lights[BARREL_LIGHT_BASE + idx].radius  = 0.f;
+    ShaderSetLight(BARREL_LIGHT_BASE + idx);
+    Vector3 p = b->pos;
+    Explode(p);
+    // Splash damage to live enemies — falls off linearly to 0 at 5m.
+    for (int j = 0; j < g_ec; j++) {
+        if (!g_e[j].active || g_e[j].dying) continue;
+        float d = Vector3Distance(p, g_e[j].pos);
+        if (d < 5.f) DmgEnemy(j, 150.f * (1.f - d/5.f));
+    }
+    // Player splash — caps at 30 HP self-damage at point-blank, like a
+    // rocket-on-wall. Walking up to a barrel and shooting it should hurt.
+    float pd = Vector3Distance(p, g_p.pos);
+    if (pd < 5.f) {
+        g_p.hp -= 30.f * (1.f - pd/5.f);
+        g_p.hurtFlash = 0.3f;
+        if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
+    }
+    // Hot enough to break nearby ceiling lamps.
+    for (int li = 0; li < NUM_LAMPS; li++) {
+        if (!g_lampBroken[li] && Vector3Distance(p, g_lights[li].pos) < 5.f) {
+            DestroyLamp(li);
+        }
+    }
+    // Chain reaction — any other live barrel inside 4.5m goes up too.
+    // Slightly tighter than the splash damage radius so chains don't
+    // automatically cascade through the entire map every shot.
+    for (int k = 0; k < g_barrelCount; k++) {
+        if (k == idx) continue;
+        if (!g_barrels[k].active) continue;
+        if (Vector3Distance(p, g_barrels[k].pos) < 4.5f) DetonateBarrel(k);
+    }
+}
 static void FireBullet(Vector3 pos, Vector3 dir, float dmg, bool rocket) {
     for (int i=0;i<MAX_BULLETS;i++) if (!g_b[i].active) {
         g_b[i]=(Bullet){pos,Vector3Scale(dir,rocket?22.f:65.f),rocket?6.f:1.f,dmg,true,rocket};
@@ -1750,9 +2115,20 @@ static void UpdBullets(float dt) {
                 for (int j=0;j<g_ec;j++) {
                     if (!g_e[j].active || g_e[j].dying) continue;
                     float d=Vector3Distance(b->pos,g_e[j].pos);
-                    if (d<5.f) DmgEnemy(j,200.f*(1.f-d/5.f));
+                    // b->dmg is the at-fire damage (200 baseline, 800 under quad).
+                    if (d<5.f) DmgEnemy(j,b->dmg*(1.f-d/5.f));
                 }
-                if (g_killsThisShot>=2 && g_sMultiOK){ SetSoundVolume(g_sMulti,8.0f); PlaySound(g_sMulti); Msg("MULTI KILL!"); }
+                // Any nearby lamp pops too — splash respects line of sight
+                // by distance only (good enough for a 5m blast).
+                for (int li=0; li<NUM_LAMPS; li++)
+                    if (!g_lampBroken[li] && Vector3Distance(b->pos, g_lights[li].pos) < 5.f)
+                        DestroyLamp(li);
+                // Barrels in range chain-detonate (DetonateBarrel itself
+                // recurses for further chains).
+                for (int bk=0; bk<g_barrelCount; bk++)
+                    if (g_barrels[bk].active && Vector3Distance(b->pos, g_barrels[bk].pos) < 5.f)
+                        DetonateBarrel(bk);
+                TriggerMultiKill();
                 float pd=Vector3Distance(b->pos,g_p.pos);
                 if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
             } else Sparks(prev,22);
@@ -1771,8 +2147,14 @@ static void UpdBullets(float dt) {
                 if (b->rocket) {
                     Explode(b->pos);
                     g_killsThisShot = 0;
-                    for (int k=0;k<g_ec;k++){if(!g_e[k].active||g_e[k].dying)continue;float d=Vector3Distance(b->pos,g_e[k].pos);if(d<5.f)DmgEnemy(k,200.f*(1.f-d/5.f));}
-                    if (g_killsThisShot>=2 && g_sMultiOK){ SetSoundVolume(g_sMulti,8.0f); PlaySound(g_sMulti); Msg("MULTI KILL!"); }
+                    for (int k=0;k<g_ec;k++){if(!g_e[k].active||g_e[k].dying)continue;float d=Vector3Distance(b->pos,g_e[k].pos);if(d<5.f)DmgEnemy(k,b->dmg*(1.f-d/5.f));}
+                    for (int li=0; li<NUM_LAMPS; li++)
+                        if (!g_lampBroken[li] && Vector3Distance(b->pos, g_lights[li].pos) < 5.f)
+                            DestroyLamp(li);
+                    for (int bk=0; bk<g_barrelCount; bk++)
+                        if (g_barrels[bk].active && Vector3Distance(b->pos, g_barrels[bk].pos) < 5.f)
+                            DetonateBarrel(bk);
+                    TriggerMultiKill();
                     float pd=Vector3Distance(b->pos,g_p.pos);
                     if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
                 } else { Blood(b->pos, e->type==3 ? 40 : 6); DmgEnemy(j,b->dmg); }
@@ -1786,6 +2168,24 @@ static void DrawBullets(void) {
         Bullet *b=&g_b[i]; if (!b->active) continue;
         DrawSphere(b->pos,b->rocket?0.14f:0.05f,b->rocket?ORANGE:YELLOW);
         if (b->rocket) SpawnPart(b->pos,(Vector3){((float)rand()/RAND_MAX-.5f)*.4f,0,((float)rand()/RAND_MAX-.5f)*.4f},(Color){255,120,0,200},0.22f,0.08f,false);
+    }
+}
+
+// Multi-kill announcement — picks the right tier and plays it.
+//   4+ kills → MONSTER KILL!! routed through the flashing hype banner so it
+//              dominates the screen, plus the new monster-kill stinger.
+//   2-3      → existing MULTI KILL / "Holy Shit!" stinger via the regular
+//              Msg() slot.
+static void TriggerMultiKill(void) {
+    if (g_killsThisShot >= 4) {
+        if (g_sMonsterOK) { SetSoundVolume(g_sMonster, 1.5f); PlaySound(g_sMonster); }
+        strncpy(g_hypeMsg, "MONSTER KILL!!", 79); g_hypeMsg[79] = 0;
+        g_hypeDur = 3.0f;
+        g_hypeT   = g_hypeDur;
+    } else if (g_killsThisShot >= 2 && g_sMultiOK) {
+        SetSoundVolume(g_sMulti, 8.0f);
+        PlaySound(g_sMulti);
+        Msg("MULTI KILL!");
     }
 }
 
@@ -1808,15 +2208,34 @@ static void Shoot(void) {
     float syw=sinf(g_p.yaw+3.14159f), cyw=cosf(g_p.yaw+3.14159f);
     Vector3 fwd={syw*cy, sy, cyw*cy};
     Vector3 eyePos={g_p.pos.x,g_p.pos.y+EYE_H,g_p.pos.z};
-    g_lights[6]=(LightDef){Vector3Add(eyePos,Vector3Scale(fwd,1.5f)),{1.f,0.85f,0.4f},8.f,1};
-    ShaderSetLight(6);
-    if (w==2){FireBullet(eyePos,fwd,200,true);return;}
+    g_lights[MUZZLE_LIGHT]=(LightDef){Vector3Add(eyePos,Vector3Scale(fwd,1.5f)),{1.f,0.85f,0.4f},8.f,1};
+    ShaderSetLight(MUZZLE_LIGHT);
+    float quadMul = (g_p.quadT > 0.f) ? 4.f : 1.f;
+    if (w==2){FireBullet(eyePos,fwd,200.f*quadMul,true);return;}
     g_killsThisShot = 0;          // reset per-shot counter for multi-kill detection
     int pels=WPEL[w]; float sprd=(w==1)?0.10f:0.012f;
     for (int p=0;p<pels;p++) {
         Vector3 rd=fwd;
         if (pels>1){rd.x+=((float)rand()/RAND_MAX-.5f)*sprd*2;rd.y+=((float)rand()/RAND_MAX-.5f)*sprd;rd.z+=((float)rand()/RAND_MAX-.5f)*sprd*2;rd=Vector3Normalize(rd);}
         float best=1e9f; int bi=-1; bool headshot=false;
+        // Closest-hit-wins ray test against lamps, barrels, and enemies.
+        // Whenever a closer surface is found we update `best` AND clear
+        // the previous winners' indices, so exactly one of {bi, lampHit,
+        // barrelHit} is set after all three passes.
+        int lampHit = -1, barrelHit = -1;
+        for (int li=0; li<NUM_LAMPS; li++) {
+            if (g_lampBroken[li]) continue;
+            float lt = RSphere(eyePos, rd, g_lights[li].pos, 0.55f);
+            if (lt > 0 && lt < best) { best = lt; lampHit = li; barrelHit = -1; }
+        }
+        for (int bk=0; bk<g_barrelCount; bk++) {
+            if (!g_barrels[bk].active) continue;
+            // Barrel hit-sphere centred slightly above the floor on the can,
+            // 0.55m radius so it reads as a chunky target.
+            Vector3 bcen = {g_barrels[bk].pos.x, g_barrels[bk].pos.y + 0.6f, g_barrels[bk].pos.z};
+            float bt = RSphere(eyePos, rd, bcen, 0.55f);
+            if (bt > 0 && bt < best) { best = bt; barrelHit = bk; lampHit = -1; }
+        }
         for (int j=0;j<g_ec;j++){
             if (!g_e[j].active || g_e[j].dying) continue;
             // Per-type head position + hitbox sizes (boss is much bigger)
@@ -1833,10 +2252,10 @@ static void Shoot(void) {
             // the sprite when it rides up onto a platform (e->pos.y > 0).
             Vector3 hc={g_e[j].pos.x, g_e[j].pos.y + headY, g_e[j].pos.z};
             float ht=RSphere(eyePos,rd,hc,headR);
-            if (ht>0&&ht<best){best=ht;bi=j;headshot=true;}
+            if (ht>0&&ht<best){best=ht;bi=j;headshot=true; lampHit=-1; barrelHit=-1;}
             Vector3 bc={g_e[j].pos.x, g_e[j].pos.y + bodyY, g_e[j].pos.z};
             float bt=RSphere(eyePos,rd,bc,bodyR);
-            if (bt>0&&bt<best){best=bt;bi=j;headshot=false;}
+            if (bt>0&&bt<best){best=bt;bi=j;headshot=false; lampHit=-1; barrelHit=-1;}
         }
         if (bi>=0){
             Vector3 hp=Vector3Add(eyePos,Vector3Scale(rd,best));
@@ -1844,7 +2263,7 @@ static void Shoot(void) {
             int bloodCount = headshot ? 25 : 14;
             if (g_e[bi].type == 3) bloodCount *= 4;
             Blood(hp, bloodCount);
-            float dmg=(float)WD[w]*(headshot?2.5f:1.0f);
+            float dmg=(float)WD[w]*(headshot?2.5f:1.0f)*quadMul;
             // Shotgun damage falloff curve:
             //   0m  → 2.5x (point-blank)
             //   6m  → 1.0x (normal)
@@ -1861,6 +2280,15 @@ static void Shoot(void) {
                 if (g_sHeadshotOK) { SetSoundVolume(g_sHeadshot, 1.5f); PlaySound(g_sHeadshot); }
             }
         }
+        else if (barrelHit >= 0) {
+            // Pellet hit a barrel — full detonation with chain reaction.
+            DetonateBarrel(barrelHit);
+        }
+        else if (lampHit >= 0) {
+            // Lamp is the closest thing the pellet hit. One pellet/bullet
+            // is enough — lamps are one-shot for satisfying punch.
+            DestroyLamp(lampHit);
+        }
         else{for(float t=0.5f;t<50.f;t+=0.5f){Vector3 pt=Vector3Add(eyePos,Vector3Scale(rd,t));if(IsWall(pt.x,pt.z)){Sparks(pt,18);break;}}}
     }
     // Shotgun blast SFX — always use the shotgun-kill stinger for every shot
@@ -1869,11 +2297,7 @@ static void Shoot(void) {
         PlaySound(g_sShotgunKill);
     }
     // Multi-kill announcement (2+ enemies dropped by this shot)
-    if (g_killsThisShot >= 2 && g_sMultiOK) {
-        SetSoundVolume(g_sMulti, 8.0f);
-        PlaySound(g_sMulti);
-        Msg("MULTI KILL!");
-    }
+    TriggerMultiKill();
 }
 
 // ── WEAPON VIEWMODEL ─────────────────────────────────────────────────────────
@@ -2077,6 +2501,36 @@ static void DrawHUD(void) {
     DrawText(wv,12,10,18,(Color){255,160,40,255});
     char en[32]; snprintf(en,32,"ENEMIES: %d",Alive());
     DrawText(en,12,32,14,(Color){200,60,60,255});
+    // Active power-up timers — text + a draining meter underneath. Bar fraction
+    // is current/peak so it starts full on each fresh grab; stacking refills.
+    // Both pulse when <= 3s left to flag impending expiry.
+    {
+        const int barW = 140, barH = 7;
+        int powY = 52;
+        if (g_p.quadT > 0.f && g_p.quadPeak > 0.f) {
+            bool urgent = g_p.quadT <= 3.f;
+            unsigned char alpha = urgent ? (unsigned char)(160 + 95*(0.5f+0.5f*sinf((float)GetTime()*12.f))) : 255;
+            Color col = (Color){220, 80,230,alpha};
+            char qb[32]; snprintf(qb,32,"QUAD %4.1fs", g_p.quadT);
+            DrawText(qb,12,powY,16,col);
+            float frac = fminf(1.f, g_p.quadT / g_p.quadPeak);
+            DrawRectangle(12, powY+18, barW,            barH, (Color){25, 5, 30, 200});
+            DrawRectangle(12, powY+18, (int)(barW*frac),barH, col);
+            DrawRectangleLines(12, powY+18, barW,       barH, (Color){80, 80, 80, 120});
+            powY += 18 + barH + 4;
+        }
+        if (g_p.hasteT > 0.f && g_p.hastePeak > 0.f) {
+            bool urgent = g_p.hasteT <= 3.f;
+            unsigned char alpha = urgent ? (unsigned char)(160 + 95*(0.5f+0.5f*sinf((float)GetTime()*12.f))) : 255;
+            Color col = (Color){ 60,210,255,alpha};
+            char hb[32]; snprintf(hb,32,"SPEED %4.1fs", g_p.hasteT);
+            DrawText(hb,12,powY,16,col);
+            float frac = fminf(1.f, g_p.hasteT / g_p.hastePeak);
+            DrawRectangle(12, powY+18, barW,            barH, (Color){5, 25, 30, 200});
+            DrawRectangle(12, powY+18, (int)(barW*frac),barH, col);
+            DrawRectangleLines(12, powY+18, barW,       barH, (Color){80, 80, 80, 120});
+        }
+    }
     // kill counter bottom-center
     char kl[32]; snprintf(kl,32,"KILLS: %d",g_p.kills);
     int klw=MeasureText(kl,16);
@@ -2090,24 +2544,37 @@ static void DrawHUD(void) {
         int tw=MeasureText(g_msg,20);
         DrawText(g_msg,sw/2-tw/2,sh/3,20,(Color){255,100,100,a});
     }
-    // Hype banner — bigger, longer, flashing. Used for "last chef" stinger.
+    // Hype banner — bigger, longer, flashing. Used for "last chef" stinger,
+    // power-up grabs, and MONSTER KILL!! (which gets the bigger/redder treatment).
     if (g_hypeT>0) {
+        // MONSTER KILL is in a tier of its own — almost double-size base font,
+        // stronger throb, red <-> white strobe instead of yellow <-> white.
+        bool monster = (g_hypeMsg[0]=='M' && g_hypeMsg[1]=='O' && g_hypeMsg[2]=='N');
         // Alpha: full until the last 0.9s, then linear fade out.
         float aF = fminf(1.f, g_hypeT/0.9f);
-        // Color strobe yellow <-> white at ~5Hz for arcade-style flash.
         float t = (float)GetTime();
         bool onBeat = (sinf(t*31.4f) > 0.f);
-        Color c = onBeat ? (Color){255,230, 40,(unsigned char)(255.f*aF)}
-                         : (Color){255,255,255,(unsigned char)(255.f*aF)};
-        // Scale pulse: 1.0..1.12 at ~3Hz for a bit of throb.
-        float pulse = 1.f + 0.12f*(0.5f + 0.5f*sinf(t*19.0f));
-        int fs = (int)(44.f*pulse + 0.5f);
+        Color c;
+        if (monster) {
+            c = onBeat ? (Color){255, 50, 30,(unsigned char)(255.f*aF)}
+                       : (Color){255,255,255,(unsigned char)(255.f*aF)};
+        } else {
+            c = onBeat ? (Color){255,230, 40,(unsigned char)(255.f*aF)}
+                       : (Color){255,255,255,(unsigned char)(255.f*aF)};
+        }
+        // Scale pulse — monster kill throbs harder.
+        float amp   = monster ? 0.20f : 0.12f;
+        float pulse = 1.f + amp*(0.5f + 0.5f*sinf(t*19.0f));
+        int   base  = monster ? 86 : 44;
+        int fs = (int)(base*pulse + 0.5f);
         int tw = MeasureText(g_hypeMsg, fs);
         int tx = sw/2 - tw/2;
         int ty = sh/4;
         // Shadow first, then colour — cheap outline for readability over any bg.
-        DrawText(g_hypeMsg, tx+3, ty+3, fs, (Color){0,0,0,(unsigned char)(200.f*aF)});
-        DrawText(g_hypeMsg, tx,   ty,   fs, c);
+        // Monster kill gets a thicker drop shadow so the giant text reads.
+        int sh_off = monster ? 5 : 3;
+        DrawText(g_hypeMsg, tx+sh_off, ty+sh_off, fs, (Color){0,0,0,(unsigned char)(200.f*aF)});
+        DrawText(g_hypeMsg, tx,        ty,        fs, c);
     }
     // ── MINIMAP (player-centred, rotates so forward=up) ──────────────────────────
     {
@@ -2158,6 +2625,25 @@ static void DrawHUD(void) {
             }
         }
 
+        // Power-up beacons only (QUAD / SPEED). Ammo + health are not shown
+        // — keeps the radar tight on the high-value grabs.
+        for (int i=0;i<g_pkc;i++) {
+            Pickup *pk=&g_pk[i]; if (!pk->active) continue;
+            if (pk->type != 5 && pk->type != 6) continue;
+            float wx=pk->pos.x-pw, wz=pk->pos.z-pz;
+            float sx2= wz*sinY - wx*cosY;
+            float sy2= wx*sinY + wz*cosY;
+            int px2=cx2+(int)(sx2/scale);
+            int py2=cy2-(int)(sy2/scale);
+            float dd=(float)((px2-cx2)*(px2-cx2)+(py2-cy2)*(py2-cy2));
+            if (dd >= (float)(radius*radius)) continue;
+            Color col = (pk->type == 5) ? (Color){220, 80,230,255}
+                                        : (Color){ 60,210,255,255};
+            float pulse = 0.6f + 0.4f*sinf((float)GetTime()*5.f + (float)i);
+            DrawCircle(px2,py2,4,col);
+            DrawCircleLines(px2,py2,(int)(6+3*pulse), Fade(col, 0.85f));
+        }
+
         // Player dot + forward triangle (always at centre, pointing up)
         DrawCircle(cx2,cy2,5,WHITE);
         DrawTriangle((Vector2){(float)cx2,(float)(cy2-10)},
@@ -2170,9 +2656,11 @@ static void DrawHUD(void) {
     }
     // Ensure cursor stays hidden during gameplay — call every frame AND park
     // the cursor at screen centre so even if macOS briefly shows it on alt-tab,
-    // it's forced off the crosshair region and then re-hidden.
+    // it's forced off the crosshair region and then re-hidden. DisableCursor
+    // is engaged once in InitGame — re-calling every frame caused intermittent
+    // mouse-look skips on resizable windows because each call cycles GLFW's
+    // cursor capture, occasionally letting one frame's warp undershoot.
     HideCursor();
-    DisableCursor();
     SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
 }
 
@@ -2195,6 +2683,13 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     Vector2 mp=GetMousePosition();
     float mdx=mp.x-(float)cx2, mdy=mp.y-(float)cy2;
     SetMousePosition(cx2,cy2);
+    // Drop spurious one-frame jumps. After window resize, focus change, or
+    // the cursor warp landing slightly off, mp can read tens or hundreds of
+    // pixels off-centre on a single frame and snap the view. No human moves
+    // a mouse 200 px in one 16 ms frame, so treat that as a glitch and skip
+    // the delta entirely (one black-hole frame is invisible; a 200 px jerk
+    // is not).
+    if (fabsf(mdx) > 200.f || fabsf(mdy) > 200.f) { mdx = 0; mdy = 0; }
 #endif
     g_p.yaw   -= mdx*SENS;
     g_p.pitch  = Clamp(g_p.pitch - mdy*SENS, -MAX_PITCH, MAX_PITCH);
@@ -2206,7 +2701,8 @@ static void UpdPlayer(float dt, Camera3D *cam) {
 
     // --- MOVE ---
     bool sprint=IsKeyDown(KEY_LEFT_SHIFT)||IsKeyDown(KEY_RIGHT_SHIFT);
-    float spd=SPEED*(sprint?1.65f:1.f)*dt;
+    float hasteMul = (g_p.hasteT > 0.f) ? 1.6f : 1.f;
+    float spd=SPEED*(sprint?1.65f:1.f)*hasteMul*dt;
     float sy=sinf(g_p.yaw+3.14159f), cy=cosf(g_p.yaw+3.14159f);
     float mx=0,mz=0;
     if (IsKeyDown(KEY_W)||IsKeyDown(KEY_UP))    {mx+=sy;mz+=cy;}
@@ -2255,6 +2751,25 @@ static void UpdPlayer(float dt, Camera3D *cam) {
         }
     }
 
+    // Push player out of flaming barrels — same circle-vs-circle resolve as
+    // enemy collision. Barrel radius is tuned to roughly match the visible
+    // can footprint on the floor.
+    const float BARREL_RADIUS = 0.40f;
+    for (int i = 0; i < g_barrelCount; i++) {
+        Barrel *b = &g_barrels[i];
+        if (!b->active) continue;
+        float bdx = g_p.pos.x - b->pos.x;
+        float bdz = g_p.pos.z - b->pos.z;
+        float d2  = bdx*bdx + bdz*bdz;
+        float minD = PRAD + BARREL_RADIUS;
+        if (d2 > 0.0001f && d2 < minD*minD) {
+            float d = sqrtf(d2);
+            float push = minD - d;
+            g_p.pos.x += (bdx/d) * push;
+            g_p.pos.z += (bdz/d) * push;
+        }
+    }
+
     // jump / gravity with platform-aware ground
     if (IsKeyPressed(KEY_SPACE)&&g_p.onGround){g_p.velY=JUMP;g_p.onGround=false;}
     g_p.velY+=GRAV*dt; g_p.pos.y+=g_p.velY*dt;
@@ -2281,19 +2796,23 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (g_p.shake>0)     g_p.shake=fmaxf(0,g_p.shake-dt*4.f);
     if (g_msgT>0)        g_msgT-=dt;
     if (g_hypeT>0)       g_hypeT-=dt;
+    if (g_p.quadT>0)     g_p.quadT  = fmaxf(0.f, g_p.quadT  - dt);
+    if (g_p.hasteT>0)    g_p.hasteT = fmaxf(0.f, g_p.hasteT - dt);
+    if (g_p.quadT  <= 0.f) g_p.quadPeak  = 0.f;  // reset so next pickup starts full
+    if (g_p.hasteT <= 0.f) g_p.hastePeak = 0.f;
     bool moving=(mlen>0)&&g_p.onGround;
     if (moving) g_p.bobT+=dt*(sprint?10.f:7.f);
 
     // fade muzzle flash light
-    if (g_lights[6].enabled) {
-        g_lights[6].radius-=dt*40.f;
-        if (g_lights[6].radius<=0){g_lights[6].enabled=0;g_lights[6].radius=0;}
-        ShaderSetLight(6);
+    if (g_lights[MUZZLE_LIGHT].enabled) {
+        g_lights[MUZZLE_LIGHT].radius-=dt*40.f;
+        if (g_lights[MUZZLE_LIGHT].radius<=0){g_lights[MUZZLE_LIGHT].enabled=0;g_lights[MUZZLE_LIGHT].radius=0;}
+        ShaderSetLight(MUZZLE_LIGHT);
     }
-    if (g_lights[7].enabled) {
-        g_lights[7].radius-=dt*30.f;
-        if (g_lights[7].radius<=0){g_lights[7].enabled=0;g_lights[7].radius=0;}
-        ShaderSetLight(7);
+    if (g_lights[PULSE_LIGHT].enabled) {
+        g_lights[PULSE_LIGHT].radius-=dt*30.f;
+        if (g_lights[PULSE_LIGHT].radius<=0){g_lights[PULSE_LIGHT].enabled=0;g_lights[PULSE_LIGHT].radius=0;}
+        ShaderSetLight(PULSE_LIGHT);
     }
 
     // build camera
@@ -2309,9 +2828,34 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     SetShaderValue(g_shader,u_viewPos,&cam->position,SHADER_UNIFORM_VEC3);
     // flicker scene lights
     float flicker=1.f+sinf(GetTime()*7.3f)*0.04f+sinf(GetTime()*13.1f)*0.02f;
-    for (int i=0;i<6;i++) {
+    for (int i=0;i<NUM_LAMPS;i++) {
         Vector3 fc={g_lights[i].color.x*flicker,g_lights[i].color.y*flicker,g_lights[i].color.z*flicker};
         SetShaderValue(g_shader,u_lColor[i],&fc,SHADER_UNIFORM_VEC3);
+    }
+    // Barrel point-lights — much louder flicker than the ceiling lamps so
+    // the fire feels alive. Per-barrel phase decorrelates them so they
+    // don't all pulse on the same beat.
+    float ft = (float)GetTime();
+    for (int i=0; i<g_barrelCount; i++) {
+        Barrel *b = &g_barrels[i];
+        if (!b->active) continue;
+        float ph = b->phase;
+        // Multi-octave flicker: fast crackle + slow breathing. Range ~0.7..1.15.
+        float fast = sinf(ft*22.f + ph)*0.10f + sinf(ft*53.f + ph*1.7f)*0.07f;
+        float slow = sinf(ft*3.1f  + ph)*0.08f;
+        float fl   = 0.92f + fast + slow;
+        if (fl < 0.55f) fl = 0.55f;
+        // Light just above the rim of the barrel so the flame casts down
+        // onto the floor as well as outward.
+        Vector3 lpos = {b->pos.x, 1.4f, b->pos.z};
+        // Warm orange — slightly varying yellow-channel adds licks of colour.
+        float yellowKick = 0.05f * sinf(ft*9.f + ph*2.3f);
+        Vector3 col = {1.0f * fl, (0.55f + yellowKick) * fl, 0.18f * fl};
+        g_lights[BARREL_LIGHT_BASE + i].pos     = lpos;
+        g_lights[BARREL_LIGHT_BASE + i].color   = col;
+        g_lights[BARREL_LIGHT_BASE + i].radius  = 11.f * (0.85f + 0.15f*sinf(ft*4.f + ph));
+        g_lights[BARREL_LIGHT_BASE + i].enabled = 1;
+        ShaderSetLight(BARREL_LIGHT_BASE + i);
     }
 }
 
@@ -2324,7 +2868,15 @@ static void InitGame(void) {
     g_wave=1; g_ec=0; g_pkc=0;
     memset(g_e,0,sizeof(g_e)); memset(g_b,0,sizeof(g_b));
     memset(g_pt,0,sizeof(g_pt)); memset(g_pk,0,sizeof(g_pk));
+    // Restore ceiling lights — anything shot off in the previous run comes
+    // back lit. Re-pushes each light's enabled state to the GPU.
+    for (int i = 0; i < NUM_LAMPS; i++) {
+        g_lampBroken[i] = false;
+        g_lights[i].enabled = 1;
+        ShaderSetLight(i);
+    }
     SeedPicks();
+    SpawnBarrels();
 
     if (g_bossMode) {
         // BOSS TEST: spawn one boss straight away, no chefs. Drop him in a
@@ -2356,9 +2908,12 @@ static void InitGame(void) {
                 if (MAP[r][c]) continue;
                 float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
                 if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
-                // Wave 1 mix: 70% regular chef, 20% fast, 10% heavy
+                // Wave 1 mix: 60% regular chef, 18% fast, 8% heavy, 14% cultist
                 float rng = (float)rand()/RAND_MAX;
-                int type = rng < 0.70f ? 0 : rng < 0.90f ? 2 : 1;
+                int type = rng < 0.60f ? 0
+                         : rng < 0.78f ? 2
+                         : rng < 0.86f ? 1
+                         :              4;
                 Enemy *ne=&g_e[g_ec++]; *ne=(Enemy){0};
                 ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
                 ne->type=type; ne->state=ES_PATROL;
@@ -2373,6 +2928,7 @@ static void InitGame(void) {
     }
     g_gs=GS_PLAY;
     HideCursor();
+    DisableCursor();   // engage cursor capture once — NOT every frame in DrawHUD
     SetMousePosition(GetScreenWidth()/2,GetScreenHeight()/2);
     // Block firing until mouse released — stops menu-click from triggering a shot
     g_needMouseRelease = true;
@@ -2391,6 +2947,16 @@ static Camera3D g_cam;
 static void StepFrame(void) {
     float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
     DebugLogTick();
+    // Alt+Enter — fullscreen toggle. Borderless-windowed flavour: no
+    // resolution change, no swoop animation, instant. Skipped on web — the
+    // browser shell owns canvas sizing and the Fullscreen API needs its own
+    // gesture handling. On the menu, Enter alone starts a game; the modifier
+    // check below ensures Alt+Enter doesn't double-fire as "start game".
+#ifndef PLATFORM_WEB
+    if ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER)) {
+        ToggleBorderlessWindowed();
+    }
+#endif
     if (g_musicOK) {
         UpdateMusicStream(g_music);   // feed the streaming decoder
         // Music volume: - / + (and numpad equivalents)
@@ -2407,7 +2973,8 @@ static void StepFrame(void) {
     }
 
     if (g_gs==GS_MENU) {
-        if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        bool altHeld = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+        if (!altHeld && (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) {
             g_bossMode = false;
             InitGame();
         }
@@ -2489,13 +3056,32 @@ static void StepFrame(void) {
         DrawModel(g_wallModel,Vector3Zero(),1.f,WHITE);
         DrawModel(g_floorModel,Vector3Zero(),1.f,(Color){110,110,110,255});
         DrawModel(g_ceilModel,Vector3Zero(),1.f,(Color){70,70,90,255});
-        // Platforms (stairs + raised decks) — unit cube mesh scaled per-platform
+        // Platforms (stairs + raised decks) — unit cube mesh scaled per-platform.
+        //
+        // Three z-fight defences applied to the visual draw only; collision /
+        // step-up / AI all keep the original p->top, p->x0/x1, p->z0/z1:
+        //
+        // 1. SUB pushes the bottom 0.5m below the floor (was coplanar at y=0).
+        // 2. EXP expands x/z bounds outward 0.01m so adjacent platforms with
+        //    different heights overlap slightly — the taller volume hides the
+        //    shorter neighbour's coplanar side face, killing the fight there.
+        // 3. yBias (per-platform pi*0.0005) breaks coplanar TOP faces between
+        //    same-height neighbours (stair 3 vs big plat at top=1.35). A
+        //    sub-millimetre stagger is invisible to the player but enough for
+        //    the depth test to pick a consistent winner.
+        const float SUB = 0.5f;
+        const float EXP = 0.01f;
         for (int pi = 0; pi < g_platCount; pi++) {
             Platform *p = &g_plats[pi];
-            float sx = p->x1 - p->x0;
-            float sy = p->top;
-            float sz = p->z1 - p->z0;
-            Vector3 center = { (p->x0+p->x1)*0.5f, sy*0.5f, (p->z0+p->z1)*0.5f };
+            float yBias = pi * 0.0005f;
+            float sx = (p->x1 - p->x0) + 2.f*EXP;
+            float sy = (p->top + yBias) + SUB;
+            float sz = (p->z1 - p->z0) + 2.f*EXP;
+            Vector3 center = {
+                (p->x0+p->x1)*0.5f,
+                ((p->top + yBias) - SUB)*0.5f,
+                (p->z0+p->z1)*0.5f
+            };
             DrawModelEx(g_platModel, center, (Vector3){0,1,0}, 0.f,
                         (Vector3){sx, sy, sz}, (Color){170,140,110,255});
         }
@@ -2503,6 +3089,7 @@ static void StepFrame(void) {
         DrawBullets();
         DrawParts();
         DrawPicks(g_cam);
+        DrawBarrels(g_cam);
         // Ceiling lights drawn LAST so the additive glow shines over enemies,
         // pickups, and bullets — otherwise opaque billboards cover the light cones.
         DrawCeilingLights(g_cam);
@@ -2623,6 +3210,10 @@ int main(int argc, char **argv) {
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/holy-shit.mp3", AppDir());
         g_sMulti = LoadSound(fp);
         g_sMultiOK = (g_sMulti.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/monster-kill.mp3", AppDir());
+        g_sMonster = LoadSound(fp);
+        g_sMonsterOK = (g_sMonster.frameCount > 0);
 
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/first-blood.mp3", AppDir());
         g_sFirstBlood = LoadSound(fp);
@@ -2935,6 +3526,79 @@ int main(int argc, char **argv) {
                 SetTextureWrap  (g_bossDeathTex[i], TEXTURE_WRAP_CLAMP);
             }
         }
+
+        // CULTIST (type 4) — SSCT* WolfenDoom occult sprites. 8-directional.
+        // Naming: SSCT<frame><rot> for unique rotations 1 and 5,
+        //         SSCT<frame><rot1><frame><rot2> for the mirror pairs (2/8, 3/7, 4/6).
+        // Loads A-D (walk), E (pain), I0..M0 (death). Per DirFrame:
+        //   slot 0 = rot 1 (front)   — file SSCT<F>1.png
+        //   slot 1 = rot 2/8         — file SSCT<F>2<F>8.png  (flip for rot 8)
+        //   slot 2 = rot 3/7         — file SSCT<F>3<F>7.png  (flip for rot 7)
+        //   slot 3 = rot 4/6         — file SSCT<F>4<F>6.png  (flip for rot 6)
+        //   slot 4 = rot 5 (back)    — file SSCT<F>5.png
+        {
+            char fp[700];
+            // Helper inlined: load one DirFrame for a given letter into `df`.
+            // Returns false (and leaves df.ok=false) if any of the 5 PNGs miss.
+            // Open-coded because lambdas aren't a thing in C and the call is local.
+            #define LOAD_DIRFRAME(letter, dfPtr) do {                                   \
+                DirFrame *df = (dfPtr); df->ok = false;                                 \
+                const char *suf[5];                                                     \
+                char s2[8], s3[8], s4[8];                                               \
+                snprintf(s2, 8, "%c2%c8", letter, letter);                              \
+                snprintf(s3, 8, "%c3%c7", letter, letter);                              \
+                snprintf(s4, 8, "%c4%c6", letter, letter);                              \
+                char s1[8], s5[8];                                                      \
+                snprintf(s1, 8, "%c1", letter);                                         \
+                snprintf(s5, 8, "%c5", letter);                                         \
+                suf[0] = s1; suf[1] = s2; suf[2] = s3; suf[3] = s4; suf[4] = s5;        \
+                bool ok = true;                                                         \
+                for (int _r = 0; _r < 5; _r++) {                                        \
+                    snprintf(fp, sizeof(fp), "%smonsters/SSCT%s.png", appBase, suf[_r]); \
+                    df->rot[_r] = LoadTexture(fp);                                      \
+                    if (df->rot[_r].id == 0) { ok = false; continue; }                  \
+                    SetTextureFilter(df->rot[_r], TEXTURE_FILTER_POINT);                \
+                    SetTextureWrap  (df->rot[_r], TEXTURE_WRAP_CLAMP);                  \
+                }                                                                       \
+                df->ok = ok;                                                            \
+            } while (0)
+
+            const char letters[4] = {'A','B','C','D'};
+            g_cultOK = true;
+            for (int i = 0; i < 4; i++) {
+                LOAD_DIRFRAME(letters[i], &g_cultWalk[i]);
+                if (!g_cultWalk[i].ok) g_cultOK = false;
+            }
+            LOAD_DIRFRAME('E', &g_cultPain);
+            g_cultPainOK = g_cultPain.ok;
+
+            #undef LOAD_DIRFRAME
+
+            // Death — single rotation, frames I0..M0.
+            const char *dnames[5] = {"SSCTI0.png","SSCTJ0.png","SSCTK0.png","SSCTL0.png","SSCTM0.png"};
+            g_cultDeathOK = true;
+            for (int i = 0; i < 5; i++) {
+                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, dnames[i]);
+                g_cultDeathTex[i] = LoadTexture(fp);
+                if (g_cultDeathTex[i].id == 0) { g_cultDeathOK = false; continue; }
+                SetTextureFilter(g_cultDeathTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_cultDeathTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
+
+        // Flaming barrel scenery — Freedoom 3-frame fire cycle.
+        {
+            char fp[700];
+            const char *bnames[3] = {"fcana0.png","fcanb0.png","fcanc0.png"};
+            g_barrelOK = true;
+            for (int i = 0; i < 3; i++) {
+                snprintf(fp, sizeof(fp), "%sscenery/%s", appBase, bnames[i]);
+                g_barrelTex[i] = LoadTexture(fp);
+                if (g_barrelTex[i].id == 0) { g_barrelOK = false; continue; }
+                SetTextureFilter(g_barrelTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_barrelTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
     }
 
     // Set ambient
@@ -3020,6 +3684,7 @@ int main(int argc, char **argv) {
     if (g_sHeadshotOK) UnloadSound(g_sHeadshot);
     if (g_sFatalityOK) UnloadSound(g_sFatality);
     if (g_sMultiOK)      UnloadSound(g_sMulti);
+    if (g_sMonsterOK)    UnloadSound(g_sMonster);
     if (g_sFirstBloodOK)   UnloadSound(g_sFirstBlood);
     for (int a = 0; a < g_sEnemyAlertCount; a++) {
         if (g_sEnemyAlertOK[a]) UnloadSound(g_sEnemyAlert[a]);

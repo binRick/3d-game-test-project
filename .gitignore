@@ -8,4 +8,5 @@ dist-win/
 vendor/
 boss1/
 game-sounds-main/
+third_party/
 ~/.ironfist3d.cfg
