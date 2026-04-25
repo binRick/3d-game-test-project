@@ -8,10 +8,12 @@
 // game.c is the single source of truth for the matching globals.
 
 #define MAX_ENEMIES 96
+#define MAX_PARTS   768
 #define EYE_H       1.65f
 #define CELL        4.0f
 #define ROWS        20
 #define COLS        30
+#define GRAV       -22.0f
 
 typedef enum { GS_MENU, GS_PLAY, GS_DEAD } GameState;
 typedef enum { ES_PATROL, ES_CHASE, ES_ATTACK } EnemyState;
@@ -26,6 +28,7 @@ typedef struct {
     float quadT, hasteT, quadPeak, hastePeak;
 } Player;
 
+typedef struct { Vector3 pos, vel; float life, maxLife, size; Color col; bool active, grav, stuck; } Part;
 typedef struct { Vector3 pos; int type; int variant; bool active; float bobT; } Pickup;
 
 typedef struct {

@@ -4,6 +4,7 @@
 #include "rlgl.h"
 #include "common.h"
 #include "hud.h"
+#include "effects.h"
 #include <math.h>
 #include <stdio.h>
 #ifdef __EMSCRIPTEN__
@@ -101,12 +102,11 @@ static const char *AppDir(void) {
 // CELL/ROWS/COLS/MAX_ENEMIES/EYE_H now live in common.h
 #define WALL_H      5.1f
 #define MAX_BULLETS 256
-#define MAX_PARTS   768
+// MAX_PARTS, GRAV moved to common.h
 #define MAX_PICKS   48
 #define PRAD        0.32f
 #define SPEED       7.5f
 #define SENS        0.0016f
-#define GRAV       -22.0f
 #define JUMP        8.5f
 #define STEP_H      0.55f  // max auto-climb height (stairs)
 #define MAX_PITCH   1.44f
@@ -281,9 +281,8 @@ static void InitShader(void) {
 }
 
 // ── TYPES ────────────────────────────────────────────────────────────────────
-// Player, Enemy, Pickup, GameState, EnemyState moved to common.h
+// Player, Enemy, Pickup, Part, GameState, EnemyState moved to common.h
 typedef struct { Vector3 pos, vel; float life, dmg; bool active, rocket; } Bullet;
-typedef struct { Vector3 pos, vel; float life, maxLife, size; Color col; bool active, grav, stuck; } Part;
 // Tesla chain-lightning bolt — ordered points from muzzle through victims.
 // Drawn as jagged DrawLine3D segments per chain edge, fades over BOLT_LIFE.
 #define BOLT_MAX_PTS 7     // muzzle + up to 6 victims
@@ -298,7 +297,6 @@ Player   g_p;
 static float    g_swayX=0, g_swayY=0;   // weapon sway (screen pixels)
 Enemy    g_e[MAX_ENEMIES]; int g_ec;
 static Bullet   g_b[MAX_BULLETS];
-static Part     g_pt[MAX_PARTS];
 Pickup   g_pk[MAX_PICKS];  int g_pkc;
 #define MAX_BOLTS 16
 static Bolt     g_bolts[MAX_BOLTS];
@@ -959,75 +957,7 @@ static void InitPlatforms(void) {
 }
 
 // ── PARTICLES ────────────────────────────────────────────────────────────────
-static void SpawnPart(Vector3 p, Vector3 v, Color c, float life, float sz, bool grav) {
-    for (int i=0;i<MAX_PARTS;i++) if (!g_pt[i].active) {
-        g_pt[i]=(Part){p,v,life,life,sz,c,true,grav}; return;
-    }
-}
-static void Blood(Vector3 p, int n) {
-    // Realistic blood spatter. Each droplet starts at a small random offset
-    // from the impact point so they never clump into one visible block.
-    int count = n * 2;
-    for (int i = 0; i < count; i++) {
-        Vector3 offset = {
-            ((float)rand()/RAND_MAX - 0.5f) * 0.35f,
-            ((float)rand()/RAND_MAX - 0.5f) * 0.35f,
-            ((float)rand()/RAND_MAX - 0.5f) * 0.35f
-        };
-        Vector3 spawn = { p.x + offset.x, p.y + offset.y, p.z + offset.z };
-        Vector3 v = {
-            ((float)rand()/RAND_MAX - 0.5f) * 8.f,
-            (float)rand()/RAND_MAX * 3.f + 0.3f,
-            ((float)rand()/RAND_MAX - 0.5f) * 8.f
-        };
-        unsigned char r = (unsigned char)(90 + rand() % 70);
-        unsigned char g = (unsigned char)(rand() % 10);
-        unsigned char b = (unsigned char)(rand() % 8);
-        Color col = { r, g, b, 220 };  // slight transparency so clumps blend
-        float size = 0.018f + (float)rand()/RAND_MAX * 0.030f; // smaller droplets
-        float life = 0.35f + (float)rand()/RAND_MAX * 0.45f;
-        SpawnPart(spawn, v, col, life, size, true);
-    }
-}
 
-static void Sparks(Vector3 p, int n) {
-    // Bright orange sparks (fast, short-lived)
-    for (int i=0;i<n;i++) {
-        Vector3 v = {
-            ((float)rand()/RAND_MAX - 0.5f) * 10.f,
-            (float)rand()/RAND_MAX * 6.f,
-            ((float)rand()/RAND_MAX - 0.5f) * 10.f
-        };
-        SpawnPart(p, v, ORANGE,
-                  0.2f + (float)rand()/RAND_MAX * 0.25f,
-                  0.04f, true);
-    }
-    // Grey/brown debris chips that stick to the floor (concrete/brick chips)
-    int chips = n * 2 / 3;
-    for (int i = 0; i < chips; i++) {
-        Vector3 v = {
-            ((float)rand()/RAND_MAX - 0.5f) * 6.f,
-            (float)rand()/RAND_MAX * 4.f + 0.5f,
-            ((float)rand()/RAND_MAX - 0.5f) * 6.f
-        };
-        unsigned char shade = 60 + rand() % 40;
-        Color chipCol = { shade, (unsigned char)(shade*0.7f), (unsigned char)(shade*0.5f), 255 };
-        SpawnPart(p, v, chipCol,
-                  0.5f + (float)rand()/RAND_MAX * 0.6f,
-                  0.05f + (float)rand()/RAND_MAX * 0.05f, true);
-    }
-    // Dust puff — small near-static particles that fade quickly
-    for (int i = 0; i < n / 3; i++) {
-        Vector3 v = {
-            ((float)rand()/RAND_MAX - 0.5f) * 2.f,
-            (float)rand()/RAND_MAX * 1.5f + 0.2f,
-            ((float)rand()/RAND_MAX - 0.5f) * 2.f
-        };
-        SpawnPart(p, v, (Color){170,160,150,200},
-                  0.4f + (float)rand()/RAND_MAX * 0.3f,
-                  0.08f, false);
-    }
-}
 static void Explode(Vector3 p) {
     // Distance-scaled volume: up to 2.5x at point-blank, floor 0.25x far away
     float dx = p.x - g_p.pos.x, dz = p.z - g_p.pos.z;
@@ -1044,49 +974,6 @@ static void Explode(Vector3 p) {
     g_p.shake=fmaxf(g_p.shake,0.55f);
     // muzzle flash light slot 6 repurposed for explosion
     g_lights[MUZZLE_LIGHT]=(LightDef){p,{1.0f,0.5f,0.1f},14.f,1}; ShaderSetLight(MUZZLE_LIGHT);
-}
-static void UpdParts(float dt) {
-    for (int i=0;i<MAX_PARTS;i++) {
-        Part *p=&g_pt[i]; if (!p->active) continue;
-        p->life-=dt;
-        if (p->life<=0){p->active=false;continue;}
-        if (p->grav) p->vel.y+=GRAV*dt;
-        p->pos=Vector3Add(p->pos,Vector3Scale(p->vel,dt));
-        if (p->pos.y<0.05f && p->grav) {
-            // Only small droplets (blood) become floor decals. Big fire/smoke
-            // particles from explosions just bounce and fade normally.
-            float sp2 = p->vel.x*p->vel.x + p->vel.y*p->vel.y + p->vel.z*p->vel.z;
-            if (sp2 < 3.5f && p->size < 0.08f) {
-                p->pos.y = 0.005f;
-                p->vel = (Vector3){0, 0, 0};
-                p->grav = false;
-                p->stuck = true;
-                p->life    = 10.f + (float)rand()/RAND_MAX * 6.f;
-                p->maxLife = p->life;
-            } else {
-                p->pos.y = 0.05f; p->vel.y *= -0.25f;
-                p->vel.x *= 0.55f; p->vel.z *= 0.55f;
-            }
-        }
-    }
-}
-static void DrawParts(void) {
-    for (int i=0;i<MAX_PARTS;i++) {
-        Part *p=&g_pt[i]; if (!p->active) continue;
-        float t=p->life/p->maxLife;
-        Color c=p->col; c.a=(unsigned char)(255*t);
-        if (p->stuck) {
-            // Flat splat on the floor — small droplet, wider than it is tall
-            float s = p->size * 1.8f;
-            // Fade over final 25% of life
-            float fade = (t < 0.25f) ? (t / 0.25f) : 1.f;
-            c.a = (unsigned char)(255 * fade);
-            DrawCubeV(p->pos, (Vector3){s, 0.02f, s}, c);
-        } else {
-            float s = p->size * t;  // half-scale — tiny droplet, not chunky cube
-            DrawCubeV(p->pos, (Vector3){s, s, s}, c);
-        }
-    }
 }
 
 // ── PICKUPS ──────────────────────────────────────────────────────────────────
@@ -1518,10 +1405,26 @@ static void KillEnemy(int i) {
     // same transition. Routed through the dedicated hype banner (bigger,
     // longer, flashing) instead of the regular Msg slot.
     if (!g_bossInterlude && Alive() == 1 && e->type != 3) {
-        static const char *hype[] = {
+        // Find the lone survivor and pick a hype line — one of which embeds
+        // the survivor's enemy-type name so the banner correctly reflects
+        // what's left (chef vs mutant vs mech etc.).
+        int survIdx = -1;
+        for (int s = 0; s < g_ec; s++) {
+            if (g_e[s].active && !g_e[s].dying) { survIdx = s; break; }
+        }
+        const char *survName = "TARGET";
+        if (survIdx >= 0) {
+            int t = g_e[survIdx].type;
+            survName = (t == 0) ? "CHEF" : (t == 1) ? "HEAVY CHEF" :
+                       (t == 2) ? "FAST CHEF" : (t == 4) ? "CULTIST" :
+                       (t == 5) ? "MUTANT" : (t == 6) ? "MECH" : "TARGET";
+        }
+        char dynLine[80];
+        snprintf(dynLine, sizeof(dynLine), "FINAL %s - HUNT HIM DOWN!", survName);
+        const char *hype[] = {
             "LAST ONE STANDING!",
             "ONE LEFT - FINISH THEM!",
-            "FINAL CHEF - HUNT IT DOWN!",
+            dynLine,
             "LONE SURVIVOR - END THIS!",
             "ONE REMAINS - NO MERCY!",
         };
@@ -3479,7 +3382,7 @@ static void InitGame(void) {
     g_p.hasTesla=false;
     g_wave=1; g_ec=0; g_pkc=0;
     memset(g_e,0,sizeof(g_e)); memset(g_b,0,sizeof(g_b));
-    memset(g_pt,0,sizeof(g_pt)); memset(g_pk,0,sizeof(g_pk));
+    ResetParts(); memset(g_pk,0,sizeof(g_pk));
     memset(g_bolts,0,sizeof(g_bolts));
     memset(g_es,0,sizeof(g_es));
     g_teslaPending = false; g_teslaSfxStopT = 0.f;
