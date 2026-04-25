@@ -6,9 +6,7 @@ No install, no download. WebGL 2 required.
 
 ![gameplay](docs/screenshot-1.png)
 
-| | |
-|:-:|:-:|
-| ![](docs/screenshot-2.png) | ![](docs/screenshot-3.png) |
+![](docs/screenshot-2.png)
 
 **A Duke-Nukem-style FPS built from scratch in C with raylib — native on macOS and Windows, WebAssembly in the browser.**
 
