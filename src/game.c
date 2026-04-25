@@ -504,6 +504,7 @@ static int       g_arenaType = 0;     // 0..6 — which enemy type the arena spa
 static int       g_pickerIdx = 0;     // current selection on the GS_PICK_ENEMY screen
 static float     g_pickerT   = 0.f;   // time accumulator for preview anim
 static bool      g_paused    = false; // P toggles in-game pause; freezes Upd* calls
+static bool      g_quit      = false; // set by ESC on the main menu; main loop exits next iteration
 static bool      g_bossInterlude = false;  // true between waves while a boss is up
 
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
@@ -3919,7 +3920,11 @@ static void SBClose(void) {
 }
 
 static void SBStep(void) {
-    if (IsKeyPressed(KEY_F8) || IsKeyPressed(KEY_ESCAPE)) { SBClose(); return; }
+    if (IsKeyPressed(KEY_F8) || IsKeyPressed(KEY_ESCAPE)) {
+        SBClose();
+        g_gs = GS_MENU;  // ESC always lands on the main menu
+        return;
+    }
     if (IsKeyPressed(KEY_LEFT))  { g_sbFile--; SBLoadFile(); }
     if (IsKeyPressed(KEY_RIGHT)) { g_sbFile++; SBLoadFile(); }
     if (IsKeyPressed(KEY_LEFT_BRACKET))  {
@@ -4016,6 +4021,9 @@ static void StepFrame(void) {
             g_pickerT = 0.f;
             g_gs = GS_PICK_ENEMY;
         }
+        // ESC on the main menu is the only place that quits the game —
+        // every other state's ESC handler bounces back here first.
+        if (IsKeyPressed(KEY_ESCAPE)) g_quit = true;
         // S — open the sprite browser (debug). Same effect as F8 but
         // doesn't need the fn-modifier on a Mac laptop. macOS-only —
         // the browser reads absolute /Users/... paths that don't exist
@@ -4144,6 +4152,7 @@ static void StepFrame(void) {
         }  // end if (!g_paused) — pause gate from above
     } else if (g_gs==GS_DEAD) {
         if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
+        if (IsKeyPressed(KEY_ESCAPE)) g_gs = GS_MENU;
     }
 
     BeginDrawing();
@@ -4462,6 +4471,11 @@ int main(int argc, char **argv) {
     // automatically. SW/SH stays as the fallback/initial size.
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(SW,SH,"IRON FIST 3D");
+    // Disable raylib's default "ESC closes window" behaviour. We want ESC
+    // to navigate back through screens (in-game / picker / browser → main
+    // menu) and only quit when pressed FROM the main menu. Routing all
+    // ESC handling per-state in StepFrame.
+    SetExitKey(KEY_NULL);
     // Default to maximised on native desktop launches — on high-DPI Windows
     // monitors 1280x720 looks tiny otherwise. Skipped on web: the Emscripten
     // shell owns canvas sizing.
@@ -5177,7 +5191,7 @@ int main(int argc, char **argv) {
     return 0;
 #endif
 
-    while (!WindowShouldClose()) StepFrame();
+    while (!WindowShouldClose() && !g_quit) StepFrame();
 
     for (int i = 0; i < WALL_TEX_COUNT; i++) UnloadModel(g_wallModels[i]);
     UnloadModel(g_floorModel); UnloadModel(g_ceilModel);
