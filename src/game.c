@@ -2,6 +2,8 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include "common.h"
+#include "hud.h"
 #include <math.h>
 #include <stdio.h>
 #ifdef __EMSCRIPTEN__
@@ -96,15 +98,11 @@ static const char *AppDir(void) {
 #define SW          1280
 #define SH          720
 #define FPS         144
-#define CELL        4.0f
+// CELL/ROWS/COLS/MAX_ENEMIES/EYE_H now live in common.h
 #define WALL_H      5.1f
-#define ROWS        20
-#define COLS        30
-#define MAX_ENEMIES 96
 #define MAX_BULLETS 256
 #define MAX_PARTS   768
 #define MAX_PICKS   48
-#define EYE_H       1.65f
 #define PRAD        0.32f
 #define SPEED       7.5f
 #define SENS        0.0016f
@@ -114,7 +112,7 @@ static const char *AppDir(void) {
 #define MAX_PITCH   1.44f
 
 // ── MAP ──────────────────────────────────────────────────────────────────────
-static const int MAP[ROWS][COLS] = {
+const int MAP[ROWS][COLS] = {
     {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
     {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1},
     {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
@@ -283,37 +281,9 @@ static void InitShader(void) {
 }
 
 // ── TYPES ────────────────────────────────────────────────────────────────────
-typedef enum { GS_MENU, GS_PLAY, GS_DEAD } GameState;
-typedef enum { ES_PATROL, ES_CHASE, ES_ATTACK } EnemyState;
-
-typedef struct {
-    Vector3 pos; float yaw, pitch, velY;
-    bool onGround, dead;
-    float hp, maxHp;
-    float shootCD, kickAnim, bobT, hurtFlash, shake, switchAnim;
-    int   weapon, bullets, shells, rockets, mgAmmo, cells, score, kills;
-    bool  hasTesla;  // tesla is pickup-only — gated until grabbed
-    float quadT;     // QUAD DAMAGE remaining (seconds). >0 = 4x outgoing damage.
-    float hasteT;    // SPEED BOOST remaining (seconds). >0 = 1.6x movement speed.
-    // Peak timer at last grant — used as the meter's "100%" reference so the
-    // bar starts full on grab and refills when stacking. Reset to 0 once the
-    // power-up expires so the next pickup reads as a fresh full meter.
-    float quadPeak, hastePeak;
-} Player;
-
-typedef struct {
-    Vector3 pos; EnemyState state;
-    int type; float hp, maxHp, speed, dmg, rate, cd, stateT;
-    Vector3 pd; float legT, flashT, alertR, atkR;
-    bool active; int score;
-    bool  dying;       // true once HP hits 0 — corpse remains in scene
-    float deathT;      // seconds since death started (drives death animation)
-    float bleedT;      // bleeding drip timer (wounded enemies leak blood periodically)
-} Enemy;
-
+// Player, Enemy, Pickup, GameState, EnemyState moved to common.h
 typedef struct { Vector3 pos, vel; float life, dmg; bool active, rocket; } Bullet;
 typedef struct { Vector3 pos, vel; float life, maxLife, size; Color col; bool active, grav, stuck; } Part;
-typedef struct { Vector3 pos; int type; int variant; bool active; float bobT; } Pickup;
 // Tesla chain-lightning bolt — ordered points from muzzle through victims.
 // Drawn as jagged DrawLine3D segments per chain edge, fades over BOLT_LIFE.
 #define BOLT_MAX_PTS 7     // muzzle + up to 6 victims
@@ -324,20 +294,20 @@ typedef struct { Vector3 pts[BOLT_MAX_PTS]; int n; float life; bool active; } Bo
 typedef struct { Vector3 pos, vel; float life, dmg; bool active, isRocket; } EShot;
 
 // ── GLOBALS ──────────────────────────────────────────────────────────────────
-static Player   g_p;
+Player   g_p;
 static float    g_swayX=0, g_swayY=0;   // weapon sway (screen pixels)
-static Enemy    g_e[MAX_ENEMIES]; static int g_ec;
+Enemy    g_e[MAX_ENEMIES]; int g_ec;
 static Bullet   g_b[MAX_BULLETS];
 static Part     g_pt[MAX_PARTS];
-static Pickup   g_pk[MAX_PICKS];  static int g_pkc;
+Pickup   g_pk[MAX_PICKS];  int g_pkc;
 #define MAX_BOLTS 16
 static Bolt     g_bolts[MAX_BOLTS];
 #define MAX_ESHOTS 32
 static EShot    g_es[MAX_ESHOTS];
-static int      g_wave;
-static GameState g_gs;
-static char     g_msg[80]; static float g_msgT;
-static char     g_hypeMsg[80]; static float g_hypeT; static float g_hypeDur;
+int      g_wave;
+GameState g_gs;
+char     g_msg[80]; float g_msgT;
+char     g_hypeMsg[80]; float g_hypeT; float g_hypeDur;
 static Model    g_wallModel, g_floorModel, g_ceilModel;
 
 // Forward decl — TriggerMultiKill is defined alongside Shoot() but called
@@ -371,7 +341,7 @@ typedef struct {
 static WepSprite g_wep[4];  // one per player weapon (0=shotgun 1=MG 2=rocket 3=tesla)
 
 // Per-weapon crosshair overrides (NULL texture = use default tick-mark crosshair)
-static Texture2D g_xhair[4];
+Texture2D g_xhair[4];
 
 // Pickup billboards (NULL texture = use default colored sphere)
 // Health has 2 variants (CHIKA/EASTA), others are single textures keyed by pickup type.
@@ -383,6 +353,10 @@ static Texture2D g_ammoTex[5];
 // the 0..4 ammo range and grants the weapon itself on first grab.
 static Texture2D g_teslaPickupTex;
 
+// Doom-style HUD mugshot (WolfenDoom STF* frames). 5 health tiers × 3 idle
+// looks, plus pain (OUCH) / kill (KILL) reactions and a final DEAD frame.
+// Mugshot textures moved to hud.c
+
 // Chef walk-cycle billboards (AFABA/B/C/D — boss sprite frames). NULL = fall back to cube mesh.
 static Texture2D g_chefTex[4];
 static bool      g_chefOK = false;
@@ -393,21 +367,28 @@ static bool      g_chefDeathOK = false;
 // Chef pain frame (AFABF0). Shown while flashT > 0.
 static Texture2D g_chefPainTex;
 static bool      g_chefPainOK = false;
+// Chef attack frame (AFABE0). Shown briefly during ATTACK windup.
+static Texture2D g_chefAtkTex;
+static bool      g_chefAtkOK = false;
 
 // Heavy chef (type 1) — TORM* sprites. Same layout as type-0 chef:
-//   A-D walk, F pain, G-J death.
+//   A-D walk, E attack, F pain, G-J death.
 static Texture2D g_tormTex[4];
 static bool      g_tormOK = false;
 static Texture2D g_tormPainTex;
 static bool      g_tormPainOK = false;
+static Texture2D g_tormAtkTex;
+static bool      g_tormAtkOK = false;
 static Texture2D g_tormDeathTex[4];
 static bool      g_tormDeathOK = false;
 
-// Fast chef (type 2) — SCH2* sprites. Same A-D walk / F pain / G-J death layout.
+// Fast chef (type 2) — SCH2* sprites. Same A-D walk / E attack / F pain / G-J death layout.
 static Texture2D g_schTex[4];
 static bool      g_schOK = false;
 static Texture2D g_schPainTex;
 static bool      g_schPainOK = false;
+static Texture2D g_schAtkTex;
+static bool      g_schAtkOK = false;
 static Texture2D g_schDeathTex[4];
 static bool      g_schDeathOK = false;
 
@@ -496,6 +477,14 @@ static Sound    g_sShotgunKill; // stinger that plays when a shotgun kill lands
 static bool     g_sShotgunKillOK = false;
 static Sound    g_sTesla;       // tesla cannon zap (sounds/tesla.ogg)
 static bool     g_sTeslaOK = false;
+static Sound    g_sMechRocket;  // mech rocket launch (sounds/mech-rocket.mp3)
+static bool     g_sMechRocketOK = false;
+static Sound    g_sMutAttack;   // mutant energy-ball fire (sounds/mutant-attack.mp3)
+static bool     g_sMutAttackOK = false;
+static Sound    g_sChefHit;     // chef melee inflicts damage on player (sounds/player-ouch.mp3)
+static bool     g_sChefHitOK = false;
+static Sound    g_sMechHit;     // mech rocket splash on player (sounds/player-ough.mp3)
+static bool     g_sMechHitOK = false;
 static Sound    g_sNextWave;   // stinger when next wave starts
 static bool     g_sNextWaveOK = false;
 static Sound    g_sMG;          // machine gun firing sound
@@ -550,12 +539,12 @@ static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f };
 static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45   };
 static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f}; // mech fires from 20m
 static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500  };
-static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255}};
+const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255}};
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
 // Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3), [3]=tesla (key 4)
-static const char *WPN[]    = {"SHOTGUN", "MACHINE GUN", "LAUNCHER", "TESLA"};
+const char * const WPN[]    = {"SHOTGUN", "MACHINE GUN", "LAUNCHER", "TESLA"};
 static const float WR[]     = {0.59f, 0.09f, 0.96f, 0.45f};
 static const int   WD[]     = {15, 18, 0, 70};        // tesla: primary-target damage; chain falloff is in Shoot()
 static const int   WPEL[]   = {8, 1, 1, 1};
@@ -1000,6 +989,7 @@ static void Blood(Vector3 p, int n) {
         SpawnPart(spawn, v, col, life, size, true);
     }
 }
+
 static void Sparks(Vector3 p, int n) {
     // Bright orange sparks (fast, short-lived)
     for (int i=0;i<n;i++) {
@@ -1369,7 +1359,7 @@ static void Msg(const char *s) { strncpy(g_msg,s,79); g_msgT=2.0f; }
 
 // ── ENEMIES ──────────────────────────────────────────────────────────────────
 // "Alive" = active AND not dying (corpse/dying enemies are still drawn but don't count)
-static int Alive(void) { int n=0; for(int i=0;i<g_ec;i++) if(g_e[i].active && !g_e[i].dying) n++; return n; }
+int Alive(void) { int n=0; for(int i=0;i<g_ec;i++) if(g_e[i].active && !g_e[i].dying) n++; return n; }
 
 // Pick a random open corner of the map to spawn the boss. All four interior
 // corner cells ((1,1), (1,28), (18,1), (18,28)) are open in MAP[][] — centred
@@ -1933,7 +1923,8 @@ static void UpdEnemies(float dt) {
                     Vector3 muzzle = {e->pos.x, e->pos.y + 2.3f, e->pos.z};
                     Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                     SpawnEShotRocket(muzzle, target, e->dmg);
-                    PlaySound(g_sRocket);
+                    if (g_sMechRocketOK) PlaySound(g_sMechRocket);
+                    else                 PlaySound(g_sRocket);
                     e->cd = e->rate;
                 } else if (isMutant) {
                     // Ranged mutant: spawn an energy-ball projectile aimed at
@@ -1945,11 +1936,14 @@ static void UpdEnemies(float dt) {
                     Vector3 muzzle = {e->pos.x, e->pos.y + 1.55f, e->pos.z};
                     Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                     SpawnEShot(muzzle, target, e->dmg);
-                    PlaySound(g_sPistol);   // placeholder zap (procedural)
+                    if (g_sMutAttackOK) PlaySound(g_sMutAttack);
+                    else                PlaySound(g_sPistol);
                     e->cd = e->rate;
                 } else {
                     g_p.hp-=e->dmg; g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
-                    PlaySound(g_sHurt); e->cd=e->rate;
+                    if (g_sChefHitOK) PlaySound(g_sChefHit);
+                    else              PlaySound(g_sHurt);
+                    e->cd=e->rate;
                     if (g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}
                 }
             }
@@ -2349,34 +2343,46 @@ static void DrawEnemies(Camera3D cam) {
             Texture2D *walkTex   = g_chefTex;
             Texture2D *deathTex  = g_chefDeathTex;
             Texture2D painTex    = g_chefPainTex;
+            Texture2D atkTex     = g_chefAtkTex;
             bool  walkOK = g_chefOK;
             bool  deathOK = g_chefDeathOK;
             bool  painOK = g_chefPainOK;
+            bool  atkOK  = g_chefAtkOK;
             if (e->type == 1 && g_tormOK) {
                 walkTex  = g_tormTex;
                 deathTex = g_tormDeathTex;
                 painTex  = g_tormPainTex;
+                atkTex   = g_tormAtkTex;
                 walkOK   = g_tormOK;
                 deathOK  = g_tormDeathOK;
                 painOK   = g_tormPainOK;
+                atkOK    = g_tormAtkOK;
             } else if (e->type == 2 && g_schOK) {
                 walkTex  = g_schTex;
                 deathTex = g_schDeathTex;
                 painTex  = g_schPainTex;
+                atkTex   = g_schAtkTex;
                 walkOK   = g_schOK;
                 deathOK  = g_schDeathOK;
                 painOK   = g_schPainOK;
+                atkOK    = g_schAtkOK;
             }
             (void)walkOK;
 
             Texture2D tex;
             bool isCorpse = e->dying && deathOK;
+            // Show the E-frame attack pose during the last ~0.45s of cooldown
+            // before the melee tick lands. Read like a swing windup; the actual
+            // damage still applies the moment cd<=0 (in UpdEnemies).
+            bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
             if (isCorpse) {
                 int df = (int)(e->deathT / CHEF_DEATH_FRAME_TIME);
                 if (df > 3) df = 3;
                 tex = deathTex[df];
             } else if (e->flashT > 0.f && painOK) {
                 tex = painTex;
+            } else if (inAtkWindup && atkOK) {
+                tex = atkTex;
             } else {
                 int frame = (int)(e->legT * 0.6f) % 4;
                 if (frame < 0) frame += 4;
@@ -2773,7 +2779,8 @@ static void UpdEShots(float dt) {
                     g_p.hp -= s->dmg * fall;
                     g_p.hurtFlash = 0.3f;
                     g_p.shake = fmaxf(g_p.shake, 0.18f);
-                    PlaySound(g_sHurt);
+                    if (g_sMechHitOK) PlaySound(g_sMechHit);
+                    else              PlaySound(g_sHurt);
                     if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
                 }
             } else if (playerHit) {
@@ -3240,222 +3247,6 @@ static void DrawWeapon3D(Camera3D cam) {
 }
 
 // ── HUD ──────────────────────────────────────────────────────────────────────
-static void DrawHUD(void) {
-    int sw=GetScreenWidth(), sh=GetScreenHeight();
-    // hurt vignette
-    if (g_p.hurtFlash>0) {
-        int a=(int)(g_p.hurtFlash/0.22f*180);
-        DrawRectangle(0,0,sw,sh,(Color){200,0,0,(unsigned char)a});
-    }
-    // scanlines (subtle)
-    for (int y=0;y<sh;y+=3) DrawLine(0,y,sw,y,(Color){0,0,0,18});
-    // crosshair — per-weapon texture override, else default tick marks
-    // Rocket launcher: no crosshair (it's a rocket, you aim with the whole barrel)
-    int cx=sw/2,cy=sh/2;
-    int wpn=g_p.weapon;
-    if (wpn == 2 || wpn == 3) {
-        // no crosshair for rocket / tesla
-    } else if (wpn>=0 && wpn<4 && g_xhair[wpn].id) {
-        Texture2D xh = g_xhair[wpn];
-        float xsc = 1.2f;
-        float xw = xh.width*xsc, xh2 = xh.height*xsc;
-        DrawTexturePro(xh,
-            (Rectangle){0,0,(float)xh.width,(float)xh.height},
-            (Rectangle){cx-xw/2, cy-xh2/2, xw, xh2},
-            (Vector2){0,0}, 0.f, WHITE);
-    } else {
-        DrawRectangle(cx-14,cy-1,10,2,WHITE); DrawRectangle(cx+4,cy-1,10,2,WHITE);
-        DrawRectangle(cx-1,cy-14,2,10,WHITE); DrawRectangle(cx-1,cy+4,2,10,WHITE);
-    }
-    // bottom panel bg
-    DrawRectangle(0,sh-64,sw,64,(Color){8,8,12,220});
-    DrawLine(0,sh-64,sw,sh-64,(Color){80,0,0,200});
-    // health
-    float hp=fmaxf(0.f,g_p.hp/g_p.maxHp);
-    Color hcol=hp>0.5f?(Color){50,220,50,255}:hp>0.25f?(Color){220,180,0,255}:(Color){220,30,30,255};
-    DrawText("HP",20,sh-56,12,(Color){180,180,180,255});
-    DrawRectangle(20,sh-40,200,18,(Color){30,0,0,200});
-    DrawRectangle(21,sh-39,(int)(198*hp),16,hcol);
-    DrawRectangle(20,sh-40,200,18,(Color){80,80,80,80}); // border
-    char hpBuf[16]; snprintf(hpBuf,16,"%d",(int)g_p.hp);
-    DrawText(hpBuf,228,sh-43,18,hcol);
-    // ammo
-    char aBuf[16];
-    if      (g_p.weapon==0) snprintf(aBuf,16,"%d",g_p.shells);
-    else if (g_p.weapon==1) snprintf(aBuf,16,"%d",g_p.mgAmmo);
-    else if (g_p.weapon==2) snprintf(aBuf,16,"%d",g_p.rockets);
-    else                    snprintf(aBuf,16,"%d",g_p.cells);
-    DrawText(WPN[g_p.weapon],sw-220,sh-58,13,SKYBLUE);
-    DrawText(aBuf,sw-220,sh-46,36,YELLOW);
-    // score / wave top right
-    char sc[48]; snprintf(sc,48,"SCORE %d",g_p.score);
-    DrawText(sc,sw-MeasureText(sc,18)-170,10,18,WHITE); // left of minimap
-    char wv[24]; snprintf(wv,24,"WAVE %d",g_wave);
-    DrawText(wv,12,10,18,(Color){255,160,40,255});
-    char en[32]; snprintf(en,32,"ENEMIES: %d",Alive());
-    DrawText(en,12,32,14,(Color){200,60,60,255});
-    // Active power-up timers — text + a draining meter underneath. Bar fraction
-    // is current/peak so it starts full on each fresh grab; stacking refills.
-    // Both pulse when <= 3s left to flag impending expiry.
-    {
-        const int barW = 140, barH = 7;
-        int powY = 52;
-        if (g_p.quadT > 0.f && g_p.quadPeak > 0.f) {
-            bool urgent = g_p.quadT <= 3.f;
-            unsigned char alpha = urgent ? (unsigned char)(160 + 95*(0.5f+0.5f*sinf((float)GetTime()*12.f))) : 255;
-            Color col = (Color){220, 80,230,alpha};
-            char qb[32]; snprintf(qb,32,"QUAD %4.1fs", g_p.quadT);
-            DrawText(qb,12,powY,16,col);
-            float frac = fminf(1.f, g_p.quadT / g_p.quadPeak);
-            DrawRectangle(12, powY+18, barW,            barH, (Color){25, 5, 30, 200});
-            DrawRectangle(12, powY+18, (int)(barW*frac),barH, col);
-            DrawRectangleLines(12, powY+18, barW,       barH, (Color){80, 80, 80, 120});
-            powY += 18 + barH + 4;
-        }
-        if (g_p.hasteT > 0.f && g_p.hastePeak > 0.f) {
-            bool urgent = g_p.hasteT <= 3.f;
-            unsigned char alpha = urgent ? (unsigned char)(160 + 95*(0.5f+0.5f*sinf((float)GetTime()*12.f))) : 255;
-            Color col = (Color){ 60,210,255,alpha};
-            char hb[32]; snprintf(hb,32,"SPEED %4.1fs", g_p.hasteT);
-            DrawText(hb,12,powY,16,col);
-            float frac = fminf(1.f, g_p.hasteT / g_p.hastePeak);
-            DrawRectangle(12, powY+18, barW,            barH, (Color){5, 25, 30, 200});
-            DrawRectangle(12, powY+18, (int)(barW*frac),barH, col);
-            DrawRectangleLines(12, powY+18, barW,       barH, (Color){80, 80, 80, 120});
-        }
-    }
-    // kill counter bottom-center
-    char kl[32]; snprintf(kl,32,"KILLS: %d",g_p.kills);
-    int klw=MeasureText(kl,16);
-    DrawRectangle(sw/2-klw/2-6,sh-36,klw+12,22,(Color){8,8,12,200});
-    DrawText(kl,sw/2-klw/2,sh-33,16,(Color){255,80,80,255});
-    // weapon hint
-    DrawText("[ 1 ] SHOTGUN   [ 2 ] MACHINE GUN   [ 3 ] LAUNCHER",sw/2-175,sh-18,12,(Color){80,80,80,255});
-    // kill msg
-    if (g_msgT>0) {
-        unsigned char a=(unsigned char)(255.f*fminf(1.f,g_msgT));
-        int tw=MeasureText(g_msg,20);
-        DrawText(g_msg,sw/2-tw/2,sh/3,20,(Color){255,100,100,a});
-    }
-    // Hype banner — bigger, longer, flashing. Used for "last chef" stinger,
-    // power-up grabs, and MONSTER KILL!! (which gets the bigger/redder treatment).
-    if (g_hypeT>0) {
-        // MONSTER KILL is in a tier of its own — almost double-size base font,
-        // stronger throb, red <-> white strobe instead of yellow <-> white.
-        bool monster = (g_hypeMsg[0]=='M' && g_hypeMsg[1]=='O' && g_hypeMsg[2]=='N');
-        // Alpha: full until the last 0.9s, then linear fade out.
-        float aF = fminf(1.f, g_hypeT/0.9f);
-        float t = (float)GetTime();
-        bool onBeat = (sinf(t*31.4f) > 0.f);
-        Color c;
-        if (monster) {
-            c = onBeat ? (Color){255, 50, 30,(unsigned char)(255.f*aF)}
-                       : (Color){255,255,255,(unsigned char)(255.f*aF)};
-        } else {
-            c = onBeat ? (Color){255,230, 40,(unsigned char)(255.f*aF)}
-                       : (Color){255,255,255,(unsigned char)(255.f*aF)};
-        }
-        // Scale pulse — monster kill throbs harder.
-        float amp   = monster ? 0.20f : 0.12f;
-        float pulse = 1.f + amp*(0.5f + 0.5f*sinf(t*19.0f));
-        int   base  = monster ? 86 : 44;
-        int fs = (int)(base*pulse + 0.5f);
-        int tw = MeasureText(g_hypeMsg, fs);
-        int tx = sw/2 - tw/2;
-        int ty = sh/4;
-        // Shadow first, then colour — cheap outline for readability over any bg.
-        // Monster kill gets a thicker drop shadow so the giant text reads.
-        int sh_off = monster ? 5 : 3;
-        DrawText(g_hypeMsg, tx+sh_off, ty+sh_off, fs, (Color){0,0,0,(unsigned char)(200.f*aF)});
-        DrawText(g_hypeMsg, tx,        ty,        fs, c);
-    }
-    // ── MINIMAP (player-centred, rotates so forward=up) ──────────────────────────
-    {
-        int cx2=sw-90, cy2=88;   // screen centre of minimap
-        int radius=78;
-        float scale=0.95f;       // world units per pixel — fits entire 120×80 map in the radar
-        float yaw=g_p.yaw+3.14159f; // camera yaw: forward direction angle
-        float cosY=cosf(yaw), sinY=sinf(yaw);
-
-        // Clip circle background
-        DrawCircle(cx2,cy2,radius+2,(Color){0,0,0,200});
-        DrawCircle(cx2,cy2,radius,(Color){15,10,8,210});
-
-        // Render every wall cell that fits in the circle
-        // For each cell, compute its offset from player in world space,
-        // then rotate by -yaw so player's forward maps to screen-up.
-        float pw=g_p.pos.x, pz=g_p.pos.z;
-        for (int r=0;r<ROWS;r++) for (int c=0;c<COLS;c++) {
-            if (!MAP[r][c]) continue;
-            // cell centre in world space
-            float wx=c*CELL+CELL*0.5f - pw;
-            float wz=r*CELL+CELL*0.5f - pz;
-            // rotate: screen x = world right, screen y = world -forward (up=forward)
-            float sx2= wz*sinY - wx*cosY;  // fixed: right-of-player direction (was mirrored)
-            float sy2= wx*sinY + wz*cosY;  // y in "forward" direction (screen-up = positive)
-            int px3=cx2+(int)(sx2/scale);
-            int py3=cy2-(int)(sy2/scale);  // negate: up on screen = forward
-            int cs=(int)(CELL/scale)+1;
-            if (cs<2) cs=2;
-            // Only draw if within circle
-            float dx2=(float)(px3+cs/2-cx2), dy2=(float)(py3+cs/2-cy2);
-            if (dx2*dx2+dy2*dy2 < (float)(radius*radius))
-                DrawRectangle(px3,py3,cs,cs,(Color){80,50,35,230});
-        }
-
-        // Enemies (skip corpses on minimap)
-        for (int i=0;i<g_ec;i++) {
-            Enemy *e=&g_e[i]; if (!e->active || e->dying) continue;
-            float wx=e->pos.x-pw, wz=e->pos.z-pz;
-            float sx2= wz*sinY - wx*cosY;  // fixed: right-of-player direction (was mirrored)
-            float sy2= wx*sinY + wz*cosY;
-            int ex=cx2+(int)(sx2/scale);
-            int ey=cy2-(int)(sy2/scale);
-            float dd=(float)((ex-cx2)*(ex-cx2)+(ey-cy2)*(ey-cy2));
-            if (dd<(float)(radius*radius)){
-                Color ec2=ET_COL[e->type]; ec2.a=240;
-                DrawCircle(ex,ey,4,ec2);
-            }
-        }
-
-        // Power-up beacons only (QUAD / SPEED). Ammo + health are not shown
-        // — keeps the radar tight on the high-value grabs.
-        for (int i=0;i<g_pkc;i++) {
-            Pickup *pk=&g_pk[i]; if (!pk->active) continue;
-            if (pk->type != 5 && pk->type != 6) continue;
-            float wx=pk->pos.x-pw, wz=pk->pos.z-pz;
-            float sx2= wz*sinY - wx*cosY;
-            float sy2= wx*sinY + wz*cosY;
-            int px2=cx2+(int)(sx2/scale);
-            int py2=cy2-(int)(sy2/scale);
-            float dd=(float)((px2-cx2)*(px2-cx2)+(py2-cy2)*(py2-cy2));
-            if (dd >= (float)(radius*radius)) continue;
-            Color col = (pk->type == 5) ? (Color){220, 80,230,255}
-                                        : (Color){ 60,210,255,255};
-            float pulse = 0.6f + 0.4f*sinf((float)GetTime()*5.f + (float)i);
-            DrawCircle(px2,py2,4,col);
-            DrawCircleLines(px2,py2,(int)(6+3*pulse), Fade(col, 0.85f));
-        }
-
-        // Player dot + forward triangle (always at centre, pointing up)
-        DrawCircle(cx2,cy2,5,WHITE);
-        DrawTriangle((Vector2){(float)cx2,(float)(cy2-10)},
-                     (Vector2){(float)(cx2-5),(float)(cy2+2)},
-                     (Vector2){(float)(cx2+5),(float)(cy2+2)}, YELLOW);
-
-        // Border ring
-        DrawCircleLines(cx2,cy2,radius+1,(Color){100,80,60,180});
-        DrawText("N",cx2-4,cy2-radius-14,12,(Color){180,180,180,200});
-    }
-    // Ensure cursor stays hidden during gameplay — call every frame AND park
-    // the cursor at screen centre so even if macOS briefly shows it on alt-tab,
-    // it's forced off the crosshair region and then re-hidden. DisableCursor
-    // is engaged once in InitGame — re-calling every frame caused intermittent
-    // mouse-look skips on resizable windows because each call cycles GLFW's
-    // cursor capture, occasionally letting one frame's warp undershoot.
-    HideCursor();
-    SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
-}
 
 // ── PLAYER ───────────────────────────────────────────────────────────────────
 static void UpdPlayer(float dt, Camera3D *cam) {
@@ -4137,6 +3928,22 @@ int main(int argc, char **argv) {
         g_sTesla = LoadSound(fp);
         g_sTeslaOK = (g_sTesla.frameCount > 0);
 
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mech-rocket.mp3", AppDir());
+        g_sMechRocket = LoadSound(fp);
+        g_sMechRocketOK = (g_sMechRocket.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mutant-attack.mp3", AppDir());
+        g_sMutAttack = LoadSound(fp);
+        g_sMutAttackOK = (g_sMutAttack.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ouch.mp3", AppDir());
+        g_sChefHit = LoadSound(fp);
+        g_sChefHitOK = (g_sChefHit.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ough.mp3", AppDir());
+        g_sMechHit = LoadSound(fp);
+        g_sMechHitOK = (g_sMechHit.frameCount > 0);
+
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/next-wave.mp3", AppDir());
         g_sNextWave = LoadSound(fp);
         g_sNextWaveOK = (g_sNextWave.frameCount > 0);
@@ -4179,6 +3986,14 @@ int main(int argc, char **argv) {
         if (realExplode.frameCount > 0) {
             UnloadSound(g_sExplode);
             g_sExplode = realExplode;
+        }
+
+        // Real player-hurt grunt overrides the procedural g_sHurt
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-hurt.mp3", AppDir());
+        Sound realHurt = LoadSound(fp);
+        if (realHurt.frameCount > 0) {
+            UnloadSound(g_sHurt);
+            g_sHurt = realHurt;
         }
 
         // Real chef death screams — multiple variants played randomly
@@ -4322,6 +4137,8 @@ int main(int argc, char **argv) {
             }
         }
 
+        InitHUD(appBase);  // Doom mugshot etc — implemented in hud.c
+
         // Chef death animation (G→H→I→J, freezes on J)
         {
             char fp[700];
@@ -4346,6 +4163,13 @@ int main(int argc, char **argv) {
                 SetTextureWrap  (g_chefPainTex, TEXTURE_WRAP_CLAMP);
                 g_chefPainOK = true;
             }
+            snprintf(fp, sizeof(fp), "%smonsters/AFABE0.png", appBase);
+            g_chefAtkTex = LoadTexture(fp);
+            if (g_chefAtkTex.id) {
+                SetTextureFilter(g_chefAtkTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_chefAtkTex, TEXTURE_WRAP_CLAMP);
+                g_chefAtkOK = true;
+            }
         }
 
         // HEAVY CHEF (type 1) — TORM* WolfenDoom boss sprites.
@@ -4366,6 +4190,13 @@ int main(int argc, char **argv) {
                 SetTextureFilter(g_tormPainTex, TEXTURE_FILTER_POINT);
                 SetTextureWrap  (g_tormPainTex, TEXTURE_WRAP_CLAMP);
                 g_tormPainOK = true;
+            }
+            snprintf(fp, sizeof(fp), "%smonsters/TORME0.png", appBase);
+            g_tormAtkTex = LoadTexture(fp);
+            if (g_tormAtkTex.id) {
+                SetTextureFilter(g_tormAtkTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_tormAtkTex, TEXTURE_WRAP_CLAMP);
+                g_tormAtkOK = true;
             }
             const char *dnames[4] = {"TORMG0.png","TORMH0.png","TORMI0.png","TORMJ0.png"};
             g_tormDeathOK = true;
@@ -4396,6 +4227,13 @@ int main(int argc, char **argv) {
                 SetTextureFilter(g_schPainTex, TEXTURE_FILTER_POINT);
                 SetTextureWrap  (g_schPainTex, TEXTURE_WRAP_CLAMP);
                 g_schPainOK = true;
+            }
+            snprintf(fp, sizeof(fp), "%smonsters/SCH2E0.png", appBase);
+            g_schAtkTex = LoadTexture(fp);
+            if (g_schAtkTex.id) {
+                SetTextureFilter(g_schAtkTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_schAtkTex, TEXTURE_WRAP_CLAMP);
+                g_schAtkOK = true;
             }
             const char *sdnames[4] = {"SCH2G0.png","SCH2H0.png","SCH2I0.png","SCH2J0.png"};
             g_schDeathOK = true;
@@ -4654,15 +4492,19 @@ int main(int argc, char **argv) {
     for (int i=0;i<2;i++) if (g_healthTex[i].id) UnloadTexture(g_healthTex[i]);
     for (int i=0;i<5;i++) if (g_ammoTex[i].id)   UnloadTexture(g_ammoTex[i]);
     if (g_teslaPickupTex.id) UnloadTexture(g_teslaPickupTex);
+    ShutdownHUD();
     for (int i=0;i<4;i++) if (g_chefTex[i].id)      UnloadTexture(g_chefTex[i]);
     for (int i=0;i<4;i++) if (g_chefDeathTex[i].id) UnloadTexture(g_chefDeathTex[i]);
     if (g_chefPainTex.id) UnloadTexture(g_chefPainTex);
+    if (g_chefAtkTex.id)  UnloadTexture(g_chefAtkTex);
     for (int i=0;i<4;i++) if (g_tormTex[i].id)      UnloadTexture(g_tormTex[i]);
     for (int i=0;i<4;i++) if (g_tormDeathTex[i].id) UnloadTexture(g_tormDeathTex[i]);
     if (g_tormPainTex.id) UnloadTexture(g_tormPainTex);
+    if (g_tormAtkTex.id)  UnloadTexture(g_tormAtkTex);
     for (int i=0;i<4;i++) if (g_schTex[i].id)       UnloadTexture(g_schTex[i]);
     for (int i=0;i<4;i++) if (g_schDeathTex[i].id)  UnloadTexture(g_schDeathTex[i]);
     if (g_schPainTex.id)  UnloadTexture(g_schPainTex);
+    if (g_schAtkTex.id)   UnloadTexture(g_schAtkTex);
     for (int i=0;i<4;i++)
         for (int r=0;r<5;r++) if (g_mutWalk[i].rot[r].id) UnloadTexture(g_mutWalk[i].rot[r]);
     for (int r=0;r<5;r++) if (g_mutPain.rot[r].id)        UnloadTexture(g_mutPain.rot[r]);
@@ -4692,6 +4534,10 @@ int main(int argc, char **argv) {
     }
     if (g_sShotgunKillOK)  UnloadSound(g_sShotgunKill);
     if (g_sTeslaOK)        UnloadSound(g_sTesla);
+    if (g_sMechRocketOK)   UnloadSound(g_sMechRocket);
+    if (g_sMutAttackOK)    UnloadSound(g_sMutAttack);
+    if (g_sChefHitOK)      UnloadSound(g_sChefHit);
+    if (g_sMechHitOK)      UnloadSound(g_sMechHit);
     if (g_sMGOK)           UnloadSound(g_sMG);
     if (g_sNextWaveOK)     UnloadSound(g_sNextWave);
     if (g_sHealthPickupOK) UnloadSound(g_sHealthPickup);
