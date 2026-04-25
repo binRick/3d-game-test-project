@@ -33,6 +33,11 @@ static Texture2D g_mugshotKill;
 static Texture2D g_mugshotDead;
 static bool      g_mugshotOK = false;
 
+// Loads the Doom mugshot texture set from the bundle Resources/sprites/hud/
+// mugshot/ directory. Sets g_mugshotOK only if every health-tier × look-direction
+// frame loads — if any one is missing the mugshot is gracefully suppressed
+// and the rest of the HUD still draws. Pixel-art filtering is forced (no
+// bilinear smoothing) to keep the 30×31 sprites crisp when scaled.
 void InitHUD(const char *appBase) {
     char fp[700];
     g_mugshotOK = true;
@@ -61,6 +66,9 @@ void InitHUD(const char *appBase) {
                             SetTextureWrap  (g_mugshotDead, TEXTURE_WRAP_CLAMP); }
 }
 
+// Releases all mugshot textures. Safe to call even if InitHUD partially
+// failed — every UnloadTexture is guarded on a non-zero texture id so missing
+// frames don't double-free or crash raylib.
 void ShutdownHUD(void) {
     for (int t=0;t<5;t++) for (int k=0;k<3;k++) if (g_mugshot[t][k].id) UnloadTexture(g_mugshot[t][k]);
     if (g_mugshotOuch.id) UnloadTexture(g_mugshotOuch);
@@ -68,6 +76,18 @@ void ShutdownHUD(void) {
     if (g_mugshotDead.id) UnloadTexture(g_mugshotDead);
 }
 
+// Renders the entire 2D HUD over the 3D scene. Drawn AFTER EndMode3D in the
+// main loop so it's pure screen-space. Layers, in order:
+//   1. Hurt vignette (red flash on damage)
+//   2. CRT scanlines (purely cosmetic)
+//   3. Crosshair (texture for shotgun/MG, suppressed for rocket/tesla)
+//   4. Bottom panel: HP bar, ammo, weapon name, Doom mugshot
+//   5. Top corners: WAVE, ENEMIES, SCORE, KILLS, power-up timers
+//   6. Centre: hype banner (last-survivor / multi-kill / power-up callouts)
+//   7. Top-right: rotating-radar minimap
+//   8. Cursor reset (forces capture every frame so alt-tab can't release it)
+//
+// All globals are read-only — the HUD never mutates game state.
 void DrawHUD(void) {
     int sw=GetScreenWidth(), sh=GetScreenHeight();
     if (g_p.hurtFlash>0) {

@@ -8,16 +8,29 @@
 
 static Part g_pt[MAX_PARTS];
 
+// Clears every slot in the particle pool. Called once at game start AND on
+// each reset (e.g. after dying and restarting) so leftover decals from a
+// previous run don't bleed into the new game.
 void ResetParts(void) {
     memset(g_pt, 0, sizeof(g_pt));
 }
 
+// Allocates a single particle from the pool. First-fit: walks g_pt looking
+// for an inactive slot. If the pool is full (MAX_PARTS=768 simultaneous
+// particles) the spawn is silently dropped — a deliberate trade so heavy
+// fire never drops the framerate budget on bookkeeping.
 void SpawnPart(Vector3 p, Vector3 v, Color c, float life, float sz, bool grav) {
     for (int i=0;i<MAX_PARTS;i++) if (!g_pt[i].active) {
         g_pt[i]=(Part){p,v,life,life,sz,c,true,grav}; return;
     }
 }
 
+// Spawns a blood spatter at point p. The caller passes a "weight" n that's
+// internally doubled — droplet counts come out denser than expected so a
+// chef on flash typically dumps 12-50+ droplets across multiple Blood calls.
+// Each droplet randomizes position, velocity, hue (90-160 red, no green/blue),
+// size (~2-5cm), and life (0.35-0.8s). Marked grav=true so they fall and may
+// settle on the floor as decals (handled in UpdParts).
 void Blood(Vector3 p, int n) {
     int count = n * 2;
     for (int i = 0; i < count; i++) {
@@ -42,6 +55,13 @@ void Blood(Vector3 p, int n) {
     }
 }
 
+// Triple-layer impact effect for bullet-on-wall hits. Three particle types
+// emitted in the same call:
+//   1. Bright orange fast sparks (n of them) — short-lived, gravity-affected
+//   2. Grey/brown debris chips (~2/3 n) — brick/concrete fragments that bounce
+//   3. Dust puff (n/3) — slow non-gravity particles that fade quickly
+// The 3-pass split is what makes a wall hit read as visceral instead of
+// just "yellow points".
 void Sparks(Vector3 p, int n) {
     for (int i=0;i<n;i++) {
         Vector3 v = {
@@ -78,6 +98,15 @@ void Sparks(Vector3 p, int n) {
     }
 }
 
+// Per-frame particle simulation. For each active particle:
+//   - decrements life and deactivates when expired
+//   - applies gravity (if grav flag)
+//   - integrates position
+//   - on floor contact: small slow droplets become PERMANENT floor decals
+//     (stuck=true, life extended to 10-16s, no gravity); larger fast
+//     particles bounce with energy loss instead.
+// The "stuck decal" branch is the magic that makes blood pools accumulate
+// under combat — tuned by the size+speed thresholds (sp2<3.5, size<0.08).
 void UpdParts(float dt) {
     for (int i=0;i<MAX_PARTS;i++) {
         Part *p=&g_pt[i]; if (!p->active) continue;
@@ -104,6 +133,10 @@ void UpdParts(float dt) {
     }
 }
 
+// Renders every active particle as a cube. Stuck decals get a flattened
+// y=0.02 cube (so they read as a flat splat on the floor) and fade only in
+// their final 25% of life — keeping pools visible through the gameplay.
+// Live particles shrink linearly with their remaining life.
 void DrawParts(void) {
     for (int i=0;i<MAX_PARTS;i++) {
         Part *p=&g_pt[i]; if (!p->active) continue;
