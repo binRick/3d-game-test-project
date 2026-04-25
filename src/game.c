@@ -4152,7 +4152,10 @@ static void StepFrame(void) {
         }  // end if (!g_paused) — pause gate from above
     } else if (g_gs==GS_DEAD) {
         if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
-        if (IsKeyPressed(KEY_ESCAPE)) g_gs = GS_MENU;
+        // ESC on the death screen quits the app — same exit ramp as ESC
+        // on the main menu. The death screen is already terminal; one
+        // keypress to bail out feels right.
+        if (IsKeyPressed(KEY_ESCAPE)) g_quit = true;
     }
 
     BeginDrawing();
