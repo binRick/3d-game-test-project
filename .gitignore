@@ -8,5 +8,6 @@ dist-win/
 vendor/
 boss1/
 game-sounds-main/
-third_party/
+third_party/*
+!third_party/Beautiful-Doom
 ~/.ironfist3d.cfg

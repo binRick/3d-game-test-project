@@ -319,9 +319,9 @@ typedef struct { Vector3 pos; int type; int variant; bool active; float bobT; } 
 #define BOLT_MAX_PTS 7     // muzzle + up to 6 victims
 #define BOLT_LIFE   0.18f
 typedef struct { Vector3 pts[BOLT_MAX_PTS]; int n; float life; bool active; } Bolt;
-// Enemy projectile (mutant energy ball). Travels in a straight line, expires
-// on wall/ceiling hit, damages player on body collision.
-typedef struct { Vector3 pos, vel; float life, dmg; bool active; } EShot;
+// Enemy projectile. Mutant fires energy balls (single-target, purple trail).
+// Mech fires rockets (slower, orange smoke, splash AOE on impact).
+typedef struct { Vector3 pos, vel; float life, dmg; bool active, isRocket; } EShot;
 
 // ── GLOBALS ──────────────────────────────────────────────────────────────────
 static Player   g_p;
@@ -344,6 +344,7 @@ static Model    g_wallModel, g_floorModel, g_ceilModel;
 // from the earlier rocket-splash branches in UpdBullets.
 static void TriggerMultiKill(void);
 static void SpawnEShot(Vector3 origin, Vector3 target, float dmg);
+static void SpawnEShotRocket(Vector3 origin, Vector3 target, float dmg);
 static bool TeslaLOS(Vector3 a, Vector3 b);
 
 // ── PLATFORMS (Q3-style 3D level geometry on top of the 2D floor) ───────────
@@ -435,6 +436,16 @@ static Texture2D g_mutDeathTex[4];   // J0..M0
 static bool      g_mutDeathOK = false;
 #define MUT_DEATH_FRAME_TIME 0.22f
 
+// Heavy mech (enemy type 6) — MAVY* WolfenDoom Wehrmacht-mecha sprites.
+// 8-directional, walks heavily, fires alternating-arm rocket bursts.
+//   N = idle/standing, A-D = walk cycle, F = left arm fire, G = right arm fire.
+//   No dedicated death sprites in source — we explode + remove.
+static DirFrame  g_mechIdle;       static bool g_mechIdleOK = false;
+static DirFrame  g_mechWalk[4];    static bool g_mechOK = false;
+static DirFrame  g_mechFireL;      // F frame (left arm)
+static DirFrame  g_mechFireR;      // G frame (right arm)
+static bool      g_mechFireOK = false;
+
 // Boss (enemy type 3) — AODE* sprites. Walk A-D, pain F, death G/H/L/M/N.
 static Texture2D g_bossTex[4];
 static bool      g_bossOK = false;
@@ -448,6 +459,7 @@ static bool      g_bossDeathOK = false;
 // so you can iterate on boss behaviour without clearing chef waves.
 static bool      g_bossMode = false;
 static bool      g_mutMode  = false;  // press M on menu — only mutants, respawn forever
+static bool      g_mechMode = false;  // press K on menu — only mechs, respawn forever
 static bool      g_bossInterlude = false;  // true between waves while a boss is up
 
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
@@ -530,15 +542,15 @@ static bool     g_needMouseRelease = false;  // mouse must be released once befo
 static bool     g_lastHitHead = false;  // set while processing a headshot shot; KillEnemy reads it
 
 // enemy stat tables — type 0/1/2 chefs, type 3 = BOSS, type 4 = CULTIST,
-// type 5 = MUTANT (ranged WolfenDoom mutant — keeps distance, fires energy balls)
-static const float ET_HP[]    = {65,   145,  42,   800,  80,   90  };
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f};  // boss rushes you
-static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14  };  // mutant dmg = projectile damage
-static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f};
-static const float ET_AR[]    = {24,   20,   30,   40,   30,   30  };
-static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f}; // mutant fires from 12m
-static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240 };
-static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255}};
+// type 5 = MUTANT (ranged energy ball), type 6 = MECH (heavy ranged rocket)
+static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260  };
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f };  // mech is slow & heavy
+static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28   };  // mech rocket damage
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f };
+static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45   };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f}; // mech fires from 20m
+static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500  };
+static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255}};
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
@@ -1384,7 +1396,7 @@ static const char *StateName(EnemyState s) {
     return s==ES_PATROL ? "PATROL" : s==ES_CHASE ? "CHASE" : "ATTACK";
 }
 static const char *TypeName(int t) {
-    return t==0 ? "CHEF" : t==1 ? "HEAVY" : t==2 ? "FAST" : t==3 ? "BOSS" : t==4 ? "CULT" : t==5 ? "MUTNT" : "?";
+    return t==0 ? "CHEF" : t==1 ? "HEAVY" : t==2 ? "FAST" : t==3 ? "BOSS" : t==4 ? "CULT" : t==5 ? "MUTNT" : t==6 ? "MECH" : "?";
 }
 
 static void DebugLogTick(void) {
@@ -1435,13 +1447,37 @@ static void KillEnemy(int i) {
     // Keep the enemy active=true so the sprite keeps rendering — mark dying so
     // AI/bullets/minimap/alive-count skip it.
     e->dying = true; e->deathT = 0.f; e->hp = 0.f;
-    Vector3 bp={e->pos.x,1.0f,e->pos.z};
-    // Massive blood burst on death — waist, chest, head for a gorey finish
-    Blood(bp, 50);
-    Blood((Vector3){e->pos.x, 1.6f, e->pos.z}, 35);
-    Blood((Vector3){e->pos.x, 0.4f, e->pos.z}, 25);
-    // Pick a random death vocalisation (g_sDie + g_sDieAlt[])
-    {
+    if (e->type == 6) {
+        // Mech has no death sprite in the WolfenDoom source — it explodes
+        // in two staggered blasts and scatters metal/spark debris, then the
+        // actor is removed once deathT crosses MECH_DEATH_T (UpdEnemies).
+        Vector3 cen = {e->pos.x, e->pos.y + 1.3f, e->pos.z};
+        Vector3 top = {e->pos.x, e->pos.y + 2.3f, e->pos.z};
+        Explode(cen);
+        Explode(top);
+        for (int p = 0; p < 40; p++) {
+            Vector3 v = {
+                ((float)rand()/RAND_MAX - 0.5f) * 14.f,
+                (float)rand()/RAND_MAX * 9.f + 2.f,
+                ((float)rand()/RAND_MAX - 0.5f) * 14.f
+            };
+            Color c = (rand() & 1) ? (Color){90, 100, 160, 255}    // metal
+                                   : (Color){170, 90, 30, 255};    // rust/spark
+            SpawnPart(top, v, c,
+                      0.8f + (float)rand()/RAND_MAX * 0.7f,
+                      0.10f + (float)rand()/RAND_MAX * 0.08f, true);
+        }
+        // No blood — it's a robot.
+    } else {
+        Vector3 bp={e->pos.x,1.0f,e->pos.z};
+        // Massive blood burst on death — waist, chest, head for a gorey finish
+        Blood(bp, 50);
+        Blood((Vector3){e->pos.x, 1.6f, e->pos.z}, 35);
+        Blood((Vector3){e->pos.x, 0.4f, e->pos.z}, 25);
+    }
+    // Death vocalisation + fatality stinger only for organic enemies — robots
+    // (mech) get the explosion as their "death sound" instead.
+    if (e->type != 6) {
         int total = 1;  // g_sDie itself
         for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) total++;
         int pick = rand() % total;
@@ -1452,11 +1488,10 @@ static void KillEnemy(int i) {
                 if (++idx == pick) { PlaySound(g_sDieAlt[i]); break; }
             }
         }
-    }
-    // Only play the MK "FATALITY" shout for non-headshot kills (headshot has its own SFX)
-    if (g_sFatalityOK && !g_lastHitHead) {
-        SetSoundVolume(g_sFatality, 1.5f);
-        PlaySound(g_sFatality);
+        if (g_sFatalityOK && !g_lastHitHead) {
+            SetSoundVolume(g_sFatality, 1.5f);
+            PlaySound(g_sFatality);
+        }
     }
     g_p.score+=e->score*g_wave; g_p.kills++; g_killsThisShot++;
     if (g_p.kills == 1 && g_sFirstBloodOK) {
@@ -1484,7 +1519,7 @@ static void KillEnemy(int i) {
         if (IsWall(e->pos.x+ox, e->pos.z+oz)) { ox = -ox*0.4f; oz = -oz*0.4f; }
         SpawnPick(e->pos.x+ox, e->pos.z+oz, t);
     }
-    static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST"};
+    static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH"};
     int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
@@ -1506,6 +1541,31 @@ static void KillEnemy(int i) {
         g_hypeT   = g_hypeDur;
     }
     if (Alive()==0) {
+        // Mech test mode — top up to 4 heavy mechs whenever the field clears.
+        if (g_mechMode) {
+            Msg("MECHS DOWN - RESPAWN");
+            for (int k = 0; k < 4 && g_ec < MAX_ENEMIES; k++) {
+                for (int tries = 0; tries < 120; tries++) {
+                    int r = 1 + rand()%(ROWS-2), c = 1 + rand()%(COLS-2);
+                    if (MAP[r][c]) continue;
+                    float wx = c*CELL+CELL/2.f, wz = r*CELL+CELL/2.f;
+                    if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < 14.f) continue;
+                    Enemy *ne = &g_e[g_ec++]; *ne = (Enemy){0};
+                    ne->pos = (Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
+                    ne->type = 6; ne->state = ES_CHASE;
+                    ne->hp = ne->maxHp = ET_HP[6];
+                    ne->speed = ET_SPD[6];
+                    ne->dmg = ET_DMG[6]; ne->rate = ET_RATE[6]; ne->cd = 0.6f;
+                    ne->alertR = ET_AR[6]; ne->atkR = ET_ATK[6];
+                    ne->score = ET_SC[6]; ne->active = true;
+                    float ang = (float)rand()/RAND_MAX * 6.28f;
+                    ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
+                    ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
+                    break;
+                }
+            }
+            return;
+        }
         // Mutant test mode — top up to 8 mutants whenever the field clears.
         if (g_mutMode) {
             Msg("MUTANTS DOWN - RESPAWN");
@@ -1598,21 +1658,25 @@ static void KillEnemy(int i) {
                 float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
                 if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
                 float rng=(float)rand()/RAND_MAX;
-                // Wave roll (mutant 5 = ranged shows up on every wave):
-                //   wave 1   → 80% chef, 20% mutant
-                //   wave 2   → chef + fast + heavy + mutant
-                //   wave 3+  → full mix incl. cultist + mutant
+                // Wave roll (ranged enemies always show up):
+                //   wave 1   → chef + mutant
+                //   wave 2   → adds heavy + fast + mech
+                //   wave 3+  → full mix: chef/fast/heavy/cultist/mutant/mech
                 int type;
-                if (g_wave < 2)            type = (rng < 0.80f) ? 0 : 5;
-                else if (g_wave < 3)       type = (rng < 0.45f) ? 0
-                                                : (rng < 0.70f) ? 2
-                                                : (rng < 0.82f) ? 1
-                                                :                5;
-                else                       type = (rng < 0.34f) ? 0
-                                                : (rng < 0.58f) ? 2
-                                                : (rng < 0.72f) ? 1
-                                                : (rng < 0.86f) ? 4    // CULTIST
-                                                :                5;   // MUTANT
+                if (g_wave < 2)            type = (rng < 0.78f) ? 0
+                                                : (rng < 0.92f) ? 5
+                                                :                6;
+                else if (g_wave < 3)       type = (rng < 0.42f) ? 0
+                                                : (rng < 0.62f) ? 2
+                                                : (rng < 0.74f) ? 1
+                                                : (rng < 0.88f) ? 5
+                                                :                6;
+                else                       type = (rng < 0.30f) ? 0
+                                                : (rng < 0.52f) ? 2
+                                                : (rng < 0.64f) ? 1
+                                                : (rng < 0.76f) ? 4    // CULTIST
+                                                : (rng < 0.90f) ? 5    // MUTANT
+                                                :                6;   // MECH
                 Enemy *ne=&g_e[g_ec++];
                 *ne=(Enemy){0};
                 ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top
@@ -1642,7 +1706,13 @@ static void DmgEnemy(int i, float d) {
 static void UpdEnemies(float dt) {
     for (int i=0;i<g_ec;i++) {
         Enemy *e=&g_e[i]; if (!e->active) continue;
-        if (e->dying) { e->deathT += dt; continue; }  // corpse: run death timer, skip AI
+        if (e->dying) {
+            e->deathT += dt;
+            // Mech has no corpse sprite — once the explosion has played out
+            // the actor is removed entirely instead of leaving a static body.
+            if (e->type == 6 && e->deathT > 1.0f) e->active = false;
+            continue;  // corpse: run death timer, skip AI
+        }
         if (e->flashT>0) e->flashT-=dt;
         // Wounded enemies leak blood as they move (drips land behind them and
         // become floor decals). Boss scales up: 4× the body, so spawn several
@@ -1700,8 +1770,9 @@ static void UpdEnemies(float dt) {
             // (CHASE only moves when dist > atkR; ATTACK kicks back to
             // CHASE on blocked LOS). This lets them step out and shoot.
             bool mutBlocked = false;
-            if (e->type == 5 && dist <= e->atkR) {
-                Vector3 mp = {e->pos.x, e->pos.y + 1.55f, e->pos.z};
+            if ((e->type == 5 || e->type == 6) && dist <= e->atkR) {
+                float muzzleY = (e->type == 6) ? 2.6f : 1.55f;
+                Vector3 mp = {e->pos.x, e->pos.y + muzzleY, e->pos.z};
                 Vector3 pp = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                 mutBlocked = !TeslaLOS(mp, pp);
             }
@@ -1832,8 +1903,9 @@ static void UpdEnemies(float dt) {
             // otherwise a chef on the floor next to a raised platform would
             // melee-loop at the wall while the player hovers above on the deck.
             // Forcing CHASE makes the enemy pathfind around to the stairs.
-            // Mutants are ranged — they can shoot up at any platform height.
-            else if (e->type == 5 || fabsf(g_p.pos.y - e->pos.y) <= STEP_H + 0.1f) e->state=ES_ATTACK;
+            // Mutants AND mechs are ranged — they can shoot up at any height.
+            else if (e->type == 5 || e->type == 6 ||
+                     fabsf(g_p.pos.y - e->pos.y) <= STEP_H + 0.1f) e->state=ES_ATTACK;
         } else {
             // Same y-reachability check — if the player has jumped or climbed
             // onto a different level, break out of ATTACK and go back to CHASE
@@ -1843,17 +1915,27 @@ static void UpdEnemies(float dt) {
             // navigator pathfinds them around the corner instead of standing
             // there shooting projectiles into the wall.
             bool isMutant = (e->type == 5);
+            bool isMech   = (e->type == 6);
+            bool isRanged = isMutant || isMech;
             bool losBlocked = false;
-            if (isMutant) {
-                Vector3 mp = {e->pos.x, e->pos.y + 1.55f, e->pos.z};
+            if (isRanged) {
+                float muzzleY = isMech ? 2.6f : 1.55f;
+                Vector3 mp = {e->pos.x, e->pos.y + muzzleY, e->pos.z};
                 Vector3 pp = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                 losBlocked = !TeslaLOS(mp, pp);
             }
             if (dist>e->atkR*1.5f ||
-                (!isMutant && fabsf(g_p.pos.y - e->pos.y) > STEP_H + 0.1f) ||
+                (!isRanged && fabsf(g_p.pos.y - e->pos.y) > STEP_H + 0.1f) ||
                 losBlocked) e->state=ES_CHASE;
             if (e->cd<=0) {
-                if (isMutant) {
+                if (isMech) {
+                    // Heavy mech: lobs a slow rocket with splash damage.
+                    Vector3 muzzle = {e->pos.x, e->pos.y + 2.3f, e->pos.z};
+                    Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
+                    SpawnEShotRocket(muzzle, target, e->dmg);
+                    PlaySound(g_sRocket);
+                    e->cd = e->rate;
+                } else if (isMutant) {
                     // Ranged mutant: spawn an energy-ball projectile aimed at
                     // the player's chest. Fire whenever the cooldown elapses —
                     // if a wall is in the way the projectile dies on impact,
@@ -2161,6 +2243,96 @@ static void DrawEnemies(Camera3D cam) {
                 rlEnd();
             }
             continue;  // skip chef/fallback drawing for this enemy
+        }
+
+        // HEAVY MECH (type 6) — uses N (idle) when standing/patrolling, A-D
+        // for walking, alternating F/G arms during attack windows. No corpse
+        // sprite — KillEnemy triggers an explosion and the actor is removed
+        // by UpdEnemies once deathT crosses 1s, so we just stop drawing the
+        // billboard the moment death begins.
+        if (e->type == 6 && e->dying) continue;
+        if (e->type == 6 && g_mechOK) {
+            const float PX_PER_M = 105.f / 2.6f;  // ~105 px tall mech sprite → 2.6 m
+            float spriteH = 2.6f;
+            Texture2D tex = {0};
+            bool flip = false;
+            // Pick rotation slot from facing-vs-player angle (same code as cultist)
+            Vector3 facing;
+            if (e->state == ES_PATROL) {
+                facing = e->pd;
+            } else {
+                float fdx = g_p.pos.x - e->pos.x, fdz = g_p.pos.z - e->pos.z;
+                float l = sqrtf(fdx*fdx + fdz*fdz);
+                facing = (l > 0.001f) ? (Vector3){fdx/l, 0, fdz/l} : (Vector3){0, 0, 1};
+            }
+            float enemyYaw  = atan2f(facing.x, facing.z);
+            float pdx = g_p.pos.x - e->pos.x, pdz = g_p.pos.z - e->pos.z;
+            float playerYaw = atan2f(pdx, pdz);
+            float rel = playerYaw - enemyYaw;
+            while (rel >  PI) rel -= 2.f*PI;
+            while (rel < -PI) rel += 2.f*PI;
+            float relDeg = rel * RAD2DEG;
+            float a = relDeg + 22.5f;
+            while (a < 0)    a += 360.f;
+            while (a >= 360) a -= 360.f;
+            int idx = (int)(a / 45.f) % 8;
+            static const int   slots[8] = {0, 1, 2, 3, 4, 3, 2, 1};
+            static const bool  flips[8] = {false,false,false,false,false,true,true,true};
+            int slot = slots[idx];
+            flip = flips[idx];
+
+            DirFrame *frame = NULL;
+            // Fire frame timing: last 0.40s after firing (cd > rate-0.40),
+            // alternating arm based on a per-shot counter via cd modulo.
+            if (e->state == ES_ATTACK && g_mechFireOK && e->cd > e->rate - 0.40f) {
+                // Pick L or R arm — flip per shot using stateT parity
+                bool leftArm = (((int)(e->stateT * 100.f)) & 1);
+                frame = leftArm ? &g_mechFireL : &g_mechFireR;
+            } else if (e->state == ES_PATROL || e->state == ES_ATTACK) {
+                frame = g_mechIdleOK ? &g_mechIdle : &g_mechWalk[0];
+            } else {
+                int wf = (int)(e->legT * 0.5f) % 4;
+                if (wf < 0) wf += 4;
+                frame = &g_mechWalk[wf];
+            }
+            if (frame && frame->ok) tex = frame->rot[slot];
+
+            if (tex.id) {
+                spriteH = (float)tex.height / PX_PER_M;
+                Vector3 pos = {e->pos.x, e->pos.y + spriteH * 0.5f, e->pos.z};
+                Rectangle src = {0, 0, (float)tex.width, (float)tex.height};
+                if (flip) src.width = -src.width;
+                float aspect = (float)tex.width / (float)tex.height;
+                Vector2 size   = {spriteH * aspect, spriteH};
+                Vector2 origin = {size.x * 0.5f, size.y * 0.5f};
+                DrawBillboardPro(cam, tex, src, pos, (Vector3){0,1,0}, size, origin, 0.f, WHITE);
+            }
+            // HP bar above the head — fatter to match the mech's bulk
+            if (!e->dying && e->hp < e->maxHp) {
+                float hp = e->hp / e->maxHp;
+                float bary = e->pos.y + spriteH + 0.30f;
+                Vector3 HF = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+                Vector3 HR = Vector3Normalize(Vector3CrossProduct(HF, cam.up));
+                Vector3 HU = Vector3CrossProduct(HR, HF);
+                const float W = 1.10f, H = 0.13f;
+                Vector3 bgTL = {e->pos.x - HR.x*W*0.5f + HU.x*H*0.5f,
+                                bary       - HR.y*W*0.5f + HU.y*H*0.5f,
+                                e->pos.z - HR.z*W*0.5f + HU.z*H*0.5f};
+                Vector3 bgTR = Vector3Add(bgTL, Vector3Scale(HR, W));
+                Vector3 bgBL = Vector3Subtract(bgTL, Vector3Scale(HU, H));
+                Vector3 bgBR = Vector3Subtract(bgTR, Vector3Scale(HU, H));
+                rlBegin(RL_TRIANGLES);
+                rlColor4ub(0,0,0,180);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z); rlVertex3f(bgTR.x,bgTR.y,bgTR.z);
+                Vector3 fTR = Vector3Add(bgTL, Vector3Scale(HR, W*hp));
+                Vector3 fBR = Vector3Add(bgBL, Vector3Scale(HR, W*hp));
+                rlColor4ub(255,140,40,255);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(fBR.x,fBR.y,fBR.z);
+                rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(fBR.x,fBR.y,fBR.z); rlVertex3f(fTR.x,fTR.y,fTR.z);
+                rlEnd();
+            }
+            continue;
         }
 
         if (g_chefOK) {
@@ -2535,6 +2707,24 @@ static void SpawnEShot(Vector3 origin, Vector3 target, float dmg) {
         g_es[i].vel = v;
         g_es[i].life = 3.0f;
         g_es[i].dmg = dmg;
+        g_es[i].isRocket = false;
+        g_es[i].active = true;
+        return;
+    }
+}
+// Mech rocket: slower, splash damage on impact, orange smoke trail.
+static void SpawnEShotRocket(Vector3 origin, Vector3 target, float dmg) {
+    for (int i = 0; i < MAX_ESHOTS; i++) {
+        if (g_es[i].active) continue;
+        Vector3 d = Vector3Subtract(target, origin);
+        float len = sqrtf(d.x*d.x + d.y*d.y + d.z*d.z);
+        if (len < 0.01f) return;
+        Vector3 v = {d.x/len * 9.f, d.y/len * 9.f, d.z/len * 9.f};
+        g_es[i].pos = origin;
+        g_es[i].vel = v;
+        g_es[i].life = 4.0f;
+        g_es[i].dmg = dmg;
+        g_es[i].isRocket = true;
         g_es[i].active = true;
         return;
     }
@@ -2547,23 +2737,52 @@ static void UpdEShots(float dt) {
         s->pos.y += s->vel.y * dt;
         s->pos.z += s->vel.z * dt;
         s->life -= dt;
-        // Sparkly purple trail behind every shot — re-uses the particle system.
-        SpawnPart(s->pos,
-                  (Vector3){((float)rand()/RAND_MAX - 0.5f)*0.6f,
-                            ((float)rand()/RAND_MAX - 0.5f)*0.6f,
-                            ((float)rand()/RAND_MAX - 0.5f)*0.6f},
-                  (Color){180, 80, 255, 220}, 0.35f, 0.10f, false);
-        if (s->life <= 0.f || IsWall(s->pos.x, s->pos.z) ||
-            s->pos.y > WALL_H || s->pos.y < 0.f) { s->active = false; continue; }
-        // Player collision — chest sphere at eye - 0.4
+        // Trail particle: purple sparkles for energy ball, orange smoke for rocket.
+        if (s->isRocket) {
+            SpawnPart(s->pos,
+                      (Vector3){((float)rand()/RAND_MAX - 0.5f)*0.4f,
+                                ((float)rand()/RAND_MAX - 0.5f)*0.4f,
+                                ((float)rand()/RAND_MAX - 0.5f)*0.4f},
+                      (Color){255, 140, 50, 220}, 0.45f, 0.18f, false);
+            SpawnPart(s->pos,
+                      (Vector3){((float)rand()/RAND_MAX - 0.5f)*0.6f,
+                                ((float)rand()/RAND_MAX - 0.5f)*0.6f,
+                                ((float)rand()/RAND_MAX - 0.5f)*0.6f},
+                      (Color){80, 80, 80, 200}, 0.7f, 0.25f, false);
+        } else {
+            SpawnPart(s->pos,
+                      (Vector3){((float)rand()/RAND_MAX - 0.5f)*0.6f,
+                                ((float)rand()/RAND_MAX - 0.5f)*0.6f,
+                                ((float)rand()/RAND_MAX - 0.5f)*0.6f},
+                      (Color){180, 80, 255, 220}, 0.35f, 0.10f, false);
+        }
+        bool wallHit = IsWall(s->pos.x, s->pos.z) ||
+                       s->pos.y > WALL_H || s->pos.y < 0.f;
+        bool dead = s->life <= 0.f || wallHit;
+        // Player collision check
         float px = g_p.pos.x, pz = g_p.pos.z, py = g_p.pos.y + EYE_H - 0.4f;
         float dx = s->pos.x - px, dy = s->pos.y - py, dz = s->pos.z - pz;
-        if (dx*dx + dy*dy + dz*dz < 0.65f*0.65f) {
-            g_p.hp -= s->dmg;
-            g_p.hurtFlash = 0.22f;
-            g_p.shake = fmaxf(g_p.shake, 0.13f);
-            PlaySound(g_sHurt);
-            if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
+        bool playerHit = (dx*dx + dy*dy + dz*dz < 0.65f*0.65f);
+        if (dead || playerHit) {
+            if (s->isRocket) {
+                // Rocket: explosion + AOE damage out to 3.5m, falls off linearly.
+                Explode(s->pos);
+                float pdist = sqrtf(dx*dx + dy*dy + dz*dz);
+                if (pdist < 3.5f) {
+                    float fall = 1.f - pdist / 3.5f;
+                    g_p.hp -= s->dmg * fall;
+                    g_p.hurtFlash = 0.3f;
+                    g_p.shake = fmaxf(g_p.shake, 0.18f);
+                    PlaySound(g_sHurt);
+                    if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
+                }
+            } else if (playerHit) {
+                g_p.hp -= s->dmg;
+                g_p.hurtFlash = 0.22f;
+                g_p.shake = fmaxf(g_p.shake, 0.13f);
+                PlaySound(g_sHurt);
+                if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
+            }
             s->active = false;
         }
     }
@@ -2577,9 +2796,16 @@ static void DrawEShots(void) {
     BeginBlendMode(BLEND_ADDITIVE);
     for (int i = 0; i < MAX_ESHOTS; i++) {
         if (!g_es[i].active) continue;
-        DrawSphere(g_es[i].pos, 0.32f, (Color){220, 130, 255, 240});
-        DrawSphere(g_es[i].pos, 0.55f, (Color){150, 60, 220, 120});
-        DrawSphere(g_es[i].pos, 0.85f, (Color){100, 40, 180, 50});
+        if (g_es[i].isRocket) {
+            // Rocket: bright orange core with a hot-yellow inner spark
+            DrawSphere(g_es[i].pos, 0.35f, (Color){255, 200,  60, 255});
+            DrawSphere(g_es[i].pos, 0.55f, (Color){255, 130,  40, 180});
+            DrawSphere(g_es[i].pos, 0.85f, (Color){200,  80,  20,  80});
+        } else {
+            DrawSphere(g_es[i].pos, 0.32f, (Color){220, 130, 255, 240});
+            DrawSphere(g_es[i].pos, 0.55f, (Color){150,  60, 220, 120});
+            DrawSphere(g_es[i].pos, 0.85f, (Color){100,  40, 180,  50});
+        }
     }
     EndBlendMode();
     rlEnableDepthMask();
@@ -2659,6 +2885,9 @@ static void Shoot(void) {
             } else if (g_e[j].type == 5) {   // MUTANT (sprite ~2.26m tall)
                 headY = 2.00f; headR = 0.30f;
                 bodyY = 1.10f; bodyR = 0.55f;
+            } else if (g_e[j].type == 6) {   // MECH (sprite ~2.6m tall, bulky)
+                headY = 2.40f; headR = 0.40f;
+                bodyY = 1.30f; bodyR = 0.85f;
             } else {
                 float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
                 headY = bh + 0.67f; headR = 0.26f;
@@ -3518,6 +3747,30 @@ static void InitGame(void) {
                 break;
             }
         }
+    } else if (g_mechMode) {
+        // MECH TEST: 4 heavy mechs (fewer than mutants — they're tanky and
+        // their rockets dominate fast). Respawned via KillEnemy so the
+        // fight never ends.
+        for (int k = 0; k < 4 && g_ec < MAX_ENEMIES; k++) {
+            for (int tries = 0; tries < 120; tries++) {
+                int r = 1 + rand()%(ROWS-2), c = 1 + rand()%(COLS-2);
+                if (MAP[r][c]) continue;
+                float wx = c*CELL+CELL/2.f, wz = r*CELL+CELL/2.f;
+                if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < 14.f) continue;
+                Enemy *ne = &g_e[g_ec++]; *ne = (Enemy){0};
+                ne->pos = (Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
+                ne->type = 6; ne->state = ES_PATROL;
+                ne->hp = ne->maxHp = ET_HP[6];
+                ne->speed = ET_SPD[6];
+                ne->dmg = ET_DMG[6]; ne->rate = ET_RATE[6]; ne->cd = 0.6f;
+                ne->alertR = ET_AR[6]; ne->atkR = ET_ATK[6];
+                ne->score = ET_SC[6]; ne->active = true;
+                float ang = (float)rand()/RAND_MAX * 6.28f;
+                ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
+                ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
+                break;
+            }
+        }
     } else {
         // Normal mode: spawn wave 1 (16 chefs)
         for (int k=0;k<16&&g_ec<MAX_ENEMIES;k++) {
@@ -3526,13 +3779,14 @@ static void InitGame(void) {
                 if (MAP[r][c]) continue;
                 float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
                 if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
-                // Wave 1 mix: 50% regular chef, 18% fast, 8% heavy, 12% cultist, 12% mutant
+                // Wave 1 mix: 45% chef / 18% fast / 8% heavy / 12% cult / 12% mut / 5% mech
                 float rng = (float)rand()/RAND_MAX;
-                int type = rng < 0.50f ? 0
-                         : rng < 0.68f ? 2
-                         : rng < 0.76f ? 1
-                         : rng < 0.88f ? 4
-                         :              5;  // MUTANT (ranged)
+                int type = rng < 0.45f ? 0
+                         : rng < 0.63f ? 2
+                         : rng < 0.71f ? 1
+                         : rng < 0.83f ? 4
+                         : rng < 0.95f ? 5
+                         :              6;
                 Enemy *ne=&g_e[g_ec++]; *ne=(Enemy){0};
                 ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
                 ne->type=type; ne->state=ES_PATROL;
@@ -3596,14 +3850,19 @@ static void StepFrame(void) {
         if (!altHeld && (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) {
             g_bossMode = false;
             g_mutMode  = false;
+            g_mechMode = false;
             InitGame();
         }
         if (IsKeyPressed(KEY_B)) {
-            g_bossMode = true;  g_mutMode = false;
+            g_bossMode = true;  g_mutMode = false; g_mechMode = false;
             InitGame();
         }
         if (IsKeyPressed(KEY_M)) {
-            g_mutMode = true;   g_bossMode = false;
+            g_mutMode = true;   g_bossMode = false; g_mechMode = false;
+            InitGame();
+        }
+        if (IsKeyPressed(KEY_K)) {
+            g_mechMode = true;  g_bossMode = false; g_mutMode = false;
             InitGame();
         }
     } else if (g_gs==GS_PLAY) {
@@ -3755,6 +4014,8 @@ static void StepFrame(void) {
         DrawText(bt,sw2/2-MeasureText(bt,16)/2,sh2*3/4+36,16,(Color){200,120,120,255});
         const char *mt="[ M FOR MUTANT TEST ]";
         DrawText(mt,sw2/2-MeasureText(mt,16)/2,sh2*3/4+58,16,(Color){180,120,200,255});
+        const char *kt="[ K FOR MECH TEST ]";
+        DrawText(kt,sw2/2-MeasureText(kt,16)/2,sh2*3/4+80,16,(Color){120,140,210,255});
         DrawFPS(10,10);
     } else if (g_gs==GS_DEAD) {
         int sw2=GetScreenWidth(),sh2=GetScreenHeight();
@@ -4283,6 +4544,37 @@ int main(int argc, char **argv) {
             }
         }
 
+        // HEAVY MECH (type 6) — MAVY* sprites in nazis_mechas/. Same per-rotation
+        // file convention as the mutant (MAVYx1..MAVYx5, mirrors handled in code).
+        {
+            char fp[700];
+            #define LOAD_MECH_FRAME(letter, dfPtr) do {                                  \
+                DirFrame *df = (dfPtr); df->ok = false;                                  \
+                bool ok = true;                                                          \
+                for (int _r = 0; _r < 5; _r++) {                                         \
+                    snprintf(fp, sizeof(fp), "%smonsters/nazis_mechas/MAVY%c%d.png",     \
+                             appBase, letter, _r + 1);                                   \
+                    df->rot[_r] = LoadTexture(fp);                                       \
+                    if (df->rot[_r].id == 0) { ok = false; continue; }                   \
+                    SetTextureFilter(df->rot[_r], TEXTURE_FILTER_POINT);                 \
+                    SetTextureWrap  (df->rot[_r], TEXTURE_WRAP_CLAMP);                   \
+                }                                                                        \
+                df->ok = ok;                                                             \
+            } while (0)
+
+            LOAD_MECH_FRAME('N', &g_mechIdle);   g_mechIdleOK = g_mechIdle.ok;
+            const char mletters[4] = {'A','B','C','D'};
+            g_mechOK = true;
+            for (int i = 0; i < 4; i++) {
+                LOAD_MECH_FRAME(mletters[i], &g_mechWalk[i]);
+                if (!g_mechWalk[i].ok) g_mechOK = false;
+            }
+            LOAD_MECH_FRAME('F', &g_mechFireL);
+            LOAD_MECH_FRAME('G', &g_mechFireR);
+            g_mechFireOK = g_mechFireL.ok && g_mechFireR.ok;
+            #undef LOAD_MECH_FRAME
+        }
+
         // Flaming barrel scenery — Freedoom 3-frame fire cycle.
         {
             char fp[700];
@@ -4377,6 +4669,11 @@ int main(int argc, char **argv) {
     for (int r=0;r<5;r++) if (g_mutAtkCharge.rot[r].id)   UnloadTexture(g_mutAtkCharge.rot[r]);
     for (int r=0;r<5;r++) if (g_mutAtkFire.rot[r].id)     UnloadTexture(g_mutAtkFire.rot[r]);
     for (int i=0;i<4;i++) if (g_mutDeathTex[i].id)        UnloadTexture(g_mutDeathTex[i]);
+    for (int r=0;r<5;r++) if (g_mechIdle.rot[r].id)       UnloadTexture(g_mechIdle.rot[r]);
+    for (int i=0;i<4;i++)
+        for (int r=0;r<5;r++) if (g_mechWalk[i].rot[r].id) UnloadTexture(g_mechWalk[i].rot[r]);
+    for (int r=0;r<5;r++) if (g_mechFireL.rot[r].id)      UnloadTexture(g_mechFireL.rot[r]);
+    for (int r=0;r<5;r++) if (g_mechFireR.rot[r].id)      UnloadTexture(g_mechFireR.rot[r]);
     for (int i=0;i<4;i++) if (g_bossTex[i].id)      UnloadTexture(g_bossTex[i]);
     for (int i=0;i<5;i++) if (g_bossDeathTex[i].id) UnloadTexture(g_bossDeathTex[i]);
     if (g_bossPainTex.id) UnloadTexture(g_bossPainTex);
