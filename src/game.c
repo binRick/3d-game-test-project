@@ -1322,7 +1322,10 @@ static const char *StateName(EnemyState s) {
     return s==ES_PATROL ? "PATROL" : s==ES_CHASE ? "CHASE" : "ATTACK";
 }
 static const char *TypeName(int t) {
-    return t==0 ? "CHEF" : t==1 ? "HEAVY" : t==2 ? "FAST" : t==3 ? "BOSS" : t==4 ? "CULT" : t==5 ? "MUTNT" : t==6 ? "MECH" : "?";
+    return t==0 ? "CHEF"  : t==1 ? "HEAVY" : t==2 ? "FAST"  : t==3 ? "BOSS"
+         : t==4 ? "CULT"  : t==5 ? "MUTNT" : t==6 ? "MECH"
+         : t==7 ? "SOLDR" : t==8 ? "CACO"  : t==9 ? "CYBER"
+         : t==10 ? "REVN" : t==11 ? "LSOUL" : t==12 ? "PAINE" : "?";
 }
 
 static void DebugLogTick(void) {
@@ -1445,7 +1448,8 @@ static void KillEnemy(int i) {
         if (IsWall(e->pos.x+ox, e->pos.z+oz)) { ox = -ox*0.4f; oz = -oz*0.4f; }
         SpawnPick(e->pos.x+ox, e->pos.z+oz, t);
     }
-    static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH"};
+    static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH",
+                                "SOLDIER","CACODEMON","CYBER DEMON","REVENANT","LOST SOUL","PAIN ELEMENTAL"};
     int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
