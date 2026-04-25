@@ -5,6 +5,7 @@
 #include "common.h"
 #include "hud.h"
 #include "effects.h"
+#include "level.h"
 #include <math.h>
 #include <stdio.h>
 #ifdef __EMSCRIPTEN__
@@ -108,32 +109,10 @@ static const char *AppDir(void) {
 #define SPEED       7.5f
 #define SENS        0.0016f
 #define JUMP        8.5f
-#define STEP_H      0.55f  // max auto-climb height (stairs)
+// STEP_H, MAX_PLATS, Platform moved to common.h
 #define MAX_PITCH   1.44f
 
 // ── MAP ──────────────────────────────────────────────────────────────────────
-const int MAP[ROWS][COLS] = {
-    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
-    {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,1,1,0,1,1,0,0,1,0,0,1,0,1,0,0,0,1,0,0,1,1,0,1,1,0,0,1},
-    {1,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,0,0,1,0,0,1},
-    {1,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1},
-    {1,1,0,1,0,0,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,0,0,0,1,0,1,1},
-    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-    {1,1,0,1,0,0,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,0,0,0,1,0,1,1},
-    {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,0,0,1,0,0,1},
-    {1,0,0,1,1,0,1,1,0,0,1,0,0,1,0,1,0,0,0,1,0,0,1,1,0,1,1,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
-};
 
 // ── EMBEDDED SHADERS ─────────────────────────────────────────────────────────
 // Desktop: GLSL 330 core. Web (Emscripten / WebGL 2): GLSL ES 300, which is
@@ -316,10 +295,7 @@ static void SpawnEShotRocket(Vector3 origin, Vector3 target, float dmg);
 static bool TeslaLOS(Vector3 a, Vector3 b);
 
 // ── PLATFORMS (Q3-style 3D level geometry on top of the 2D floor) ───────────
-typedef struct { float x0, z0, x1, z1, top; } Platform;
-#define MAX_PLATS 64
-static Platform g_plats[MAX_PLATS];
-static int      g_platCount = 0;
+// Platform/g_plats/g_platCount moved to level.c
 static Model    g_platModel;     // shared unit cube scaled per-platform, lit via g_shader
 // ── Sprite-based weapon viewmodels ───────────────────────────────────────────
 // Each weapon has a frame[0]=idle and frame[1..count-1]=fire animation.
@@ -810,99 +786,28 @@ static Model MakeShaderModel(Mesh mesh, Texture2D tex) {
 }
 
 // ── COLLISION ────────────────────────────────────────────────────────────────
-static bool IsWall(float wx, float wz) {
-    int c=(int)(wx/CELL), r=(int)(wz/CELL);
-    if (r<0||r>=ROWS||c<0||c>=COLS) return true;
-    return MAP[r][c]==1;
-}
 
 // Circle-vs-grid wall check. Any wall cell whose AABB is within `rad` of
 // (cx, cz) blocks. Smoother than 3-point shoulder tests — avoids false-block
 // at wall corners where the body only grazes the cell diagonally.
-static bool IsWallCircle(float cx, float cz, float rad) {
-    int cMin = (int)((cx - rad) / CELL);
-    int cMax = (int)((cx + rad) / CELL);
-    int rMin = (int)((cz - rad) / CELL);
-    int rMax = (int)((cz + rad) / CELL);
-    for (int row = rMin; row <= rMax; row++) {
-        for (int col = cMin; col <= cMax; col++) {
-            if (row<0||row>=ROWS||col<0||col>=COLS) return true;
-            if (MAP[row][col] != 1) continue;
-            float ax0 = col * CELL, ax1 = (col+1) * CELL;
-            float az0 = row * CELL, az1 = (row+1) * CELL;
-            float qx = fmaxf(ax0, fminf(cx, ax1));
-            float qz = fmaxf(az0, fminf(cz, az1));
-            float dx = cx - qx, dz = cz - qz;
-            if (dx*dx + dz*dz < rad*rad) return true;
-        }
-    }
-    return false;
-}
 
 // ── PLATFORM COLLISION ──────────────────────────────────────────────────────
 // Returns true if the position (x, z) would penetrate a platform whose top is
 // more than STEP_H above currentY (i.e. too tall to walk up onto).
-static bool PlatBlocks(float x, float z, float currentY, float rad) {
-    for (int i = 0; i < g_platCount; i++) {
-        Platform *p = &g_plats[i];
-        if (x > p->x0 - rad && x < p->x1 + rad &&
-            z > p->z0 - rad && z < p->z1 + rad) {
-            if (currentY < p->top - STEP_H) return true;
-        }
-    }
-    return false;
-}
 
 // How far inside a too-tall platform's safety margin the point lies — 0 if the
 // point is clear, positive if penetrating. Used so an entity that just fell off
 // a platform (and so overlaps the edge from the side) can still move AWAY —
 // allow moves only if they don't deepen penetration.
-static float PlatPenetration(float x, float z, float currentY, float rad) {
-    float worst = 0.f;
-    for (int i = 0; i < g_platCount; i++) {
-        Platform *p = &g_plats[i];
-        if (currentY >= p->top - STEP_H) continue;
-        if (x <= p->x0 - rad || x >= p->x1 + rad ||
-            z <= p->z0 - rad || z >= p->z1 + rad) continue;
-        float dxL = x - (p->x0 - rad);
-        float dxR = (p->x1 + rad) - x;
-        float dzF = z - (p->z0 - rad);
-        float dzB = (p->z1 + rad) - z;
-        float d = fminf(fminf(dxL, dxR), fminf(dzF, dzB));
-        if (d > worst) worst = d;
-    }
-    return worst;
-}
 
 // Return the highest platform top the player can stand on at (x, z) given
 // their current Y (i.e. any platform whose top is <= currentY + epsilon).
 // Default ground is 0.
-static float PlatGroundAt(float x, float z, float currentY) {
-    float best = 0.f;
-    for (int i = 0; i < g_platCount; i++) {
-        Platform *p = &g_plats[i];
-        if (x >= p->x0 && x <= p->x1 && z >= p->z0 && z <= p->z1) {
-            if (p->top > best && p->top <= currentY + 0.05f) best = p->top;
-        }
-    }
-    return best;
-}
 
 // Same as PlatGroundAt but with a radius margin — the entity steps onto a
 // platform as soon as its body overlaps the platform footprint, not only once
 // its centre crosses the strict edge. Used for enemies so they climb stairs
 // smoothly when approaching from the side instead of clipping into the mesh.
-static float PlatGroundAtR(float x, float z, float currentY, float rad) {
-    float best = 0.f;
-    for (int i = 0; i < g_platCount; i++) {
-        Platform *p = &g_plats[i];
-        if (x >= p->x0 - rad && x <= p->x1 + rad &&
-            z >= p->z0 - rad && z <= p->z1 + rad) {
-            if (p->top > best && p->top <= currentY + 0.05f) best = p->top;
-        }
-    }
-    return best;
-}
 
 // Per-axis move for enemies — blocks against walls AND tall platforms, matching
 // the player's movement rules. Enemies can still step onto platforms within STEP_H.
@@ -932,31 +837,9 @@ static void EnemyMove(Enemy *e, float dx, float dz) {
 }
 
 // Build the level's platforms. Called once at init.
-static void InitPlatforms(void) {
-    g_platCount = 0;
-    // Central corridor (rows 9-10) has the open space. Put a stair-up + platform + stair-down.
-    //
-    //   z=36 ──────────────────────────────────────────── z=44
-    //        [step1][step2][step3] [ big plat 1.35 ] [step4][step5]
-    //
-    // Each step = 0.45m tall (under STEP_H = 0.55) so you can walk up smoothly.
-    float z0 = 38.f, z1 = 42.f;  // stairs are 4m deep
-    g_plats[g_platCount++] = (Platform){52.f, z0, 55.f, z1, 0.45f};
-    g_plats[g_platCount++] = (Platform){55.f, z0, 58.f, z1, 0.90f};
-    g_plats[g_platCount++] = (Platform){58.f, z0, 61.f, z1, 1.35f};
-    // Big platform (full 8m wide, 8m deep — covers rows 9-10 mostly)
-    g_plats[g_platCount++] = (Platform){61.f, 36.f, 69.f, 44.f, 1.35f};
-    // Stair down
-    g_plats[g_platCount++] = (Platform){69.f, z0, 72.f, z1, 0.90f};
-    g_plats[g_platCount++] = (Platform){72.f, z0, 75.f, z1, 0.45f};
-
-    // Second feature: a tall lone platform near start-ish that you must JUMP onto
-    g_plats[g_platCount++] = (Platform){20.f, 24.f, 26.f, 28.f, 1.10f};
-    // and a "balcony" in the far corner (accessed via jump)
-    g_plats[g_platCount++] = (Platform){92.f, 60.f, 104.f, 68.f, 1.60f};
-}
 
 // ── PARTICLES ────────────────────────────────────────────────────────────────
+
 
 static void Explode(Vector3 p) {
     // Distance-scaled volume: up to 2.5x at point-blank, floor 0.25x far away
@@ -4041,6 +3924,7 @@ int main(int argc, char **argv) {
         }
 
         InitHUD(appBase);  // Doom mugshot etc — implemented in hud.c
+
 
         // Chef death animation (G→H→I→J, freezes on J)
         {

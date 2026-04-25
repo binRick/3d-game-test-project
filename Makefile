@@ -10,7 +10,7 @@ BIN     = $(APP)/Contents/MacOS/IronFist3D
 ICNS    = $(APP)/Contents/Resources/icon.icns
 SPRITES = $(APP)/Contents/Resources/sprites
 SOUNDS  = $(APP)/Contents/Resources/sounds
-SRC     = src/game.c src/hud.c src/effects.c
+SRC     = src/game.c src/hud.c src/effects.c src/level.c
 
 game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES) $(SOUNDS)
 	@echo "Built $(APP) — run with: open $(APP)"

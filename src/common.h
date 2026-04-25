@@ -14,6 +14,10 @@
 #define ROWS        20
 #define COLS        30
 #define GRAV       -22.0f
+#define MAX_PLATS   64
+#define STEP_H      0.55f
+
+typedef struct { float x0, z0, x1, z1, top; } Platform;
 
 typedef enum { GS_MENU, GS_PLAY, GS_DEAD } GameState;
 typedef enum { ES_PATROL, ES_CHASE, ES_ATTACK } EnemyState;
