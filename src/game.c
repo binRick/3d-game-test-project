@@ -3957,8 +3957,11 @@ static void StepFrame(void) {
     DebugLogTick();
     // F8 — toggle the sprite browser (debug). When active, swallows the
     // entire frame and renders the single-sprite viewer instead of the game.
+    // macOS-only because it reads absolute /Users/... source paths.
+#if !defined(PLATFORM_WEB) && !defined(_WIN32)
     if (IsKeyPressed(KEY_F8) && !g_sbActive) { SBOpen(); }
     if (g_sbActive) { SBStep(); return; }
+#endif
     // Alt+Enter — fullscreen toggle. Borderless-windowed flavour: no
     // resolution change, no swoop animation, instant. Skipped on web — the
     // browser shell owns canvas sizing and the Fullscreen API needs its own
@@ -3995,9 +3998,12 @@ static void StepFrame(void) {
             g_gs = GS_PICK_ENEMY;
         }
         // S — open the sprite browser (debug). Same effect as F8 but
-        // doesn't need the fn-modifier on a Mac laptop. ESC inside the
-        // browser exits back to the menu.
+        // doesn't need the fn-modifier on a Mac laptop. macOS-only —
+        // the browser reads absolute /Users/... paths that don't exist
+        // in the WASM sandbox or a Windows build.
+#if !defined(PLATFORM_WEB) && !defined(_WIN32)
         if (IsKeyPressed(KEY_S) && !g_sbActive) { SBOpen(); }
+#endif
     } else if (g_gs == GS_PICK_ENEMY) {
         // Enemy picker — navigate 13 picker slots: 10 in-game enemies (0..9)
         // plus 3 preview-only Beautiful-Doom enemies (10/11/12 — revenant,
@@ -4202,8 +4208,10 @@ static void StepFrame(void) {
             DrawText(st,sw2/2-MeasureText(st,22)/2,sh2*3/4,22,RED);
         const char *at="[ A FOR ARENA - PICK YOUR ENEMY ]";
         DrawText(at,sw2/2-MeasureText(at,18)/2,sh2*3/4+36,18,(Color){240,200,80,255});
+#if !defined(PLATFORM_WEB) && !defined(_WIN32)
         const char *sb="[ S FOR SPRITE BROWSER ]";
         DrawText(sb,sw2/2-MeasureText(sb,16)/2,sh2*3/4+62,16,(Color){180,180,200,255});
+#endif
         DrawFPS(10,10);
     } else if (g_gs == GS_PICK_ENEMY) {
         // Enemy picker screen — show a big preview of the currently-selected
@@ -4388,7 +4396,7 @@ static void StepFrame(void) {
         if (sinf(GetTime()*3.f)>0)
             DrawText("[ ENTER  /  SPACE  TO  PLAY  AGAIN ]",sw2/2-190,sh2*2/3,20,WHITE);
     }
-    if (g_gs==GS_PLAY) DrawFPS(GetScreenWidth()-58,GetScreenHeight()-18);
+    if (g_gs==GS_PLAY) DrawFPS(GetScreenWidth()-90, 10);
     EndDrawing();
 }
 
