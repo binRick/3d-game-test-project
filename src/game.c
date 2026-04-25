@@ -3208,19 +3208,25 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
         float dy = (g_e[j].pos.y + coneChestY) - origin.y;
         float dz = g_e[j].pos.z - origin.z;
         float d2 = dx*dx + dy*dy + dz*dz;
-        if (d2 >= bestD2) continue;
+        // Distance is measured to the enemy SURFACE (subtract body radius)
+        // not the centre — without this a 1.5 m boss had to be touched to
+        // be within tesla's 6 m range. Big enemies (boss, cyber, mech)
+        // can now be tagged from further away.
+        float bodyR = (g_e[j].type == 3) ? 1.5f
+                    : (g_e[j].type == 9) ? 1.3f
+                    : (g_e[j].type == 6) ? 0.85f
+                    :                      0.55f;
         float d = sqrtf(d2);
+        float surf = d - bodyR;
+        if (surf < 0.f) surf = 0.f;
+        if (surf * surf >= bestD2) continue;
         if (d > 0.01f) {
             float dotAim = (dx*dir.x + dy*dir.y + dz*dir.z) / d;
             if (dotAim < TESLA_COS) continue;
         }
-        float chestY = (g_e[j].type == 9) ? 1.7f
-                     : (g_e[j].type == 8) ? 1.1f
-                     : (g_e[j].type == 3) ? 1.4f
-                     :                      0.95f;
-        Vector3 ec = {g_e[j].pos.x, g_e[j].pos.y + chestY, g_e[j].pos.z};
+        Vector3 ec = {g_e[j].pos.x, g_e[j].pos.y + coneChestY, g_e[j].pos.z};
         if (!TeslaLOS(origin, ec)) continue;
-        bestD2 = d2; bi = j; bbk = -1;
+        bestD2 = surf * surf; bi = j; bbk = -1;
     }
     for (int k = 0; k < g_barrelCount; k++) {
         if (!g_barrels[k].active) continue;
@@ -3260,7 +3266,16 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
                              : (g_e[j].type == 3) ? 1.4f
                              :                      0.95f;
                 Vector3 ec = {g_e[j].pos.x, g_e[j].pos.y + jChest, g_e[j].pos.z};
-                float d = Vector3Distance(anchor, ec);
+                // Same surface-distance fix as the cone target above — boss
+                // is wide enough that centre distance falsely excluded him
+                // from chains.
+                float jBodyR = (g_e[j].type == 3) ? 1.5f
+                             : (g_e[j].type == 9) ? 1.3f
+                             : (g_e[j].type == 6) ? 0.85f
+                             :                      0.55f;
+                float dRaw = Vector3Distance(anchor, ec);
+                float d = dRaw - jBodyR;
+                if (d < 0.f) d = 0.f;
                 if (d >= bestD) continue;
                 if (!TeslaLOS(anchor, ec)) continue;
                 bestD = d; target = j;
@@ -4040,9 +4055,23 @@ static void StepFrame(void) {
             // this, in-flight SFX (chef-die, mech-rocket, tesla buzz, etc.)
             // keep audibly playing through the pause overlay.
             SetMasterVolume(g_paused ? 0.f : 1.f);
-            // After unpause, swallow the held click so it doesn't register
-            // as a shot from the menu/pause overlay.
-            if (!g_paused) g_needMouseRelease = true;
+            // Cursor / pointer-lock handling. On web the browser can drop
+            // pointer lock for many reasons during pause (ESC keypress,
+            // alt-tab, idle timeout, click outside the canvas). If we don't
+            // explicitly re-engage it on unpause AND drain any accumulated
+            // mouse delta, the next frame the camera reads a giant delta
+            // and spins wildly. EnableCursor on pause + DisableCursor +
+            // SetMousePosition on unpause keeps the lock state in sync.
+            if (g_paused) {
+                EnableCursor();
+            } else {
+                DisableCursor();
+                SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+                // Drain whatever delta accumulated between pause and now
+                // so the first post-unpause frame doesn't see a huge jump.
+                (void)GetMouseDelta();
+                g_needMouseRelease = true;
+            }
         }
         if (!g_paused) {
         UpdPlayer(dt,&g_cam);
@@ -4182,8 +4211,10 @@ static void StepFrame(void) {
             const char *p = "PAUSED";
             DrawText(p, sw3/2 - MeasureText(p, 80)/2 + 4, sh3/3 + 4, 80, (Color){0,0,0,200});
             DrawText(p, sw3/2 - MeasureText(p, 80)/2,     sh3/3,     80, (Color){255,220,80,255});
-            const char *h = "P TO RESUME    ESC TO MAIN MENU";
-            DrawText(h, sw3/2 - MeasureText(h, 18)/2, sh3/3 + 110, 18, (Color){200,200,200,220});
+            const char *h1 = "PRESS P  -  RESUME GAME";
+            const char *h2 = "PRESS ESC  -  EXIT TO MAIN MENU";
+            DrawText(h1, sw3/2 - MeasureText(h1, 22)/2, sh3/3 + 110, 22, (Color){120,255,120,240});
+            DrawText(h2, sw3/2 - MeasureText(h2, 22)/2, sh3/3 + 140, 22, (Color){255,140,140,240});
         }
     }
 
