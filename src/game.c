@@ -291,7 +291,8 @@ typedef struct {
     bool onGround, dead;
     float hp, maxHp;
     float shootCD, kickAnim, bobT, hurtFlash, shake, switchAnim;
-    int   weapon, bullets, shells, rockets, mgAmmo, score, kills;
+    int   weapon, bullets, shells, rockets, mgAmmo, cells, score, kills;
+    bool  hasTesla;  // tesla is pickup-only — gated until grabbed
     float quadT;     // QUAD DAMAGE remaining (seconds). >0 = 4x outgoing damage.
     float hasteT;    // SPEED BOOST remaining (seconds). >0 = 1.6x movement speed.
     // Peak timer at last grant — used as the meter's "100%" reference so the
@@ -313,6 +314,11 @@ typedef struct {
 typedef struct { Vector3 pos, vel; float life, dmg; bool active, rocket; } Bullet;
 typedef struct { Vector3 pos, vel; float life, maxLife, size; Color col; bool active, grav, stuck; } Part;
 typedef struct { Vector3 pos; int type; int variant; bool active; float bobT; } Pickup;
+// Tesla chain-lightning bolt — ordered points from muzzle through victims.
+// Drawn as jagged DrawLine3D segments per chain edge, fades over BOLT_LIFE.
+#define BOLT_MAX_PTS 7     // muzzle + up to 6 victims
+#define BOLT_LIFE   0.18f
+typedef struct { Vector3 pts[BOLT_MAX_PTS]; int n; float life; bool active; } Bolt;
 
 // ── GLOBALS ──────────────────────────────────────────────────────────────────
 static Player   g_p;
@@ -321,6 +327,8 @@ static Enemy    g_e[MAX_ENEMIES]; static int g_ec;
 static Bullet   g_b[MAX_BULLETS];
 static Part     g_pt[MAX_PARTS];
 static Pickup   g_pk[MAX_PICKS];  static int g_pkc;
+#define MAX_BOLTS 16
+static Bolt     g_bolts[MAX_BOLTS];
 static int      g_wave;
 static GameState g_gs;
 static char     g_msg[80]; static float g_msgT;
@@ -352,10 +360,10 @@ typedef struct {
     bool  hasFlash;
     bool  loaded;
 } WepSprite;
-static WepSprite g_wep[3];  // one per player weapon (0=shotgun 1=MG 2=rocket)
+static WepSprite g_wep[4];  // one per player weapon (0=shotgun 1=MG 2=rocket 3=tesla)
 
 // Per-weapon crosshair overrides (NULL texture = use default tick-mark crosshair)
-static Texture2D g_xhair[3];
+static Texture2D g_xhair[4];
 
 // Pickup billboards (NULL texture = use default colored sphere)
 // Health has 2 variants (CHIKA/EASTA), others are single textures keyed by pickup type.
@@ -363,6 +371,9 @@ static Texture2D g_healthTex[2];
 // Ammo pickup textures indexed by Pickup.type:
 //   [0]=unused (health), [1]=shells (SBOXA), [2]=rockets (MNRBB), [3]=pistol (MCLPA), [4]=MG (MCLPB)
 static Texture2D g_ammoTex[5];
+// Tesla pickup billboard (Pickup.type==7) — separate slot since it's outside
+// the 0..4 ammo range and grants the weapon itself on first grab.
+static Texture2D g_teslaPickupTex;
 
 // Chef walk-cycle billboards (AFABA/B/C/D — boss sprite frames). NULL = fall back to cube mesh.
 static Texture2D g_chefTex[4];
@@ -450,6 +461,8 @@ static int      g_sEnemyAlertCount = 0;
 static bool     g_hadVisibleEnemy = false;   // previous-frame visibility state
 static Sound    g_sShotgunKill; // stinger that plays when a shotgun kill lands
 static bool     g_sShotgunKillOK = false;
+static Sound    g_sTesla;       // tesla cannon zap (sounds/tesla.ogg)
+static bool     g_sTeslaOK = false;
 static Sound    g_sNextWave;   // stinger when next wave starts
 static bool     g_sNextWaveOK = false;
 static Sound    g_sMG;          // machine gun firing sound
@@ -507,11 +520,15 @@ static const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,25
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
-// Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3)
-static const char *WPN[]    = {"SHOTGUN", "MACHINE GUN", "LAUNCHER"};
-static const float WR[]     = {0.59f, 0.09f, 0.96f};
-static const int   WD[]     = {15, 18, 0};
-static const int   WPEL[]   = {8, 1, 1};
+// Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3), [3]=tesla (key 4)
+static const char *WPN[]    = {"SHOTGUN", "MACHINE GUN", "LAUNCHER", "TESLA"};
+static const float WR[]     = {0.59f, 0.09f, 0.96f, 0.45f};
+static const int   WD[]     = {15, 18, 0, 70};        // tesla: primary-target damage; chain falloff is in Shoot()
+static const int   WPEL[]   = {8, 1, 1, 1};
+// Tesla wind-up: how long after click before the bolt actually fires. The
+// charge frames B/C/D play across this window; the discharge frames E/F/G
+// play across (WR[3] - TESLA_WINDUP) afterwards.
+static const float TESLA_WINDUP = 0.15f;
 
 // ── SOUND ────────────────────────────────────────────────────────────────────
 static Sound MkSound(float *d, int n) {
@@ -1064,6 +1081,7 @@ static void SeedPicks(void) {
     // a power-up to find. Wave bumps spawn fresh ones at random open cells.
     if (MAP[5][27]==0)  SpawnPick(27*CELL+CELL/2.f, 5*CELL+CELL/2.f, 5);  // QUAD, far NE
     if (MAP[14][2]==0)  SpawnPick( 2*CELL+CELL/2.f,14*CELL+CELL/2.f, 6);  // SPEED, far SW
+    if (MAP[2][5]==0)   SpawnPick( 5*CELL+CELL/2.f, 2*CELL+CELL/2.f, 7);  // TESLA, near spawn
 }
 
 // Place flaming barrels at random open cells, spaced apart and away from
@@ -1132,7 +1150,17 @@ static void UpdPicks(void) {
     float t=GetTime();
     for (int i=0;i<g_pkc;i++) {
         Pickup *pk=&g_pk[i]; if (!pk->active) continue;
-        pk->pos.y=0.5f+sinf(t*2.5f+i)*0.15f;
+        // Sit on top of any platform covering this xz, otherwise on the floor.
+        // Without this, pickups seeded on the staircase clip into the steps
+        // and read as missing.
+        float ground = 0.f;
+        for (int p = 0; p < g_platCount; p++) {
+            Platform *pl = &g_plats[p];
+            if (pk->pos.x >= pl->x0 && pk->pos.x <= pl->x1 &&
+                pk->pos.z >= pl->z0 && pk->pos.z <= pl->z1 &&
+                pl->top > ground) ground = pl->top;
+        }
+        pk->pos.y=ground+0.5f+sinf(t*2.5f+i)*0.15f;
         float dx=pk->pos.x-g_p.pos.x, dz=pk->pos.z-g_p.pos.z;
         if (sqrtf(dx*dx+dz*dz)<1.2f) {
             // Don't grab a health pickup if we're already at full HP
@@ -1157,6 +1185,16 @@ static void UpdPicks(void) {
                         if (g_p.hasteT > g_p.hastePeak) g_p.hastePeak = g_p.hasteT;
                         strncpy(g_hypeMsg, "SPEED BOOST!", 79); g_hypeMsg[79]=0;
                         g_hypeDur = 2.5f; g_hypeT = g_hypeDur; break;
+                case 7: g_p.cells = (int)fminf(99, g_p.cells + 30);
+                        if (!g_p.hasTesla) {
+                            g_p.hasTesla = true;
+                            g_p.weapon = 3; g_p.switchAnim = 0.3f;
+                            strncpy(g_hypeMsg, "TESLA CANNON!", 79); g_hypeMsg[79]=0;
+                            g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
+                            snprintf(g_msg,80,"TESLA CANNON +30 CELLS");
+                        } else {
+                            snprintf(g_msg,80,"+30 CELLS");
+                        } break;
             }
         }
     }
@@ -1245,9 +1283,11 @@ static void DrawPicks(Camera3D cam) {
         {180,200,255,255},  // MG
         {200, 60,220,255},  // QUAD damage (magenta)
         { 40,200,255,255},  // SPEED boost (cyan)
+        {180, 90,255,255},  // TESLA cells (electric purple)
     };
     // Size per ammo type (the sprites have different native sizes)
     static const float sz[] = {0.9f, 0.7f, 0.65f, 0.45f, 0.85f};
+    const float teslaSz = 0.7f;
     float t = (float)GetTime();
     for (int i=0;i<g_pkc;i++) {
         Pickup *pk=&g_pk[i]; if (!pk->active) continue;
@@ -1264,11 +1304,25 @@ static void DrawPicks(Camera3D cam) {
             continue;
         }
         Texture2D tex = {0};
-        if (pk->type == 0 && g_healthTex[pk->variant].id) tex = g_healthTex[pk->variant];
-        else if (pk->type > 0 && pk->type < 5 && g_ammoTex[pk->type].id) tex = g_ammoTex[pk->type];
+        float drawSz = 0.7f;
+        if (pk->type == 0 && g_healthTex[pk->variant].id) { tex = g_healthTex[pk->variant]; drawSz = sz[0]; }
+        else if (pk->type > 0 && pk->type < 5 && g_ammoTex[pk->type].id) { tex = g_ammoTex[pk->type]; drawSz = sz[pk->type]; }
+        else if (pk->type == 7 && g_teslaPickupTex.id) { tex = g_teslaPickupTex; drawSz = teslaSz; }
 
         if (tex.id) {
-            DrawBillboard(cam, tex, pk->pos, sz[pk->type], WHITE);
+            DrawBillboard(cam, tex, pk->pos, drawSz, WHITE);
+            // Tesla pickup advertises itself as a special weapon find: two
+            // pulsing rings (one above, one below) plus a glowing core sphere
+            // behind the sprite so it reads as "powered" against ammo crates.
+            if (pk->type == 7) {
+                float pulse = 0.85f + 0.25f*sinf(t*4.f + (float)i);
+                Color c = tc[7];
+                DrawSphere(pk->pos, 0.18f * pulse, c);
+                DrawCircle3D((Vector3){pk->pos.x, pk->pos.y - 0.45f, pk->pos.z},
+                             0.65f * pulse, (Vector3){1,0,0}, 90.f + t*40.f, Fade(c, 0.55f));
+                DrawCircle3D((Vector3){pk->pos.x, pk->pos.y + 0.55f, pk->pos.z},
+                             0.50f * pulse, (Vector3){1,0,0}, 90.f - t*60.f, Fade(c, 0.45f));
+            }
         } else {
             DrawSphere(pk->pos, 0.22f, tc[pk->type]);
             DrawCircle3D(pk->pos, 0.36f, (Vector3){1,0,0}, 90.f, Fade(tc[pk->type], 0.35f));
@@ -2189,6 +2243,89 @@ static void TriggerMultiKill(void) {
     }
 }
 
+// ── TESLA BOLTS ──────────────────────────────────────────────────────────────
+static void SpawnBolt(const Vector3 *pts, int n) {
+    if (n < 2 || n > BOLT_MAX_PTS) return;
+    for (int i = 0; i < MAX_BOLTS; i++) {
+        if (!g_bolts[i].active) {
+            g_bolts[i].active = true;
+            g_bolts[i].n      = n;
+            g_bolts[i].life   = BOLT_LIFE;
+            for (int k = 0; k < n; k++) g_bolts[i].pts[k] = pts[k];
+            return;
+        }
+    }
+}
+static void UpdBolts(float dt) {
+    for (int i = 0; i < MAX_BOLTS; i++) {
+        if (!g_bolts[i].active) continue;
+        g_bolts[i].life -= dt;
+        if (g_bolts[i].life <= 0.f) g_bolts[i].active = false;
+    }
+}
+// Each chain edge becomes 6 jagged sub-segments with random perpendicular
+// jitter — re-rolled every frame so the bolt visibly crackles for its life.
+static void DrawBolts(void) {
+    // Fast-out: flushing the render batch every frame is expensive; skip
+    // the whole pass when there's nothing to draw.
+    int any = 0;
+    for (int i = 0; i < MAX_BOLTS; i++) if (g_bolts[i].active) { any = 1; break; }
+    if (!any) return;
+    rlDrawRenderBatchActive();
+    rlDisableDepthMask();
+    for (int i = 0; i < MAX_BOLTS; i++) {
+        Bolt *b = &g_bolts[i];
+        if (!b->active) continue;
+        float a   = fminf(1.f, b->life / BOLT_LIFE);
+        Color glow = (Color){180, 90, 255, (unsigned char)(220 * a)};
+        Color core = (Color){255, 230, 255, (unsigned char)(255 * a)};
+        for (int s = 0; s < b->n - 1; s++) {
+            Vector3 p0 = b->pts[s], p1 = b->pts[s+1];
+            int sub = 6;
+            Vector3 prev = p0;
+            for (int k = 1; k <= sub; k++) {
+                float t = (float)k / sub;
+                Vector3 mid;
+                if (k == sub) {
+                    mid = p1;
+                } else {
+                    float jx = ((float)rand()/RAND_MAX - 0.5f) * 0.30f;
+                    float jy = ((float)rand()/RAND_MAX - 0.5f) * 0.30f;
+                    float jz = ((float)rand()/RAND_MAX - 0.5f) * 0.30f;
+                    mid = (Vector3){
+                        p0.x + (p1.x-p0.x)*t + jx,
+                        p0.y + (p1.y-p0.y)*t + jy,
+                        p0.z + (p1.z-p0.z)*t + jz,
+                    };
+                }
+                DrawLine3D(prev, mid, glow);
+                DrawLine3D((Vector3){prev.x, prev.y+0.02f, prev.z},
+                           (Vector3){mid.x,  mid.y +0.02f, mid.z}, core);
+                DrawLine3D((Vector3){prev.x+0.02f, prev.y, prev.z},
+                           (Vector3){mid.x +0.02f, mid.y,  mid.z}, glow);
+                prev = mid;
+            }
+        }
+    }
+    rlEnableDepthMask();
+    rlDrawRenderBatchActive();
+}
+
+// Tesla deferred-fire state: shot is locked at click, executed when the
+// windup expires (or cancelled by weapon-switch / death).
+static bool    g_teslaPending = false;
+static Vector3 g_teslaPendOrigin;
+static Vector3 g_teslaPendDir;
+static float   g_teslaPendQuad = 1.f;
+// When >0, the tesla zap sound is forcibly stopped once GetTime() reaches
+// it. Set after firing the LAST cell so the buzz dies with the cooldown
+// instead of trailing on past the empty viewmodel for ~1s of sample tail.
+static float   g_teslaSfxStopT = 0.f;
+
+// Forward decl — referenced in Shoot()'s tesla branch and from the per-frame
+// timer block where the pending shot fires.
+static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul);
+
 // ── PLAYER SHOOT ─────────────────────────────────────────────────────────────
 static void Shoot(void) {
     if (g_needMouseRelease) return;  // swallow held click from menu/death screen
@@ -2197,21 +2334,34 @@ static void Shoot(void) {
     if (w==0&&g_p.shells<=0){PlaySound(g_sEmpty);return;}
     if (w==1&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);return;}
     if (w==2&&g_p.rockets<=0){PlaySound(g_sEmpty);return;}
+    if (w==3&&g_p.cells<=0){PlaySound(g_sEmpty);return;}
     // Shotgun sound is deferred until after the pellet loop so we can make it
     // LOUDER when the shot didn't actually kill an enemy (no kill stinger plays).
     if (w==0){g_p.shells--;}
     else if (w==1){PlaySound(g_sMGOK ? g_sMG : g_sPistol); g_p.mgAmmo--;}
-    else {PlaySound(g_sRocket);g_p.rockets--;}
+    else if (w==2){PlaySound(g_sRocket);g_p.rockets--;}
+    else {g_p.cells--;}  // tesla: sound + muzzle light deferred to FireTeslaShot
     g_p.shootCD=WR[w]; g_p.kickAnim=0.18f; g_p.shake=fmaxf(g_p.shake,0.07f);
     // muzzle flash light
     float cy=cosf(g_p.pitch), sy=sinf(g_p.pitch);
     float syw=sinf(g_p.yaw+3.14159f), cyw=cosf(g_p.yaw+3.14159f);
     Vector3 fwd={syw*cy, sy, cyw*cy};
     Vector3 eyePos={g_p.pos.x,g_p.pos.y+EYE_H,g_p.pos.z};
-    g_lights[MUZZLE_LIGHT]=(LightDef){Vector3Add(eyePos,Vector3Scale(fwd,1.5f)),{1.f,0.85f,0.4f},8.f,1};
-    ShaderSetLight(MUZZLE_LIGHT);
+    if (w != 3) {
+        g_lights[MUZZLE_LIGHT]=(LightDef){Vector3Add(eyePos,Vector3Scale(fwd,1.5f)),{1.f,0.85f,0.4f},8.f,1};
+        ShaderSetLight(MUZZLE_LIGHT);
+    }
     float quadMul = (g_p.quadT > 0.f) ? 4.f : 1.f;
     if (w==2){FireBullet(eyePos,fwd,200.f*quadMul,true);return;}
+    if (w==3){
+        // Lock origin/dir at click; the actual hitscan fires when the windup
+        // expires (FireTeslaShot, called from the per-frame timer block).
+        g_teslaPending    = true;
+        g_teslaPendOrigin = eyePos;
+        g_teslaPendDir    = fwd;
+        g_teslaPendQuad   = quadMul;
+        return;
+    }
     g_killsThisShot = 0;          // reset per-shot counter for multi-kill detection
     int pels=WPEL[w]; float sprd=(w==1)?0.10f:0.012f;
     for (int p=0;p<pels;p++) {
@@ -2300,6 +2450,135 @@ static void Shoot(void) {
     TriggerMultiKill();
 }
 
+// Cheap 2D wall LOS used by tesla to stop lightning arcing through geometry.
+// Steps at 0.3m so a corner-cut on a CELL=4 grid can't tunnel.
+static bool TeslaLOS(Vector3 a, Vector3 b) {
+    float dx = b.x - a.x, dz = b.z - a.z;
+    float dist = sqrtf(dx*dx + dz*dz);
+    if (dist < 0.01f) return true;
+    int steps = (int)(dist / 0.3f) + 1;
+    for (int s = 1; s < steps; s++) {
+        float t = (float)s / steps;
+        if (IsWall(a.x + dx*t, a.z + dz*t)) return false;
+    }
+    return true;
+}
+
+// Tesla discharge: wide forward-cone auto-target (so the player doesn't have
+// to be pin-precise), then chain to nearest live enemies within 15m. Falloff
+// 85/70/58/48/40% across 5 hops (6 victims max). Called from the per-frame
+// timer block once the windup expires.
+static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
+    // Purple muzzle flash light at the gun tip
+    Vector3 lightAt = Vector3Add(origin, Vector3Scale(dir, 1.5f));
+    g_lights[MUZZLE_LIGHT] = (LightDef){lightAt, {0.6f, 0.35f, 1.f}, 9.f, 1};
+    ShaderSetLight(MUZZLE_LIGHT);
+    // Cut any still-playing buzz tail from the previous shot so rapid fire
+    // doesn't pile copies of the sample on top of each other.
+    if (g_sTeslaOK) {
+        // Only kick the sample if it's not already playing — held-down fire
+        // keeps the buzz running continuously instead of clicking/restarting
+        // every shot. The scheduled stop below kills it when the player
+        // actually releases (deferred while still holding).
+        if (!IsSoundPlaying(g_sTesla)) PlaySound(g_sTesla);
+        g_teslaSfxStopT = GetTime() + (WR[3] - TESLA_WINDUP);
+    } else if (g_sMGOK) PlaySound(g_sMG);
+
+    g_killsThisShot = 0;
+    Vector3 muzzle = {origin.x + dir.x*0.6f, origin.y - 0.15f + dir.y*0.6f, origin.z + dir.z*0.6f};
+    Vector3 pts[BOLT_MAX_PTS]; int np = 0;
+    pts[np++] = muzzle;
+
+    // Wide-cone auto-target: pick the closest live enemy OR explosive barrel
+    // within ~50° of aim and 30m, with wall LOS. No headshot mechanic —
+    // tesla rewards positioning (chain count) rather than precision.
+    const float TESLA_RANGE = 3.f;     // ~10 feet — short-range zap, not a sniper
+    const float TESLA_COS   = 0.64f;   // cos(50°) ≈ 0.64
+    float bestD2 = TESLA_RANGE * TESLA_RANGE;
+    int bi = -1, bbk = -1;
+    for (int j = 0; j < g_ec; j++) {
+        if (!g_e[j].active || g_e[j].dying) continue;
+        float dx = g_e[j].pos.x - origin.x;
+        float dy = (g_e[j].pos.y + 0.95f) - origin.y;
+        float dz = g_e[j].pos.z - origin.z;
+        float d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 >= bestD2) continue;
+        float d = sqrtf(d2);
+        if (d > 0.01f) {
+            float dotAim = (dx*dir.x + dy*dir.y + dz*dir.z) / d;
+            if (dotAim < TESLA_COS) continue;
+        }
+        Vector3 ec = {g_e[j].pos.x, origin.y, g_e[j].pos.z};
+        if (!TeslaLOS(origin, ec)) continue;
+        bestD2 = d2; bi = j; bbk = -1;
+    }
+    for (int k = 0; k < g_barrelCount; k++) {
+        if (!g_barrels[k].active) continue;
+        float dx = g_barrels[k].pos.x - origin.x;
+        float dy = (g_barrels[k].pos.y + 0.6f) - origin.y;
+        float dz = g_barrels[k].pos.z - origin.z;
+        float d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 >= bestD2) continue;
+        float d = sqrtf(d2);
+        if (d > 0.01f) {
+            float dotAim = (dx*dir.x + dy*dir.y + dz*dir.z) / d;
+            if (dotAim < TESLA_COS) continue;
+        }
+        if (!TeslaLOS(origin, g_barrels[k].pos)) continue;
+        bestD2 = d2; bbk = k; bi = -1;
+    }
+    if (bi >= 0) {
+        int chained[BOLT_MAX_PTS]; int chainN = 0;
+        chained[chainN++] = bi;
+        Vector3 anchor = {g_e[bi].pos.x, g_e[bi].pos.y + 0.95f, g_e[bi].pos.z};
+        pts[np++] = anchor;
+        Blood(anchor, 12);
+        DmgEnemy(bi, (float)WD[3] * quadMul);
+        for (int hop = 0; hop < 5 && np < BOLT_MAX_PTS; hop++) {
+            float bestD = 3.f; int target = -1;
+            for (int j = 0; j < g_ec; j++) {
+                if (!g_e[j].active || g_e[j].dying) continue;
+                bool already = false;
+                for (int k = 0; k < chainN; k++) if (chained[k] == j) { already = true; break; }
+                if (already) continue;
+                Vector3 ec = {g_e[j].pos.x, g_e[j].pos.y + 0.95f, g_e[j].pos.z};
+                float d = Vector3Distance(anchor, ec);
+                if (d >= bestD) continue;
+                if (!TeslaLOS(anchor, ec)) continue;
+                bestD = d; target = j;
+            }
+            if (target < 0) break;
+            anchor = (Vector3){g_e[target].pos.x, g_e[target].pos.y + 0.95f, g_e[target].pos.z};
+            pts[np++] = anchor;
+            chained[chainN++] = target;
+            static const float fall[5] = {0.85f, 0.70f, 0.58f, 0.48f, 0.40f};
+            DmgEnemy(target, (float)WD[3] * fall[hop] * quadMul);
+            Blood(anchor, 6);
+        }
+        // Barrel cascade: any explosive within 5m of any chain victim
+        // detonates. DetonateBarrel chain-blasts neighbours itself.
+        for (int p = 1; p < np; p++) {
+            for (int k = 0; k < g_barrelCount; k++) {
+                if (!g_barrels[k].active) continue;
+                if (Vector3Distance(pts[p], g_barrels[k].pos) < 5.f) DetonateBarrel(k);
+            }
+        }
+        TriggerMultiKill();
+    } else if (bbk >= 0) {
+        // Primary target was an explosive barrel — bolt to it and detonate.
+        Vector3 anchor = {g_barrels[bbk].pos.x, g_barrels[bbk].pos.y + 0.6f, g_barrels[bbk].pos.z};
+        pts[np++] = anchor;
+        DetonateBarrel(bbk);
+    } else {
+        for (float t=0.5f; t<50.f; t+=0.5f) {
+            Vector3 pt = Vector3Add(origin, Vector3Scale(dir, t));
+            if (IsWall(pt.x, pt.z)) { Sparks(pt, 12); pts[np++] = pt; break; }
+        }
+        if (np < 2) pts[np++] = Vector3Add(origin, Vector3Scale(dir, 30.f));
+    }
+    SpawnBolt(pts, np);
+}
+
 // ── WEAPON VIEWMODEL ─────────────────────────────────────────────────────────
 // 2D screen-space weapon — always correct, no 3D rotation issues
 // Draw an oriented box with world-space vertex positions computed from camera axes.
@@ -2308,18 +2587,36 @@ static void Shoot(void) {
 // Frame[0] = idle.  Frame[1..count-1] = fire animation, played back during shootCD.
 static void DrawSpriteWeapon(void) {
     int w = g_p.weapon;
-    if (w < 0 || w >= 3) return;
+    if (w < 0 || w >= 4) return;
     WepSprite *ws = &g_wep[w];
     if (!ws->loaded) return;
 
     // Pick frame index
     int frame = 0;
     if (g_p.shootCD > 0.f && ws->count > 1) {
-        float prog = 1.f - (g_p.shootCD / WR[w]);        // 0→1 across the fire window
-        if (prog < 0.f) prog = 0.f; if (prog > 1.f) prog = 1.f;
-        int fireFrames = ws->count - 1;
-        frame = 1 + (int)(prog * fireFrames);
-        if (frame >= ws->count) frame = ws->count - 1;
+        if (w == 3 && ws->count >= 7) {
+            // Tesla two-phase animation:
+            //   - first TESLA_WINDUP seconds: charging frames B/C/D (1..3)
+            //   - then through discharge frames E/F/G (4..6) until cooldown ends
+            if (g_p.shootCD > WR[3] - TESLA_WINDUP) {
+                float prog = (WR[3] - g_p.shootCD) / TESLA_WINDUP;   // 0→1 across windup
+                if (prog < 0.f) prog = 0.f; if (prog > 1.f) prog = 1.f;
+                frame = 1 + (int)(prog * 3);
+                if (frame > 3) frame = 3;
+            } else {
+                float discharge = WR[3] - TESLA_WINDUP;
+                float prog = 1.f - (g_p.shootCD / discharge);        // 0→1 across discharge
+                if (prog < 0.f) prog = 0.f; if (prog > 1.f) prog = 1.f;
+                frame = 4 + (int)(prog * 3);
+                if (frame > 6) frame = 6;
+            }
+        } else {
+            float prog = 1.f - (g_p.shootCD / WR[w]);    // 0→1 across the fire window
+            if (prog < 0.f) prog = 0.f; if (prog > 1.f) prog = 1.f;
+            int fireFrames = ws->count - 1;
+            frame = 1 + (int)(prog * fireFrames);
+            if (frame >= ws->count) frame = ws->count - 1;
+        }
     }
 
     Texture2D tex = ws->frames[frame];
@@ -2461,9 +2758,9 @@ static void DrawHUD(void) {
     // Rocket launcher: no crosshair (it's a rocket, you aim with the whole barrel)
     int cx=sw/2,cy=sh/2;
     int wpn=g_p.weapon;
-    if (wpn == 2) {
-        // no crosshair for rocket
-    } else if (wpn>=0 && wpn<3 && g_xhair[wpn].id) {
+    if (wpn == 2 || wpn == 3) {
+        // no crosshair for rocket / tesla
+    } else if (wpn>=0 && wpn<4 && g_xhair[wpn].id) {
         Texture2D xh = g_xhair[wpn];
         float xsc = 1.2f;
         float xw = xh.width*xsc, xh2 = xh.height*xsc;
@@ -2491,7 +2788,8 @@ static void DrawHUD(void) {
     char aBuf[16];
     if      (g_p.weapon==0) snprintf(aBuf,16,"%d",g_p.shells);
     else if (g_p.weapon==1) snprintf(aBuf,16,"%d",g_p.mgAmmo);
-    else                    snprintf(aBuf,16,"%d",g_p.rockets);
+    else if (g_p.weapon==2) snprintf(aBuf,16,"%d",g_p.rockets);
+    else                    snprintf(aBuf,16,"%d",g_p.cells);
     DrawText(WPN[g_p.weapon],sw-220,sh-58,13,SKYBLUE);
     DrawText(aBuf,sw-220,sh-46,36,YELLOW);
     // score / wave top right
@@ -2784,12 +3082,39 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (IsKeyPressed(KEY_ONE)  &&g_p.weapon!=0){g_p.weapon=0;g_p.switchAnim=0.3f;}
     if (IsKeyPressed(KEY_TWO)  &&g_p.weapon!=1){g_p.weapon=1;g_p.switchAnim=0.3f;}
     if (IsKeyPressed(KEY_THREE)&&g_p.weapon!=2){g_p.weapon=2;g_p.switchAnim=0.3f;}
+    if (IsKeyPressed(KEY_FOUR) &&g_p.hasTesla&&g_p.weapon!=3){g_p.weapon=3;g_p.switchAnim=0.3f;}
+    // Tesla pending shot is bound to weapon 3 — switching cancels the bolt
+    // AND kills any leftover buzz so the sample doesn't trail across weapons.
+    if (g_p.weapon != 3) {
+        g_teslaPending = false;
+        if (g_sTeslaOK) StopSound(g_sTesla);
+        g_teslaSfxStopT = 0.f;
+    }
 
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) g_needMouseRelease = false;
     else if (!g_needMouseRelease) Shoot();
 
     // timers
     if (g_p.shootCD>0)   g_p.shootCD-=dt;
+    // Tesla deferred fire — bolt releases when the windup phase ends.
+    if (g_teslaPending && g_p.weapon == 3 && g_p.shootCD <= WR[3] - TESLA_WINDUP) {
+        FireTeslaShot(g_teslaPendOrigin, g_teslaPendDir, g_teslaPendQuad);
+        g_teslaPending = false;
+    }
+    // Scheduled buzz cutoff: at end of discharge, stop the sample UNLESS the
+    // user is still holding fire and we have ammo for another shot — in that
+    // case keep the buzz alive across the windup of the next shot for a
+    // continuous hold-fire feel. (FireTeslaShot resets stopT each shot.)
+    if (g_teslaSfxStopT > 0.f && GetTime() >= g_teslaSfxStopT) {
+        bool willFireAgain = IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+                          && g_p.cells > 0
+                          && g_p.weapon == 3
+                          && !g_needMouseRelease;
+        if (!willFireAgain) {
+            if (g_sTeslaOK) StopSound(g_sTesla);
+            g_teslaSfxStopT = 0.f;
+        }
+    }
     if (g_p.kickAnim>0)  g_p.kickAnim=fmaxf(0,g_p.kickAnim-dt*6.f);
     if (g_p.hurtFlash>0) g_p.hurtFlash-=dt;
     if (g_p.switchAnim>0)g_p.switchAnim=fmaxf(0,g_p.switchAnim-dt*5.f);
@@ -2864,10 +3189,13 @@ static void InitGame(void) {
     srand((unsigned)time(NULL));
     memset(&g_p,0,sizeof(g_p));
     g_p.pos=(Vector3){1.5f*CELL,0,1.5f*CELL};
-    g_p.hp=g_p.maxHp=100; g_p.shells=32; g_p.rockets=8; g_p.mgAmmo=120; g_p.weapon=0;
+    g_p.hp=g_p.maxHp=100; g_p.shells=32; g_p.rockets=8; g_p.mgAmmo=120; g_p.cells=0; g_p.weapon=0;
+    g_p.hasTesla=false;
     g_wave=1; g_ec=0; g_pkc=0;
     memset(g_e,0,sizeof(g_e)); memset(g_b,0,sizeof(g_b));
     memset(g_pt,0,sizeof(g_pt)); memset(g_pk,0,sizeof(g_pk));
+    memset(g_bolts,0,sizeof(g_bolts));
+    g_teslaPending = false; g_teslaSfxStopT = 0.f;
     // Restore ceiling lights — anything shot off in the previous run comes
     // back lit. Re-pushes each light's enabled state to the GPU.
     for (int i = 0; i < NUM_LAMPS; i++) {
@@ -2988,6 +3316,7 @@ static void StepFrame(void) {
         UpdEnemies(dt);
         UpdBullets(dt);
         UpdParts(dt);
+        UpdBolts(dt);
         UpdPicks();
 
         // "Distant enemy" stinger — plays once when the first enemy comes into sight
@@ -3085,11 +3414,17 @@ static void StepFrame(void) {
             DrawModelEx(g_platModel, center, (Vector3){0,1,0}, 0.f,
                         (Vector3){sx, sy, sz}, (Color){170,140,110,255});
         }
+        // World billboards (pickups, barrels) must be drawn BEFORE enemies:
+        // chef billboards depth-test but don't write depth (transparent edges
+        // would otherwise clip neighbours), so anything drawn afterwards has
+        // no enemy z-value to be occluded by. New world-space sprite types
+        // (props, decor, etc.) should follow the same rule — see CLAUDE.md.
+        DrawPicks(g_cam);
+        DrawBarrels(g_cam);
         DrawEnemies(g_cam);
         DrawBullets();
         DrawParts();
-        DrawPicks(g_cam);
-        DrawBarrels(g_cam);
+        DrawBolts();
         // Ceiling lights drawn LAST so the additive glow shines over enemies,
         // pickups, and bullets — otherwise opaque billboards cover the light cones.
         DrawCeilingLights(g_cam);
@@ -3237,6 +3572,10 @@ int main(int argc, char **argv) {
         g_sShotgunKill = LoadSound(fp);
         g_sShotgunKillOK = (g_sShotgunKill.frameCount > 0);
 
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/tesla.ogg", AppDir());
+        g_sTesla = LoadSound(fp);
+        g_sTeslaOK = (g_sTesla.frameCount > 0);
+
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/next-wave.mp3", AppDir());
         g_sNextWave = LoadSound(fp);
         g_sNextWaveOK = (g_sNextWave.frameCount > 0);
@@ -3323,6 +3662,10 @@ int main(int argc, char **argv) {
             { 1, "mp40",         {"RIFGB0.png"},                                                      1, 3.23f },
             // 2 ROCKET LAUNCHER (panzerschreck): static ready pose
             { 2, "panzerschreck",{"PANZA0.png"},                                                      1, 2.5f },
+            // 3 TESLA: H idle (dormant), B/C/D charge-up, E/F/G discharge.
+            // Frame layout matches the windup phases in DrawSpriteWeapon:
+            //   [0]=H (no fire)  [1..3]=B,C,D (charging)  [4..6]=E,F,G (discharging)
+            { 3, "tesla",        {"PULSH0.png","PULSB0.png","PULSC0.png","PULSD0.png","PULSE0.png","PULSF0.png","PULSG0.png"}, 7, 3.5f },
         };
         for (int p = 0; p < (int)(sizeof(packs)/sizeof(packs[0])); p++) {
             WepSprite *ws = &g_wep[packs[p].wepIdx];
@@ -3343,6 +3686,8 @@ int main(int argc, char **argv) {
         g_wep[1].xShift = -0.06f;  // MG:      6% left
         g_wep[2].xShift =  0.10f;  // ROCKET: 10% right
         g_wep[2].yShift = -0.085f; // ROCKET: 8.5% up (lowered 0.5%)
+        g_wep[3].xShift =  0.0f;   // TESLA:  centred (sprite is symmetric)
+        g_wep[3].yShift = -0.02f;
 
         // MG muzzle flash: RIFGA0 is a full-canvas overlay aligned with RIFGB0
         {
@@ -3392,6 +3737,13 @@ int main(int argc, char **argv) {
                     SetTextureFilter(g_ammoTex[t], TEXTURE_FILTER_POINT);
                     SetTextureWrap  (g_ammoTex[t], TEXTURE_WRAP_CLAMP);
                 }
+            }
+            // Tesla world pickup (PULSA0): the small purple-cannon icon
+            snprintf(fp, sizeof(fp), "%spickups/PULSA0.png", appBase);
+            g_teslaPickupTex = LoadTexture(fp);
+            if (g_teslaPickupTex.id) {
+                SetTextureFilter(g_teslaPickupTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_teslaPickupTex, TEXTURE_WRAP_CLAMP);
             }
         }
 
@@ -3656,7 +4008,7 @@ int main(int argc, char **argv) {
     UnloadModel(g_wallModel); UnloadModel(g_floorModel); UnloadModel(g_ceilModel);
     UnloadModel(g_platModel);
     UnloadTexture(tBrick); UnloadTexture(tFloor); UnloadTexture(tCeil);
-    for (int w=0;w<3;w++) {
+    for (int w=0;w<4;w++) {
         for (int i=0;i<g_wep[w].count;i++)
             if (g_wep[w].frames[i].id) UnloadTexture(g_wep[w].frames[i]);
         if (g_wep[w].hasFlash && g_wep[w].flash.id) UnloadTexture(g_wep[w].flash);
@@ -3664,6 +4016,7 @@ int main(int argc, char **argv) {
     }
     for (int i=0;i<2;i++) if (g_healthTex[i].id) UnloadTexture(g_healthTex[i]);
     for (int i=0;i<5;i++) if (g_ammoTex[i].id)   UnloadTexture(g_ammoTex[i]);
+    if (g_teslaPickupTex.id) UnloadTexture(g_teslaPickupTex);
     for (int i=0;i<4;i++) if (g_chefTex[i].id)      UnloadTexture(g_chefTex[i]);
     for (int i=0;i<4;i++) if (g_chefDeathTex[i].id) UnloadTexture(g_chefDeathTex[i]);
     if (g_chefPainTex.id) UnloadTexture(g_chefPainTex);
@@ -3690,6 +4043,7 @@ int main(int argc, char **argv) {
         if (g_sEnemyAlertOK[a]) UnloadSound(g_sEnemyAlert[a]);
     }
     if (g_sShotgunKillOK)  UnloadSound(g_sShotgunKill);
+    if (g_sTeslaOK)        UnloadSound(g_sTesla);
     if (g_sMGOK)           UnloadSound(g_sMG);
     if (g_sNextWaveOK)     UnloadSound(g_sNextWave);
     if (g_sHealthPickupOK) UnloadSound(g_sHealthPickup);

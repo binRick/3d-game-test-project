@@ -172,6 +172,26 @@ are source dumps — gitignored. Pull assets from them into `sprites/` or
   from the language server not knowing the include path; the actual compiler
   has it.
 
+### Billboard draw order (IMPORTANT — see-through bug)
+
+Enemy chef billboards are drawn with **depth test on but depth-mask OFF** so
+the transparent edges of one chef don't clip the chef behind. Side effect:
+chefs do **not** write to the depth buffer, so anything drawn *after* them
+has no enemy z-value to occlude against, and shows *through* the enemy.
+
+**Rule for any new world-space billboard (pickups, barrels, props, decor,
+etc.): draw it BEFORE `DrawEnemies`** in the per-frame 3D pass. The world
+sprite then writes depth normally, and the enemy's depth-test (still on)
+correctly hides the part of the sprite the enemy is in front of.
+
+If you ship a new sprite type and a chef walking between camera and the
+sprite *doesn't* occlude it — this is the bug. Move the new draw call ahead
+of `DrawEnemies(g_cam)`.
+
+Pickups also need a platform-top lookup in `UpdPicks` so they sit on stairs
+instead of clipping into the steps — same pattern if you add a new
+world-space sprite that lives at floor height.
+
 ## Weapons (current)
 
 | Key | Name          | Fire rate | Damage | Ammo       | Notes                                   |
