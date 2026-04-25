@@ -23,6 +23,9 @@ fi
 
 pkill -x IronFist3D 2>/dev/null || true
 make -B -s
+# Run the binary directly (not via `open`) so it stays attached to this
+# terminal — Ctrl+C kills it and stdout/stderr land here. `open` would
+# detach as a separate Dock app and leave nothing to interrupt.
 # --debug enables /tmp/ironfist-debug.log (5 Hz player/enemy state snapshot).
-# Tail it via ./debug.sh. Remove --args --debug to run without logging.
-open IronFist3D.app --args --debug
+# Tail it via ./debug.sh.
+exec IronFist3D.app/Contents/MacOS/IronFist3D --debug

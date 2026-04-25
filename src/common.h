@@ -19,7 +19,7 @@
 
 typedef struct { float x0, z0, x1, z1, top; } Platform;
 
-typedef enum { GS_MENU, GS_PLAY, GS_DEAD } GameState;
+typedef enum { GS_MENU, GS_PICK_ENEMY, GS_PLAY, GS_DEAD } GameState;
 typedef enum { ES_PATROL, ES_CHASE, ES_ATTACK } EnemyState;
 
 typedef struct {

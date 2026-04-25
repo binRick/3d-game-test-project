@@ -1,5 +1,29 @@
 # Iron Fist 3D — project notes
 
+## ⚠️ ASCII-ONLY IN `DrawText` STRINGS (READ FIRST)
+
+raylib's default built-in font only ships ASCII glyphs. Any non-ASCII
+character inside a `DrawText` argument — em-dashes (`—`), en-dashes (`–`),
+curly quotes (`'`, `"`, `'`, `"`), ellipses (`…`), bullets (`•`), arrows
+(`→`), accented letters, etc. — renders on screen as a literal `?`.
+
+**Rules**:
+
+- In any string passed to `DrawText`, `MeasureText`, `Msg()`, `g_msg`,
+  `g_hypeMsg`, or other on-screen text, use ONLY ASCII (`-`, `'`, `"`, `...`).
+- This applies to picker blurbs, hype banners, kill announcements, debug
+  overlays, menu hints — every user-visible string.
+- Comments in code, header comments, commit messages, log file output to
+  `/tmp/...` and CLAUDE.md itself can use any UTF-8.
+- When you find yourself reaching for an em-dash mid-message, type ` - `
+  (space-hyphen-space) instead.
+
+This bug has bitten the project repeatedly. Before submitting any change
+that touches user-facing text, mentally re-scan every literal string for
+non-ASCII characters.
+
+
+
 FPS built in C with raylib from a single source file (`src/game.c`), targeting
 three platforms from the same codebase:
 

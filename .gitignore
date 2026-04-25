@@ -10,4 +10,5 @@ boss1/
 game-sounds-main/
 third_party/*
 !third_party/Beautiful-Doom
+!third_party/DOOM-style-Game
 ~/.ironfist3d.cfg

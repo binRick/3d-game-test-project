@@ -176,6 +176,42 @@ static const char *FS = GLSL_VERSION GLSL_PRECISION
 "  outColor = vec4(mix(vec3(0.10,0.08,0.14), col, ff), 1.0);\n"
 "}\n";
 
+// ── ALPHA-TEST BILLBOARD SHADER ──────────────────────────────────────────────
+// raylib's default billboard shader writes depth for every fragment, even
+// fully-transparent ones. That makes a sprite's transparent fringe punch
+// holes in the depth buffer where there's no visible pixel — anything drawn
+// AFTER the billboard at greater depth then gets clipped by that ghost
+// rectangle. The flaming-barrel sprites have a wide transparent fringe
+// around the flame, so an enemy walking behind a barrel was getting masked.
+//
+// The fix is alpha-test rendering: the fragment shader discards low-alpha
+// fragments so they never write depth. Wrap DrawBarrels (and any other
+// fringe-prone billboard) in BeginShaderMode(g_alphaShader) / EndShaderMode.
+static Shader g_alphaShader;
+static const char *ALPHA_VS = GLSL_VERSION
+"in vec3 vertexPosition;\n"
+"in vec2 vertexTexCoord;\n"
+"in vec4 vertexColor;\n"
+"uniform mat4 mvp;\n"
+"out vec2 fragUV;\n"
+"out vec4 fragCol;\n"
+"void main(){\n"
+"  fragUV = vertexTexCoord;\n"
+"  fragCol = vertexColor;\n"
+"  gl_Position = mvp*vec4(vertexPosition,1.0);\n"
+"}\n";
+static const char *ALPHA_FS = GLSL_VERSION GLSL_PRECISION
+"in vec2 fragUV;\n"
+"in vec4 fragCol;\n"
+"uniform sampler2D texture0;\n"
+"uniform vec4 colDiffuse;\n"
+"out vec4 outColor;\n"
+"void main(){\n"
+"  vec4 t = texture(texture0, fragUV) * colDiffuse * fragCol;\n"
+"  if (t.a < 0.5) discard;\n"
+"  outColor = t;\n"
+"}\n";
+
 // ── LIGHTING ─────────────────────────────────────────────────────────────────
 // Slot layout (NUM_LIGHTS must match the shader's NL):
 //   [0..NUM_LAMPS)                    static ceiling lamps
@@ -218,6 +254,7 @@ static void ShaderSetLight(int i) {
 }
 
 static void InitShader(void) {
+    g_alphaShader = LoadShaderFromMemory(ALPHA_VS, ALPHA_FS);
     g_shader = LoadShaderFromMemory(VS, FS);
     g_shader.locs[SHADER_LOC_MATRIX_MODEL]  = GetShaderLocation(g_shader, "matModel");
     g_shader.locs[SHADER_LOC_MATRIX_NORMAL] = GetShaderLocation(g_shader, "matNormal");
@@ -285,7 +322,15 @@ int      g_wave;
 GameState g_gs;
 char     g_msg[80]; float g_msgT;
 char     g_hypeMsg[80]; float g_hypeT; float g_hypeDur;
-static Model    g_wallModel, g_floorModel, g_ceilModel;
+// Wall geometry is split into multiple models so each can be drawn with a
+// different texture. Cells are grouped by connected component (4-neighbour
+// flood-fill on MAP[][]), then each component is assigned one of
+// WALL_TEX_COUNT texture slots — a contiguous wall segment is therefore
+// one uniform texture, while an isolated column gets its own slot.
+#define WALL_TEX_COUNT 6
+static Model    g_wallModels[WALL_TEX_COUNT];
+static int      g_wallSlot[ROWS][COLS];   // texture slot per wall cell, -1 if not a wall
+static Model    g_floorModel, g_ceilModel;
 
 // Forward decl — TriggerMultiKill is defined alongside Shoot() but called
 // from the earlier rocket-splash branches in UpdBullets.
@@ -327,9 +372,44 @@ static Texture2D g_ammoTex[5];
 // the 0..4 ammo range and grants the weapon itself on first grab.
 static Texture2D g_teslaPickupTex;
 
+// DOOM-style-Game enemies — sprite container for soldier (type 7),
+// cacodemon (type 8), cyber demon (type 9). Same struct backs the arena
+// picker preview AND the in-game render path. Up to PREV_WALK_MAX walk,
+// PREV_ATK_MAX attack, PREV_PAIN_MAX pain, PREV_DEATH_MAX death frames.
+#define PREV_WALK_MAX  8
+#define PREV_ATK_MAX   5
+#define PREV_PAIN_MAX  2
+#define PREV_DEATH_MAX 9
+typedef struct {
+    Texture2D walk [PREV_WALK_MAX ]; int walkCount;
+    Texture2D atk  [PREV_ATK_MAX  ]; int atkCount;
+    Texture2D pain [PREV_PAIN_MAX ]; int painCount;
+    Texture2D death[PREV_DEATH_MAX]; int deathCount;
+    bool ok;
+} PreviewEnemy;
+static PreviewEnemy g_prevSoldier;
+static PreviewEnemy g_prevCaco;
+static PreviewEnemy g_prevCyber;
+static PreviewEnemy g_prevRevenant;
+static PreviewEnemy g_prevLostSoul;
+static PreviewEnemy g_prevPainElem;
+#define DGAME_DEATH_FRAME_TIME 0.16f
+#define DGAME_ATK_FRAME_TIME   0.10f
+
 // Doom-style HUD mugshot (WolfenDoom STF* frames). 5 health tiers × 3 idle
 // looks, plus pain (OUCH) / kill (KILL) reactions and a final DEAD frame.
 // Mugshot textures moved to hud.c
+
+// Animated blood-splat test (Beautiful-Doom YBL7 series, frames A-S).
+// Single-variant evaluation only — see also: SpawnSplat() at the bullet hit
+// site in Shoot() for the integration point.
+#define BLOOD_SPLAT_FRAMES 19
+#define BLOOD_SPLAT_FPS    15.f
+#define MAX_SPLATS         64
+typedef struct { Vector3 pos; int frame; float frameT; bool alive; } BloodSplat;
+static Texture2D g_bloodSplatTex[BLOOD_SPLAT_FRAMES];
+static bool      g_bloodSplatOK = false;
+static BloodSplat g_splats[MAX_SPLATS];
 
 // Chef walk-cycle billboards (AFABA/B/C/D — boss sprite frames). NULL = fall back to cube mesh.
 static Texture2D g_chefTex[4];
@@ -374,6 +454,8 @@ static DirFrame  g_cultWalk[4];   // A-D walk cycle
 static bool      g_cultOK = false;
 static DirFrame  g_cultPain;      // E pain frame
 static bool      g_cultPainOK = false;
+static DirFrame  g_cultAtk;       // G fire pose — used as attack windup telegraph
+static bool      g_cultAtkOK = false;
 static Texture2D g_cultDeathTex[5];  // I0..M0 death (corpse — single rot)
 static bool      g_cultDeathOK = false;
 #define CULT_DEATH_FRAME_TIME 0.22f
@@ -401,20 +483,27 @@ static DirFrame  g_mechFireL;      // F frame (left arm)
 static DirFrame  g_mechFireR;      // G frame (right arm)
 static bool      g_mechFireOK = false;
 
-// Boss (enemy type 3) — AODE* sprites. Walk A-D, pain F, death G/H/L/M/N.
+// Boss (enemy type 3) — BTCN* sprites. Walk A-D, attack E, pain F, death G/H/I/J.
 static Texture2D g_bossTex[4];
 static bool      g_bossOK = false;
 static Texture2D g_bossPainTex;
 static bool      g_bossPainOK = false;
+static Texture2D g_bossAtkTex;
+static bool      g_bossAtkOK = false;
 static Texture2D g_bossDeathTex[5];
 static bool      g_bossDeathOK = false;
 #define BOSS_DEATH_FRAME_TIME 0.22f
 
-// Boss test mode — press B on menu. Spawns only bosses, respawns on kill
-// so you can iterate on boss behaviour without clearing chef waves.
-static bool      g_bossMode = false;
-static bool      g_mutMode  = false;  // press M on menu — only mutants, respawn forever
-static bool      g_mechMode = false;  // press K on menu — only mechs, respawn forever
+// ARENA mode — unified test mode that replaces the older per-type
+// g_bossMode / g_mutMode / g_mechMode flags. Pick any enemy type from a
+// menu screen.
+// Press A on the main menu → GS_PICK_ENEMY screen → arrow keys / 1-7 to pick
+// → Enter to start. Spawns 8 of the chosen type, respawns on clear.
+static bool      g_arenaMode = false;
+static int       g_arenaType = 0;     // 0..6 — which enemy type the arena spawns
+static int       g_pickerIdx = 0;     // current selection on the GS_PICK_ENEMY screen
+static float     g_pickerT   = 0.f;   // time accumulator for preview anim
+static bool      g_paused    = false; // P toggles in-game pause; freezes Upd* calls
 static bool      g_bossInterlude = false;  // true between waves while a boss is up
 
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
@@ -504,23 +593,27 @@ static void LoadMusicVol(void) {
 static bool     g_needMouseRelease = false;  // mouse must be released once before firing
 static bool     g_lastHitHead = false;  // set while processing a headshot shot; KillEnemy reads it
 
-// enemy stat tables — type 0/1/2 chefs, type 3 = BOSS, type 4 = CULTIST,
-// type 5 = MUTANT (ranged energy ball), type 6 = MECH (heavy ranged rocket)
-static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260  };
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f };  // mech is slow & heavy
-static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28   };  // mech rocket damage
-static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f };
-static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45   };
-static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f}; // mech fires from 20m
-static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500  };
-const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255}};
+// enemy stat tables — type 0/1/2 chefs, 3 = BOSS, 4 = CULTIST/SS,
+// 5 = MUTANT (ranged ball), 6 = MECH (heavy rocket),
+// 7 = SOLDIER (Doom shotgunner, hitscan), 8 = CACODEMON (flying, fireball),
+// 9 = CYBER DEMON (boss-tier, rockets), 10 = REVENANT (preview/melee for
+// now), 11 = LOST SOUL (preview/charging melee), 12 = PAIN ELEMENTAL
+// (preview/floater).
+static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420  };
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f };
+static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18   };
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f };
+static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30   };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f };
+static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450  };
+const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255}};
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
 // Weapons: [0]=shotgun (key 1), [1]=machine gun (key 2), [2]=rocket launcher (key 3), [3]=tesla (key 4)
 const char * const WPN[]    = {"SHOTGUN", "MACHINE GUN", "LAUNCHER", "TESLA"};
 static const float WR[]     = {0.59f, 0.09f, 0.96f, 0.45f};
-static const int   WD[]     = {15, 18, 0, 70};        // tesla: primary-target damage; chain falloff is in Shoot()
+static const int   WD[]     = {15, 18, 0, 140};       // tesla: primary-target damage; chain falloff is in Shoot()
 static const int   WPEL[]   = {8, 1, 1, 1};
 // Tesla wind-up: how long after click before the bolt actually fires. The
 // charge frames B/C/D play across this window; the discharge frames E/F/G
@@ -660,11 +753,47 @@ static Texture2D MkCeil(void) {
 
 // ── WORLD MESH BUILDER ───────────────────────────────────────────────────────
 // Build one big mesh of only exposed wall faces (proper normals)
-static Mesh BuildWallMesh(void) {
+// 4-neighbour flood-fill: every connected group of wall cells gets a single
+// component id, mapped via component_id % WALL_TEX_COUNT to a texture slot.
+// Result: each contiguous wall segment is uniform; an isolated column gets
+// its own slot. Stored once into g_wallSlot[][], read by BuildWallMesh.
+static void ComputeWallSlots(void) {
+    for (int r=0;r<ROWS;r++) for (int c=0;c<COLS;c++) g_wallSlot[r][c] = -1;
+    // Flood-fill stack
+    int stack[ROWS*COLS][2];
+    int compId = 0;
+    for (int r=0;r<ROWS;r++) for (int c=0;c<COLS;c++) {
+        if (!MAP[r][c] || g_wallSlot[r][c] != -1) continue;
+        int slot = compId % WALL_TEX_COUNT;
+        compId++;
+        int top = 0;
+        stack[top][0] = r; stack[top][1] = c; top++;
+        g_wallSlot[r][c] = slot;
+        while (top > 0) {
+            top--;
+            int rr = stack[top][0], cc = stack[top][1];
+            static const int dr[4] = {-1, 1, 0, 0};
+            static const int dc[4] = { 0, 0,-1, 1};
+            for (int k=0;k<4;k++) {
+                int nr = rr + dr[k], nc = cc + dc[k];
+                if (nr<0||nr>=ROWS||nc<0||nc>=COLS) continue;
+                if (!MAP[nr][nc] || g_wallSlot[nr][nc] != -1) continue;
+                g_wallSlot[nr][nc] = slot;
+                stack[top][0] = nr; stack[top][1] = nc; top++;
+            }
+        }
+    }
+}
+
+// Build one wall mesh containing only cells whose connected-component slot
+// matches the requested one. ComputeWallSlots() must be called first.
+static Mesh BuildWallMesh(int slot, int slotCount) {
+    (void)slotCount;
     // count exposed faces
     int faces = 0;
     for (int r=0;r<ROWS;r++) for (int c=0;c<COLS;c++) {
         if (!MAP[r][c]) continue;
+        if (g_wallSlot[r][c] != slot) continue;
         if (r>0 && !MAP[r-1][c]) faces++; // south face (+Z neighbor is open)
         if (r<ROWS-1 && !MAP[r+1][c]) faces++;
         if (c>0 && !MAP[r][c-1]) faces++;
@@ -707,6 +836,7 @@ static Mesh BuildWallMesh(void) {
 
     for (int r=0;r<ROWS;r++) for (int c=0;c<COLS;c++) {
         if (!MAP[r][c]) continue;
+        if (g_wallSlot[r][c] != slot) continue;
         float x0=c*CELL, x1=(c+1)*CELL;
         float z0=r*CELL, z1=(r+1)*CELL;
         float y0=0, y1=WALL_H;
@@ -840,6 +970,37 @@ static void EnemyMove(Enemy *e, float dx, float dz) {
 
 // ── PARTICLES ────────────────────────────────────────────────────────────────
 
+static void SpawnSplat(Vector3 pos) {
+    if (!g_bloodSplatOK) return;
+    // Round-robin overwrite — oldest splat dies if MAX_SPLATS is full, which
+    // matches how the existing particle ring buffer behaves under heavy fire.
+    static int next = 0;
+    g_splats[next] = (BloodSplat){pos, 0, 0.f, true};
+    next = (next + 1) % MAX_SPLATS;
+}
+static void UpdSplats(float dt) {
+    const float frameDur = 1.f / BLOOD_SPLAT_FPS;
+    for (int i = 0; i < MAX_SPLATS; i++) {
+        BloodSplat *s = &g_splats[i];
+        if (!s->alive) continue;
+        s->frameT += dt;
+        while (s->frameT >= frameDur) {
+            s->frameT -= frameDur;
+            s->frame++;
+            if (s->frame >= BLOOD_SPLAT_FRAMES) { s->alive = false; break; }
+        }
+    }
+}
+static void DrawSplats(Camera3D cam) {
+    if (!g_bloodSplatOK) return;
+    for (int i = 0; i < MAX_SPLATS; i++) {
+        BloodSplat *s = &g_splats[i];
+        if (!s->alive) continue;
+        Texture2D t = g_bloodSplatTex[s->frame];
+        if (t.id == 0) continue;
+        DrawBillboard(cam, t, s->pos, 1.0f, WHITE);
+    }
+}
 
 static void Explode(Vector3 p) {
     // Distance-scaled volume: up to 2.5x at point-blank, floor 0.25x far away
@@ -900,7 +1061,12 @@ static void SpawnBarrels(void) {
                 }
             }
             if (tooClose) continue;
-            g_barrels[g_barrelCount].pos    = (Vector3){wx, 0.5f, wz};
+            // Sit on top of any platform covering this cell — without this
+            // a roll on the central staircase puts the barrel inside the
+            // platform mesh. PlatGroundAt returns 0 if no platform covers
+            // the cell, so the floor case is unchanged.
+            float platTop = PlatGroundAt(wx, wz, 100.f);
+            g_barrels[g_barrelCount].pos    = (Vector3){wx, platTop + 0.5f, wz};
             g_barrels[g_barrelCount].phase  = (float)rand()/RAND_MAX * 6.28318f;
             g_barrels[g_barrelCount].active = true;
             g_barrelCount++;
@@ -1168,7 +1334,7 @@ static void DebugLogTick(void) {
     fprintf(g_dbgLog,
         "[t=%7.2fs] wave=%d bossMode=%d bossFight=%d  player: pos=(%.2f, %.2f, %.2f) "
         "yaw=%.2frad (%.0fdeg) hp=%.0f/%.0f weapon=%d\n",
-        now, g_wave, g_bossMode ? 1 : 0, g_bossInterlude ? 1 : 0,
+        now, g_wave, g_arenaMode ? 1 : 0, g_bossInterlude ? 1 : 0,
         g_p.pos.x, g_p.pos.y, g_p.pos.z,
         g_p.yaw, g_p.yaw * 180.0f / 3.14159265f,
         g_p.hp, g_p.maxHp, g_p.weapon);
@@ -1300,7 +1466,9 @@ static void KillEnemy(int i) {
             int t = g_e[survIdx].type;
             survName = (t == 0) ? "CHEF" : (t == 1) ? "HEAVY CHEF" :
                        (t == 2) ? "FAST CHEF" : (t == 4) ? "CULTIST" :
-                       (t == 5) ? "MUTANT" : (t == 6) ? "MECH" : "TARGET";
+                       (t == 5) ? "MUTANT" : (t == 6) ? "MECH" :
+                       (t == 7) ? "SOLDIER" : (t == 8) ? "CACODEMON" :
+                       (t == 9) ? "CYBER DEMON" : "TARGET";
         }
         char dynLine[80];
         snprintf(dynLine, sizeof(dynLine), "FINAL %s - HUNT HIM DOWN!", survName);
@@ -1317,72 +1485,38 @@ static void KillEnemy(int i) {
         g_hypeT   = g_hypeDur;
     }
     if (Alive()==0) {
-        // Mech test mode — top up to 4 heavy mechs whenever the field clears.
-        if (g_mechMode) {
-            Msg("MECHS DOWN - RESPAWN");
-            for (int k = 0; k < 4 && g_ec < MAX_ENEMIES; k++) {
+        // Arena test mode — generic respawn for any picked enemy type.
+        if (g_arenaMode) {
+            int t = g_arenaType;
+            int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon — solo respawn
+            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS"};
+            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<13)?t:0]);
+            Msg(buf);
+            for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
                 for (int tries = 0; tries < 120; tries++) {
                     int r = 1 + rand()%(ROWS-2), c = 1 + rand()%(COLS-2);
                     if (MAP[r][c]) continue;
                     float wx = c*CELL+CELL/2.f, wz = r*CELL+CELL/2.f;
-                    if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < 14.f) continue;
+                    float minDist = (t == 3 || t == 6 || t == 9) ? 14.f : 10.f;
+                    if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < minDist) continue;
                     Enemy *ne = &g_e[g_ec++]; *ne = (Enemy){0};
                     ne->pos = (Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
-                    ne->type = 6; ne->state = ES_CHASE;
-                    ne->hp = ne->maxHp = ET_HP[6];
-                    ne->speed = ET_SPD[6];
-                    ne->dmg = ET_DMG[6]; ne->rate = ET_RATE[6]; ne->cd = 0.6f;
-                    ne->alertR = ET_AR[6]; ne->atkR = ET_ATK[6];
-                    ne->score = ET_SC[6]; ne->active = true;
+                    ne->type = t; ne->state = ES_CHASE;
+                    if      (t == 8)  ne->pos.y = 1.5f;  // cacodemon
+else if (t == 11) ne->pos.y = 2.2f;  // lost soul
+else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
+                    ne->hp = ne->maxHp = ET_HP[t];
+                    ne->speed = ET_SPD[t];
+                    ne->dmg = ET_DMG[t]; ne->rate = ET_RATE[t];
+                    ne->cd = (t == 5) ? 0.4f : (t == 6) ? 0.6f : ET_RATE[t];
+                    ne->alertR = ET_AR[t]; ne->atkR = ET_ATK[t];
+                    ne->score = ET_SC[t]; ne->active = true;
                     float ang = (float)rand()/RAND_MAX * 6.28f;
                     ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
                     ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
                     break;
                 }
             }
-            return;
-        }
-        // Mutant test mode — top up to 8 mutants whenever the field clears.
-        if (g_mutMode) {
-            Msg("MUTANTS DOWN - RESPAWN");
-            for (int k = 0; k < 8 && g_ec < MAX_ENEMIES; k++) {
-                for (int tries = 0; tries < 120; tries++) {
-                    int r = 1 + rand()%(ROWS-2), c = 1 + rand()%(COLS-2);
-                    if (MAP[r][c]) continue;
-                    float wx = c*CELL+CELL/2.f, wz = r*CELL+CELL/2.f;
-                    if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < 10.f) continue;
-                    Enemy *ne = &g_e[g_ec++]; *ne = (Enemy){0};
-                    ne->pos = (Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
-                    ne->type = 5; ne->state = ES_CHASE;   // hunt on spawn
-                    ne->hp = ne->maxHp = ET_HP[5];
-                    ne->speed = ET_SPD[5];
-                    ne->dmg = ET_DMG[5]; ne->rate = ET_RATE[5]; ne->cd = 0.4f;
-                    ne->alertR = ET_AR[5]; ne->atkR = ET_ATK[5];
-                    ne->score = ET_SC[5]; ne->active = true;
-                    float ang = (float)rand()/RAND_MAX * 6.28f;
-                    ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
-                    ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
-                    break;
-                }
-            }
-            return;
-        }
-        // Test mode: respawn a boss forever so we can iterate on combat
-        if (g_bossMode) {
-            Msg("BOSS DOWN - RESPAWN");
-            Enemy *ne = &g_e[g_ec++];
-            *ne = (Enemy){0};
-            float bx, bz; PickBossSpawn(&bx, &bz);
-            ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
-            ne->type = 3; ne->state = ES_CHASE;  // hunts on spawn — no wander phase
-            ne->hp = ne->maxHp = ET_HP[3];
-            ne->speed = ET_SPD[3]; ne->dmg = ET_DMG[3];
-            ne->rate = ne->cd = ET_RATE[3];
-            ne->alertR = ET_AR[3]; ne->atkR = ET_ATK[3];
-            ne->score = ET_SC[3]; ne->active = true;
-            float ang = (float)rand()/RAND_MAX * 6.28f;
-            ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
-            ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
             return;
         }
 
@@ -1392,21 +1526,23 @@ static void KillEnemy(int i) {
         if (!g_bossInterlude) {
             g_bossInterlude = true;
             if (g_sNextWaveOK) { SetSoundVolume(g_sNextWave, 1.5f); PlaySound(g_sNextWave); }
-            char bmsg[64]; snprintf(bmsg, 64, "-- BOSS FIGHT --");
+            // Wave 2 boss is the cyber demon — heavier, ranged. Other waves
+            // use the regular chef boss (type 3).
+            int bt = (g_wave == 2) ? 9 : 3;
+            const char *bmsg = (bt == 9) ? "-- CYBER DEMON --" : "-- BOSS FIGHT --";
             Msg(bmsg);
             Enemy *ne = &g_e[g_ec++];
             *ne = (Enemy){0};
             float bx, bz; PickBossSpawn(&bx, &bz);
             ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
-            ne->type = 3; ne->state = ES_CHASE;  // hunts on spawn — no wander phase
-            // Boss scales with wave like chefs do
+            ne->type = bt; ne->state = ES_CHASE;  // hunts on spawn — no wander phase
             float hm = 1.f + g_wave*0.12f;
-            ne->hp = ne->maxHp = ET_HP[3] * hm;
-            ne->speed = ET_SPD[3] + g_wave*0.10f;
-            ne->dmg = ET_DMG[3];
-            ne->rate = ne->cd = ET_RATE[3];
-            ne->alertR = ET_AR[3]; ne->atkR = ET_ATK[3];
-            ne->score = ET_SC[3]; ne->active = true;
+            ne->hp = ne->maxHp = ET_HP[bt] * hm;
+            ne->speed = ET_SPD[bt] + g_wave*0.10f;
+            ne->dmg = ET_DMG[bt];
+            ne->rate = ne->cd = ET_RATE[bt];
+            ne->alertR = ET_AR[bt]; ne->atkR = ET_ATK[bt];
+            ne->score = ET_SC[bt]; ne->active = true;
             float ang = (float)rand()/RAND_MAX * 6.28f;
             ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
             ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
@@ -1434,29 +1570,37 @@ static void KillEnemy(int i) {
                 float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
                 if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
                 float rng=(float)rand()/RAND_MAX;
-                // Wave roll (ranged enemies always show up):
-                //   wave 1   → chef + mutant
-                //   wave 2   → adds heavy + fast + mech
-                //   wave 3+  → full mix: chef/fast/heavy/cultist/mutant/mech
+                // Wave roll (ranged enemies always show up). Soldier (7)
+                // joins from wave 2; cacodemon (8) joins from wave 2;
+                // cyber demon (9) is rare, only from wave 3+.
                 int type;
-                if (g_wave < 2)            type = (rng < 0.78f) ? 0
-                                                : (rng < 0.92f) ? 5
-                                                :                6;
-                else if (g_wave < 3)       type = (rng < 0.42f) ? 0
-                                                : (rng < 0.62f) ? 2
-                                                : (rng < 0.74f) ? 1
-                                                : (rng < 0.88f) ? 5
-                                                :                6;
-                else                       type = (rng < 0.30f) ? 0
-                                                : (rng < 0.52f) ? 2
-                                                : (rng < 0.64f) ? 1
-                                                : (rng < 0.76f) ? 4    // CULTIST
-                                                : (rng < 0.90f) ? 5    // MUTANT
-                                                :                6;   // MECH
+                if (g_wave < 2)            type = (rng < 0.66f) ? 0
+                                                : (rng < 0.82f) ? 5
+                                                : (rng < 0.92f) ? 6
+                                                :                7;   // SOLDIER (no caco/cyber pre-wave 2)
+                else if (g_wave < 3)       type = (rng < 0.34f) ? 0
+                                                : (rng < 0.50f) ? 2
+                                                : (rng < 0.60f) ? 1
+                                                : (rng < 0.72f) ? 5
+                                                : (rng < 0.80f) ? 6
+                                                : (rng < 0.92f) ? 7    // SOLDIER
+                                                :                8;   // CACO
+                else                       type = (rng < 0.22f) ? 0
+                                                : (rng < 0.40f) ? 2
+                                                : (rng < 0.50f) ? 1
+                                                : (rng < 0.60f) ? 4    // CULTIST
+                                                : (rng < 0.72f) ? 5    // MUTANT
+                                                : (rng < 0.80f) ? 6    // MECH
+                                                : (rng < 0.90f) ? 7    // SOLDIER
+                                                : (rng < 0.97f) ? 8    // CACO
+                                                :                9;   // CYBER (rare)
                 Enemy *ne=&g_e[g_ec++];
                 *ne=(Enemy){0};
                 ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};  // snap to highest platform top
                 ne->type=type;
+                if      (type == 8)  ne->pos.y = 1.5f;  // cacodemon
+                else if (type == 11) ne->pos.y = 2.2f;  // lost soul
+                else if (type == 12) ne->pos.y = 2.0f;  // pain elemental
                 ne->state=ES_PATROL;
                 float hm=1.f+g_wave*0.12f;
                 ne->hp=ne->maxHp=ET_HP[type]*hm;
@@ -1487,6 +1631,13 @@ static void UpdEnemies(float dt) {
             // Mech has no corpse sprite — once the explosion has played out
             // the actor is removed entirely instead of leaving a static body.
             if (e->type == 6 && e->deathT > 1.0f) e->active = false;
+            // Flying enemies (caco / lost soul / pain elemental) fall to the
+            // floor when killed — accelerating gravity, capped at y=0.
+            if ((e->type == 8 || e->type == 11 || e->type == 12) && e->pos.y > 0.f) {
+                float fallSpeed = 2.f + e->deathT * 12.f;
+                e->pos.y -= fallSpeed * dt;
+                if (e->pos.y < 0.f) e->pos.y = 0.f;
+            }
             continue;  // corpse: run death timer, skip AI
         }
         if (e->flashT>0) e->flashT-=dt;
@@ -1537,8 +1688,11 @@ static void UpdEnemies(float dt) {
             // Snap enemy Y to highest reachable platform under them (auto-step stairs).
             // Use body-radius margin so the chef steps up as soon as his footprint
             // overlaps a step, not only once his centre crosses the strict edge.
-            float er = (e->type == 3) ? 1.2f : 0.42f;
-            e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, er);
+            // Cacodemon (8) is flying — keep its current y, ignore platforms.
+            if (e->type != 8 && e->type != 11 && e->type != 12) {
+                float er = (e->type == 3) ? 1.2f : 0.42f;
+                e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, er);
+            }
             if (e->stateT<0){float a=(float)rand()/RAND_MAX*6.28f;e->pd=(Vector3){sinf(a),0,cosf(a)};e->stateT=1.f+(float)rand()/RAND_MAX*2.5f;}
         } else if (e->state==ES_CHASE) {
             // Mutants pursue while LOS is blocked even when nominally in
@@ -1546,8 +1700,11 @@ static void UpdEnemies(float dt) {
             // (CHASE only moves when dist > atkR; ATTACK kicks back to
             // CHASE on blocked LOS). This lets them step out and shoot.
             bool mutBlocked = false;
-            if ((e->type == 5 || e->type == 6) && dist <= e->atkR) {
-                float muzzleY = (e->type == 6) ? 2.6f : 1.55f;
+            if ((e->type == 5 || e->type == 6 || e->type == 8 || e->type == 9) && dist <= e->atkR) {
+                float muzzleY = (e->type == 6) ? 2.6f
+                              : (e->type == 9) ? 2.6f
+                              : (e->type == 8) ? 0.0f   // caco fires from sprite centre (already at y~1.5)
+                              :                  1.55f;
                 Vector3 mp = {e->pos.x, e->pos.y + muzzleY, e->pos.z};
                 Vector3 pp = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                 mutBlocked = !TeslaLOS(mp, pp);
@@ -1673,14 +1830,17 @@ static void UpdEnemies(float dt) {
                     }
                 }
                 EnemyMove(e, sx*e->speed*dt, sz*e->speed*dt);
-                e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, r);
+                if (e->type != 8 && e->type != 11 && e->type != 12) {
+                    e->pos.y = PlatGroundAtR(e->pos.x, e->pos.z, e->pos.y + STEP_H, r);
+                }
             }
             // Only enter ATTACK when the player is on roughly the same level —
             // otherwise a chef on the floor next to a raised platform would
             // melee-loop at the wall while the player hovers above on the deck.
             // Forcing CHASE makes the enemy pathfind around to the stairs.
-            // Mutants AND mechs are ranged — they can shoot up at any height.
-            else if (e->type == 5 || e->type == 6 ||
+            // Ranged enemies (mutant/mech/caco/cyber) can shoot up at any height.
+            else if (e->type == 5 || e->type == 6 || e->type == 8 || e->type == 9 ||
+                     e->type == 11 || e->type == 12 ||
                      fabsf(g_p.pos.y - e->pos.y) <= STEP_H + 0.1f) e->state=ES_ATTACK;
         } else {
             // Same y-reachability check — if the player has jumped or climbed
@@ -1692,10 +1852,12 @@ static void UpdEnemies(float dt) {
             // there shooting projectiles into the wall.
             bool isMutant = (e->type == 5);
             bool isMech   = (e->type == 6);
-            bool isRanged = isMutant || isMech;
+            bool isCaco   = (e->type == 8);
+            bool isCyber  = (e->type == 9);
+            bool isRanged = isMutant || isMech || isCaco || isCyber;
             bool losBlocked = false;
             if (isRanged) {
-                float muzzleY = isMech ? 2.6f : 1.55f;
+                float muzzleY = (isMech || isCyber) ? 2.6f : isCaco ? 0.0f : 1.55f;
                 Vector3 mp = {e->pos.x, e->pos.y + muzzleY, e->pos.z};
                 Vector3 pp = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                 losBlocked = !TeslaLOS(mp, pp);
@@ -1712,6 +1874,24 @@ static void UpdEnemies(float dt) {
                     if (g_sMechRocketOK) PlaySound(g_sMechRocket);
                     else                 PlaySound(g_sRocket);
                     e->cd = e->rate;
+                } else if (isCyber) {
+                    // Cyber demon: same heavy rocket as mech but bigger damage
+                    // and twin barrel — fire two staggered rockets per cycle
+                    // for that "BFG hallway" feel.
+                    Vector3 muzzle = {e->pos.x, e->pos.y + 2.3f, e->pos.z};
+                    Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
+                    SpawnEShotRocket(muzzle, target, e->dmg);
+                    if (g_sRocket.frameCount) PlaySound(g_sRocket);
+                    e->cd = e->rate;
+                } else if (isCaco) {
+                    // Cacodemon: flying fireball, slower than mutant ball but
+                    // hits hard. Muzzle == sprite centre (already y~1.5).
+                    Vector3 muzzle = {e->pos.x, e->pos.y + 0.0f, e->pos.z};
+                    Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
+                    SpawnEShot(muzzle, target, e->dmg);
+                    if (g_sMutAttackOK) PlaySound(g_sMutAttack);
+                    else                PlaySound(g_sPistol);
+                    e->cd = e->rate;
                 } else if (isMutant) {
                     // Ranged mutant: spawn an energy-ball projectile aimed at
                     // the player's chest. Fire whenever the cooldown elapses —
@@ -1726,6 +1906,26 @@ static void UpdEnemies(float dt) {
                     else                PlaySound(g_sPistol);
                     e->cd = e->rate;
                 } else {
+                    // Cultist (4) AND soldier (7) both fire a hitscan tracer:
+                    // muzzle-flash sparks at gun height, yellow tracer dots to
+                    // the player, shotgun sound. Damage still applies instantly
+                    // so the gameplay role of "close-quarters ranged threat" is
+                    // unchanged from the cultist.
+                    if (e->type == 4 || e->type == 7) {
+                        Vector3 muzzle = {e->pos.x, e->pos.y + 1.55f, e->pos.z};
+                        Vector3 tgt    = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
+                        Sparks(muzzle, 6);
+                        // Quick yellow tracer dots from the gun toward the player
+                        for (int t = 1; t <= 6; t++) {
+                            float u = (float)t / 7.f;
+                            Vector3 p = { muzzle.x + (tgt.x - muzzle.x)*u,
+                                          muzzle.y + (tgt.y - muzzle.y)*u,
+                                          muzzle.z + (tgt.z - muzzle.z)*u };
+                            SpawnPart(p, (Vector3){0,0,0},
+                                      (Color){255, 220, 80, 255}, 0.08f, 0.06f, false);
+                        }
+                        PlaySound(g_sShotgun);
+                    }
                     g_p.hp-=e->dmg; g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
                     if (g_sChefHitOK) PlaySound(g_sChefHit);
                     else              PlaySound(g_sHurt);
@@ -1777,12 +1977,17 @@ static void DrawEnemies(Camera3D cam) {
             Vector3 pos = {e->pos.x, e->pos.y + spriteH*0.5f, e->pos.z};
             Texture2D tex;
             bool isCorpse = e->dying && g_bossDeathOK;
+            // Same windup-telegraph window as chefs: last 0.45s before the
+            // melee tick lands shows the E-frame swing pose.
+            bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
             if (isCorpse) {
                 int df = (int)(e->deathT / BOSS_DEATH_FRAME_TIME);
                 if (df > 3) df = 3;               // 4 death frames (G/H/I/J)
                 tex = g_bossDeathTex[df];
             } else if (e->flashT > 0.f && g_bossPainOK) {
                 tex = g_bossPainTex;
+            } else if (inAtkWindup && g_bossAtkOK) {
+                tex = g_bossAtkTex;
             } else {
                 int frame = (int)(e->legT * 0.5f) % 4;
                 if (frame < 0) frame += 4;
@@ -1874,8 +2079,13 @@ static void DrawEnemies(Camera3D cam) {
                 flip = flips[idx];
 
                 DirFrame *frame;
+                // Attack windup: SSCT G fires for the last ~0.45s of the cooldown
+                // before the melee tick lands — same telegraph as chefs.
+                bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
                 if (e->flashT > 0.f && g_cultPainOK) {
                     frame = &g_cultPain;
+                } else if (inAtkWindup && g_cultAtkOK) {
+                    frame = &g_cultAtk;
                 } else {
                     int wf = (int)(e->legT * 0.6f) % 4;
                     if (wf < 0) wf += 4;
@@ -2115,6 +2325,132 @@ static void DrawEnemies(Camera3D cam) {
             continue;
         }
 
+        // PreviewEnemy types 7..12 — DOOM-style + Beautiful-Doom imports.
+        // The walk_N frames are 8-direction rotation VIEWS (Doom convention,
+        // mirror pairs collapsed to 5 unique), so the standing/walking pose
+        // is picked from the enemy-facing-vs-player angle — without this
+        // they appear to spin in place. atk/pain/death are real animation
+        // sequences and DO cycle on time. Caco (8) and Lost Soul (11) are
+        // flying; Pain Elemental (12) is also a floater.
+        if (e->type >= 7 && e->type <= 12) {
+            PreviewEnemy *pe = (e->type == 7)  ? &g_prevSoldier
+                              : (e->type == 8)  ? &g_prevCaco
+                              : (e->type == 9)  ? &g_prevCyber
+                              : (e->type == 10) ? &g_prevRevenant
+                              : (e->type == 11) ? &g_prevLostSoul
+                                                : &g_prevPainElem;
+            if (pe->ok) {
+                // Reference (live walking) sprite height per type. Each
+                // frame's actual world height is scaled by tex.height /
+                // walk[0].height so death corpses (smaller pixel sprites)
+                // shrink correctly toward the floor instead of being
+                // stretched up to fill the live size.
+                float baseSpriteH = (e->type == 7)  ? 2.0f
+                                  : (e->type == 8)  ? 2.2f
+                                  : (e->type == 9)  ? 3.4f
+                                  : (e->type == 10) ? 2.4f
+                                  : (e->type == 11) ? 1.0f
+                                                    : 2.6f;
+                Texture2D tex = {0};
+                bool isCorpse = e->dying && pe->deathCount > 0;
+                bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
+                if (isCorpse) {
+                    int df = (int)(e->deathT / DGAME_DEATH_FRAME_TIME);
+                    if (df >= pe->deathCount) df = pe->deathCount - 1;
+                    tex = pe->death[df];
+                } else if (e->flashT > 0.f && pe->painCount > 0) {
+                    tex = pe->pain[0];
+                } else if (inAtkWindup && pe->atkCount > 0) {
+                    int ai = (int)((0.45f - e->cd) / DGAME_ATK_FRAME_TIME);
+                    if (ai < 0) ai = 0;
+                    if (ai >= pe->atkCount) ai = pe->atkCount - 1;
+                    tex = pe->atk[ai];
+                } else if (e->type == 10) {
+                    // Revenant — walk_0..walk_7 are the 8 RSKE animation
+                    // frames at FRONT rotation only (Beautiful-Doom doesn't
+                    // give us a clean "static idle" view, so we cycle the
+                    // walk anim instead). Always faces the camera. Cycle
+                    // speed is tied to legT so the cadence scales with the
+                    // enemy's base speed.
+                    int af = (int)(e->legT * 0.45f) % pe->walkCount;
+                    if (af < 0) af += pe->walkCount;
+                    tex = pe->walk[af];
+                } else {
+                    // Pick rotation slot from enemy facing vs player angle.
+                    Vector3 facing;
+                    if (e->state == ES_PATROL) {
+                        facing = e->pd;
+                    } else {
+                        float fdx = g_p.pos.x - e->pos.x, fdz = g_p.pos.z - e->pos.z;
+                        float l = sqrtf(fdx*fdx + fdz*fdz);
+                        facing = (l > 0.001f) ? (Vector3){fdx/l, 0, fdz/l} : (Vector3){0, 0, 1};
+                    }
+                    float enemyYaw  = atan2f(facing.x, facing.z);
+                    float pdxv = g_p.pos.x - e->pos.x, pdzv = g_p.pos.z - e->pos.z;
+                    float playerYaw = atan2f(pdxv, pdzv);
+                    float rel = playerYaw - enemyYaw;
+                    while (rel >  PI) rel -= 2.f*PI;
+                    while (rel < -PI) rel += 2.f*PI;
+                    float relDeg = rel * RAD2DEG;
+                    float a = relDeg + 22.5f;
+                    while (a < 0)    a += 360.f;
+                    while (a >= 360) a -= 360.f;
+                    int slot = (int)(a / 45.f) % 8;
+                    if (slot >= pe->walkCount) slot %= pe->walkCount;
+                    tex = pe->walk[slot];
+                }
+                // Per-frame world height tracks the actual pixel height of
+                // the chosen frame, using walk[0] as the "px-per-metre"
+                // reference. A short corpse sprite renders short.
+                float spriteH = baseSpriteH;
+                if (tex.id && pe->walk[0].id && pe->walk[0].height > 0) {
+                    spriteH = baseSpriteH * (float)tex.height / (float)pe->walk[0].height;
+                }
+                // Flying enemies (caco / lost soul / pain elemental) collapse
+                // to a flat pile once they hit the floor — their death sprite
+                // is a top-down gore view, so rendering it as a tall vertical
+                // billboard puts blood splatter in mid-air. Once landed,
+                // squash spriteH so it hugs the ground.
+                if (isCorpse && (e->type == 8 || e->type == 11 || e->type == 12)
+                    && e->pos.y <= 0.05f) {
+                    spriteH *= 0.60f;
+                }
+                Vector3 pos = {e->pos.x, e->pos.y + spriteH * 0.5f, e->pos.z};
+                if (tex.id) {
+                    float aspect = (float)tex.width / (float)tex.height;
+                    Rectangle src = {0, 0, (float)tex.width, (float)tex.height};
+                    Vector2 size   = {spriteH * aspect, spriteH};
+                    Vector2 origin = {size.x * 0.5f, size.y * 0.5f};
+                    DrawBillboardPro(cam, tex, src, pos, (Vector3){0,1,0}, size, origin, 0.f, WHITE);
+                }
+                if (!e->dying && e->hp < e->maxHp) {
+                    float hp = e->hp / e->maxHp;
+                    float bary = e->pos.y + spriteH + 0.30f;
+                    Vector3 HF = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+                    Vector3 HR = Vector3Normalize(Vector3CrossProduct(HF, cam.up));
+                    Vector3 HU = Vector3CrossProduct(HR, HF);
+                    float W = (e->type == 9) ? 2.0f : 1.0f;
+                    float H = 0.13f;
+                    Vector3 center = {e->pos.x, bary, e->pos.z};
+                    Vector3 bgTL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU, H*0.5f)));
+                    Vector3 bgTR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU, H*0.5f)));
+                    Vector3 bgBL = Vector3Add(center, Vector3Add(Vector3Scale(HR,-W*0.5f), Vector3Scale(HU,-H*0.5f)));
+                    Vector3 bgBR = Vector3Add(center, Vector3Add(Vector3Scale(HR, W*0.5f), Vector3Scale(HU,-H*0.5f)));
+                    rlBegin(RL_TRIANGLES);
+                    rlColor4ub(0,0,0,180);
+                    rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z);
+                    rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBR.x,bgBR.y,bgBR.z); rlVertex3f(bgTR.x,bgTR.y,bgTR.z);
+                    Vector3 fTR = Vector3Add(bgTL, Vector3Scale(HR, W*hp));
+                    Vector3 fBR = Vector3Add(bgBL, Vector3Scale(HR, W*hp));
+                    rlColor4ub(220,40,40,255);
+                    rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(bgBL.x,bgBL.y,bgBL.z); rlVertex3f(fBR.x,fBR.y,fBR.z);
+                    rlVertex3f(bgTL.x,bgTL.y,bgTL.z); rlVertex3f(fBR.x,fBR.y,fBR.z); rlVertex3f(fTR.x,fTR.y,fTR.z);
+                    rlEnd();
+                }
+                continue;
+            }
+        }
+
         if (g_chefOK) {
             // Size tuned per enemy type
             float spriteH = (e->type==1) ? 2.3f : (e->type==2) ? 1.7f : 2.0f;
@@ -2350,12 +2686,33 @@ static void UpdBullets(float dt) {
             Enemy *e=&g_e[j]; if (!e->active || e->dying) continue;
             float _ex=b->pos.x-e->pos.x, _ez=b->pos.z-e->pos.z;
             float _xzdist=sqrtf(_ex*_ex+_ez*_ez);
-            // Per-type hit volume — boss is much bigger than a chef
-            float _bodyY   = (e->type==3) ? 2.0f : 1.0f;
-            float _bodyR   = (e->type==3) ? 1.5f : 0.9f;
-            float _bodyH   = (e->type==3) ? 2.3f : 1.2f;
-            float _ydist=fabsf(b->pos.y-_bodyY);
-            if ((_xzdist<_bodyR && _ydist<_bodyH) || Vector3Distance(b->pos,(Vector3){e->pos.x,_bodyY,e->pos.z})<_bodyR) {
+            // Per-type hit volume. _bodyY is now an OFFSET from the enemy's
+            // feet (e->pos.y), so flying enemies (caco, lost soul, pain
+            // elemental) get a hit cylinder that tracks their actual y.
+            // Without the offset model, a caco at e->pos.y=1.5 with bodyY=1.5
+            // had its hit cylinder centred at world y=1.5 (its feet) instead
+            // of y=2.6 (its body), and most rockets passed under the sprite.
+            float _bodyY   = (e->type==3)  ? 2.0f
+                           : (e->type==9)  ? 1.7f
+                           : (e->type==8)  ? 1.1f   // caco — center of 2.2m sprite above feet
+                           : (e->type==11) ? 0.5f   // lost soul — small head
+                           : (e->type==12) ? 1.3f   // pain elemental — big floating ball
+                           :                 1.0f;
+            float _bodyR   = (e->type==3)  ? 1.5f
+                           : (e->type==9)  ? 1.3f
+                           : (e->type==8)  ? 1.0f
+                           : (e->type==11) ? 0.45f
+                           : (e->type==12) ? 1.10f
+                           :                 0.9f;
+            float _bodyH   = (e->type==3)  ? 2.3f
+                           : (e->type==9)  ? 1.9f
+                           : (e->type==8)  ? 1.1f
+                           : (e->type==11) ? 0.55f
+                           : (e->type==12) ? 1.30f
+                           :                 1.2f;
+            float _bodyWorldY = e->pos.y + _bodyY;
+            float _ydist=fabsf(b->pos.y - _bodyWorldY);
+            if ((_xzdist<_bodyR && _ydist<_bodyH) || Vector3Distance(b->pos,(Vector3){e->pos.x,_bodyWorldY,e->pos.z})<_bodyR) {
                 if (b->rocket) {
                     Explode(b->pos);
                     g_killsThisShot = 0;
@@ -2555,19 +2912,58 @@ static void UpdEShots(float dt) {
         float px = g_p.pos.x, pz = g_p.pos.z, py = g_p.pos.y + EYE_H - 0.4f;
         float dx = s->pos.x - px, dy = s->pos.y - py, dz = s->pos.z - pz;
         bool playerHit = (dx*dx + dy*dy + dz*dz < 0.65f*0.65f);
-        if (dead || playerHit) {
+        // Enemy collision (infighting). The shot spawns inside the shooter's
+        // own body sphere, so we skip enemy-collision for the first 0.15s
+        // after spawn — by then the projectile (14 m/s ball or 9 m/s rocket)
+        // has cleared any reasonable enemy body radius.
+        const float maxLife    = s->isRocket ? 4.0f : 3.0f;
+        const float spawnGrace = 0.15f;
+        bool postGrace = (maxLife - s->life) > spawnGrace;
+        int enemyHitIdx = -1;
+        if (postGrace && !playerHit && !dead) {
+            for (int j = 0; j < g_ec; j++) {
+                Enemy *e = &g_e[j];
+                if (!e->active || e->dying) continue;
+                float ex = s->pos.x - e->pos.x;
+                float ez = s->pos.z - e->pos.z;
+                float byOff = (e->type == 3) ? 1.4f : 1.0f;
+                float br    = (e->type == 3) ? 1.5f : (e->type == 6) ? 0.85f : 0.65f;
+                float ey    = s->pos.y - (e->pos.y + byOff);
+                if (ex*ex + ey*ey + ez*ez < br*br) {
+                    enemyHitIdx = j;
+                    break;
+                }
+            }
+        }
+        bool inflictHit = playerHit || enemyHitIdx >= 0;
+        if (dead || inflictHit) {
             if (s->isRocket) {
-                // Rocket: explosion + AOE damage out to 3.5m, falls off linearly.
+                // Rocket: explosion + AOE damage out to 3.5m. Hits player AND
+                // any enemies in the blast radius (enemy infighting).
                 Explode(s->pos);
-                float pdist = sqrtf(dx*dx + dy*dy + dz*dz);
-                if (pdist < 3.5f) {
-                    float fall = 1.f - pdist / 3.5f;
-                    g_p.hp -= s->dmg * fall;
-                    g_p.hurtFlash = 0.3f;
-                    g_p.shake = fmaxf(g_p.shake, 0.18f);
-                    if (g_sMechHitOK) PlaySound(g_sMechHit);
-                    else              PlaySound(g_sHurt);
-                    if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
+                if (playerHit || enemyHitIdx >= 0 || dead) {
+                    float pdist = sqrtf(dx*dx + dy*dy + dz*dz);
+                    if (pdist < 3.5f) {
+                        float fall = 1.f - pdist / 3.5f;
+                        g_p.hp -= s->dmg * fall;
+                        g_p.hurtFlash = 0.3f;
+                        g_p.shake = fmaxf(g_p.shake, 0.18f);
+                        if (g_sMechHitOK) PlaySound(g_sMechHit);
+                        else              PlaySound(g_sHurt);
+                        if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
+                    }
+                    // Splash damage to other enemies — gives infighting some
+                    // teeth. Each enemy in range takes falloff damage via the
+                    // same DmgEnemy path the player's rocket uses.
+                    for (int j = 0; j < g_ec; j++) {
+                        Enemy *e = &g_e[j];
+                        if (!e->active || e->dying) continue;
+                        float exd = s->pos.x - e->pos.x;
+                        float eyd = s->pos.y - (e->pos.y + 1.0f);
+                        float ezd = s->pos.z - e->pos.z;
+                        float ed  = sqrtf(exd*exd + eyd*eyd + ezd*ezd);
+                        if (ed < 3.5f) DmgEnemy(j, s->dmg * (1.f - ed/3.5f));
+                    }
                 }
             } else if (playerHit) {
                 g_p.hp -= s->dmg;
@@ -2575,6 +2971,11 @@ static void UpdEShots(float dt) {
                 g_p.shake = fmaxf(g_p.shake, 0.13f);
                 PlaySound(g_sHurt);
                 if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
+            } else if (enemyHitIdx >= 0) {
+                // Mutant energy ball: single-target enemy hit. Spawn a small
+                // blood burst for visual feedback; damage applied via DmgEnemy.
+                Blood(s->pos, 6);
+                DmgEnemy(enemyHitIdx, s->dmg);
             }
             s->active = false;
         }
@@ -2681,6 +3082,18 @@ static void Shoot(void) {
             } else if (g_e[j].type == 6) {   // MECH (sprite ~2.6m tall, bulky)
                 headY = 2.40f; headR = 0.40f;
                 bodyY = 1.30f; bodyR = 0.85f;
+            } else if (g_e[j].type == 9) {   // CYBER DEMON (sprite ~3.4m tall)
+                headY = 2.90f; headR = 0.50f;
+                bodyY = 1.70f; bodyR = 1.20f;
+            } else if (g_e[j].type == 8) {   // CACODEMON (flying — feet at e->pos.y=1.5)
+                headY = 1.50f; headR = 0.45f;
+                bodyY = 1.10f; bodyR = 1.00f;
+            } else if (g_e[j].type == 11) {  // LOST SOUL (small flying head, feet at e->pos.y=2.2)
+                headY = 0.70f; headR = 0.30f;
+                bodyY = 0.40f; bodyR = 0.45f;
+            } else if (g_e[j].type == 12) {  // PAIN ELEMENTAL (big floater, feet at e->pos.y=2.0)
+                headY = 1.80f; headR = 0.50f;
+                bodyY = 1.30f; bodyR = 1.05f;
             } else {
                 float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
                 headY = bh + 0.67f; headR = 0.26f;
@@ -2701,6 +3114,7 @@ static void Shoot(void) {
             int bloodCount = headshot ? 25 : 14;
             if (g_e[bi].type == 3) bloodCount *= 4;
             Blood(hp, bloodCount);
+            SpawnSplat(hp);
             float dmg=(float)WD[w]*(headshot?2.5f:1.0f)*quadMul;
             // Shotgun damage falloff curve:
             //   0m  → 2.5x (point-blank)
@@ -2780,14 +3194,18 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
     // Wide-cone auto-target: pick the closest live enemy OR explosive barrel
     // within ~50° of aim and 30m, with wall LOS. No headshot mechanic —
     // tesla rewards positioning (chain count) rather than precision.
-    const float TESLA_RANGE = 3.f;     // ~10 feet — short-range zap, not a sniper
-    const float TESLA_COS   = 0.64f;   // cos(50°) ≈ 0.64
+    const float TESLA_RANGE = 6.f;     // doubled from 3m — broader depth reach
+    const float TESLA_COS   = 0.34f;   // cos(70°) — much wider cone (was cos(50°))
     float bestD2 = TESLA_RANGE * TESLA_RANGE;
     int bi = -1, bbk = -1;
     for (int j = 0; j < g_ec; j++) {
         if (!g_e[j].active || g_e[j].dying) continue;
         float dx = g_e[j].pos.x - origin.x;
-        float dy = (g_e[j].pos.y + 0.95f) - origin.y;
+        float coneChestY = (g_e[j].type == 9) ? 1.7f
+                         : (g_e[j].type == 8) ? 1.1f
+                         : (g_e[j].type == 3) ? 1.4f
+                         :                      0.95f;
+        float dy = (g_e[j].pos.y + coneChestY) - origin.y;
         float dz = g_e[j].pos.z - origin.z;
         float d2 = dx*dx + dy*dy + dz*dz;
         if (d2 >= bestD2) continue;
@@ -2796,7 +3214,11 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
             float dotAim = (dx*dir.x + dy*dir.y + dz*dir.z) / d;
             if (dotAim < TESLA_COS) continue;
         }
-        Vector3 ec = {g_e[j].pos.x, origin.y, g_e[j].pos.z};
+        float chestY = (g_e[j].type == 9) ? 1.7f
+                     : (g_e[j].type == 8) ? 1.1f
+                     : (g_e[j].type == 3) ? 1.4f
+                     :                      0.95f;
+        Vector3 ec = {g_e[j].pos.x, g_e[j].pos.y + chestY, g_e[j].pos.z};
         if (!TeslaLOS(origin, ec)) continue;
         bestD2 = d2; bi = j; bbk = -1;
     }
@@ -2818,25 +3240,37 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
     if (bi >= 0) {
         int chained[BOLT_MAX_PTS]; int chainN = 0;
         chained[chainN++] = bi;
-        Vector3 anchor = {g_e[bi].pos.x, g_e[bi].pos.y + 0.95f, g_e[bi].pos.z};
+        float biChest = (g_e[bi].type == 9) ? 1.7f
+                      : (g_e[bi].type == 8) ? 1.1f
+                      : (g_e[bi].type == 3) ? 1.4f
+                      :                       0.95f;
+        Vector3 anchor = {g_e[bi].pos.x, g_e[bi].pos.y + biChest, g_e[bi].pos.z};
         pts[np++] = anchor;
         Blood(anchor, 12);
         DmgEnemy(bi, (float)WD[3] * quadMul);
         for (int hop = 0; hop < 5 && np < BOLT_MAX_PTS; hop++) {
-            float bestD = 3.f; int target = -1;
+            float bestD = 6.f; int target = -1;
             for (int j = 0; j < g_ec; j++) {
                 if (!g_e[j].active || g_e[j].dying) continue;
                 bool already = false;
                 for (int k = 0; k < chainN; k++) if (chained[k] == j) { already = true; break; }
                 if (already) continue;
-                Vector3 ec = {g_e[j].pos.x, g_e[j].pos.y + 0.95f, g_e[j].pos.z};
+                float jChest = (g_e[j].type == 9) ? 1.7f
+                             : (g_e[j].type == 8) ? 1.1f
+                             : (g_e[j].type == 3) ? 1.4f
+                             :                      0.95f;
+                Vector3 ec = {g_e[j].pos.x, g_e[j].pos.y + jChest, g_e[j].pos.z};
                 float d = Vector3Distance(anchor, ec);
                 if (d >= bestD) continue;
                 if (!TeslaLOS(anchor, ec)) continue;
                 bestD = d; target = j;
             }
             if (target < 0) break;
-            anchor = (Vector3){g_e[target].pos.x, g_e[target].pos.y + 0.95f, g_e[target].pos.z};
+            float tChest = (g_e[target].type == 9) ? 1.7f
+                         : (g_e[target].type == 8) ? 1.1f
+                         : (g_e[target].type == 3) ? 1.4f
+                         :                           0.95f;
+            anchor = (Vector3){g_e[target].pos.x, g_e[target].pos.y + tChest, g_e[target].pos.z};
             pts[np++] = anchor;
             chained[chainN++] = target;
             static const float fall[5] = {0.85f, 0.70f, 0.58f, 0.48f, 0.40f};
@@ -3259,8 +3693,23 @@ static void UpdPlayer(float dt, Camera3D *cam) {
 // ── INIT ─────────────────────────────────────────────────────────────────────
 static void InitGame(void) {
     srand((unsigned)time(NULL));
+    // Preserve facing direction across runs — without this, every restart
+    // snaps yaw back to 0 (which faces the corner wall from the spawn point)
+    // regardless of where the player was looking. First-run default: face
+    // the map centre so the spawn isn't aimed into the corner wall.
+    float prevYaw = g_p.yaw;
+    bool  hadYaw  = (prevYaw != 0.f);
     memset(&g_p,0,sizeof(g_p));
     g_p.pos=(Vector3){1.5f*CELL,0,1.5f*CELL};
+    if (hadYaw) {
+        g_p.yaw = prevYaw;
+    } else {
+        // Forward direction in this engine is (sin(yaw+π), cos(yaw+π)),
+        // so to face the map centre at (60, 40) from spawn (6, 6) we need
+        // atan2(-(centerX - px), -(centerZ - pz)) — naive atan2 of the
+        // centre delta points the player AWAY from the action.
+        g_p.yaw = atan2f(g_p.pos.x - 60.f, g_p.pos.z - 40.f);
+    }
     g_p.hp=g_p.maxHp=100; g_p.shells=32; g_p.rockets=8; g_p.mgAmmo=120; g_p.cells=0; g_p.weapon=0;
     g_p.hasTesla=false;
     g_wave=1; g_ec=0; g_pkc=0;
@@ -3268,6 +3717,7 @@ static void InitGame(void) {
     ResetParts(); memset(g_pk,0,sizeof(g_pk));
     memset(g_bolts,0,sizeof(g_bolts));
     memset(g_es,0,sizeof(g_es));
+    memset(g_splats,0,sizeof(g_splats));
     g_teslaPending = false; g_teslaSfxStopT = 0.f;
     // Restore ceiling lights — anything shot off in the previous run comes
     // back lit. Re-pushes each light's enabled state to the GPU.
@@ -3279,69 +3729,31 @@ static void InitGame(void) {
     SeedPicks();
     SpawnBarrels();
 
-    if (g_bossMode) {
-        // BOSS TEST: spawn one boss straight away, no chefs. Drop him in a
-        // random open map corner (same helper as the wave-end + respawn paths)
-        // — the old hardcoded (56, 36) put his body into a wall corner so he
-        // couldn't move.
-        Enemy *ne = &g_e[g_ec++];
-        *ne = (Enemy){0};
-        float bx, bz; PickBossSpawn(&bx, &bz);
-        ne->pos = (Vector3){bx, PlatGroundAt(bx, bz, 100.f), bz};
-        ne->type = 3;                           // boss
-        ne->state = ES_PATROL;
-        ne->hp = ne->maxHp = ET_HP[3];
-        ne->speed = ET_SPD[3];
-        ne->dmg = ET_DMG[3];
-        ne->rate = ne->cd = ET_RATE[3];
-        ne->alertR = ET_AR[3];
-        ne->atkR = ET_ATK[3];
-        ne->score = ET_SC[3];
-        ne->active = true;
-        float ang = (float)rand()/RAND_MAX * 6.28f;
-        ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
-        ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
-    } else if (g_mutMode) {
-        // MUTANT TEST: pure mutant arena — spawn 8 ranged mutants for projectile
-        // testing. KillEnemy respawns more so the fight never ends.
-        for (int k = 0; k < 8 && g_ec < MAX_ENEMIES; k++) {
+    if (g_arenaMode) {
+        // ARENA TEST: 8 enemies of g_arenaType. Boss arena uses fewer
+        // (just 1) since they're tanky. KillEnemy respawns more.
+        int t = g_arenaType;
+        if (t < 0) t = 0; if (t > 12) t = 12;
+        int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon are solo by default
+        for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
             for (int tries = 0; tries < 120; tries++) {
                 int r = 1 + rand()%(ROWS-2), c = 1 + rand()%(COLS-2);
                 if (MAP[r][c]) continue;
                 float wx = c*CELL+CELL/2.f, wz = r*CELL+CELL/2.f;
-                if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < 10.f) continue;
+                float minDist = (t == 3 || t == 6 || t == 9) ? 14.f : 10.f;
+                if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < minDist) continue;
                 Enemy *ne = &g_e[g_ec++]; *ne = (Enemy){0};
                 ne->pos = (Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
-                ne->type = 5; ne->state = ES_PATROL;
-                ne->hp = ne->maxHp = ET_HP[5];
-                ne->speed = ET_SPD[5];
-                ne->dmg = ET_DMG[5]; ne->rate = ET_RATE[5]; ne->cd = 0.4f;
-                ne->alertR = ET_AR[5]; ne->atkR = ET_ATK[5];
-                ne->score = ET_SC[5]; ne->active = true;
-                float ang = (float)rand()/RAND_MAX * 6.28f;
-                ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
-                ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
-                break;
-            }
-        }
-    } else if (g_mechMode) {
-        // MECH TEST: 4 heavy mechs (fewer than mutants — they're tanky and
-        // their rockets dominate fast). Respawned via KillEnemy so the
-        // fight never ends.
-        for (int k = 0; k < 4 && g_ec < MAX_ENEMIES; k++) {
-            for (int tries = 0; tries < 120; tries++) {
-                int r = 1 + rand()%(ROWS-2), c = 1 + rand()%(COLS-2);
-                if (MAP[r][c]) continue;
-                float wx = c*CELL+CELL/2.f, wz = r*CELL+CELL/2.f;
-                if (hypotf(wx-g_p.pos.x, wz-g_p.pos.z) < 14.f) continue;
-                Enemy *ne = &g_e[g_ec++]; *ne = (Enemy){0};
-                ne->pos = (Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
-                ne->type = 6; ne->state = ES_PATROL;
-                ne->hp = ne->maxHp = ET_HP[6];
-                ne->speed = ET_SPD[6];
-                ne->dmg = ET_DMG[6]; ne->rate = ET_RATE[6]; ne->cd = 0.6f;
-                ne->alertR = ET_AR[6]; ne->atkR = ET_ATK[6];
-                ne->score = ET_SC[6]; ne->active = true;
+                ne->type = t; ne->state = ES_PATROL;
+                if      (t == 8)  ne->pos.y = 1.5f;  // cacodemon
+else if (t == 11) ne->pos.y = 2.2f;  // lost soul
+else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
+                ne->hp = ne->maxHp = ET_HP[t];
+                ne->speed = ET_SPD[t];
+                ne->dmg = ET_DMG[t]; ne->rate = ET_RATE[t];
+                ne->cd = (t == 5) ? 0.4f : (t == 6) ? 0.6f : ET_RATE[t];
+                ne->alertR = ET_AR[t]; ne->atkR = ET_ATK[t];
+                ne->score = ET_SC[t]; ne->active = true;
                 float ang = (float)rand()/RAND_MAX * 6.28f;
                 ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
                 ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
@@ -3349,24 +3761,40 @@ static void InitGame(void) {
             }
         }
     } else {
-        // Normal mode: spawn wave 1 (16 chefs)
-        for (int k=0;k<16&&g_ec<MAX_ENEMIES;k++) {
+        // Normal mode: spawn wave 1 (17 enemies). First 7 spawns are
+        // GUARANTEED — one of each non-boss type — so the player encounters
+        // every enemy on wave 1 instead of being at the mercy of percentages.
+        // Cacodemon (8) joins from wave 2; cyber demon (9) is wave 3+ only
+        // (boss-tier, kept rare).
+        static const int guaranteed[] = {0, 2, 1, 4, 5, 6, 7};
+        const int guaranteedCount = (int)(sizeof(guaranteed)/sizeof(guaranteed[0]));
+        for (int k=0;k<17&&g_ec<MAX_ENEMIES;k++) {
             for (int tries=0;tries<120;tries++) {
                 int r=1+rand()%(ROWS-2), c=1+rand()%(COLS-2);
                 if (MAP[r][c]) continue;
                 float wx=c*CELL+CELL/2.f, wz=r*CELL+CELL/2.f;
                 if (hypotf(wx-g_p.pos.x,wz-g_p.pos.z)<10.f) continue;
-                // Wave 1 mix: 45% chef / 18% fast / 8% heavy / 12% cult / 12% mut / 5% mech
-                float rng = (float)rand()/RAND_MAX;
-                int type = rng < 0.45f ? 0
-                         : rng < 0.63f ? 2
-                         : rng < 0.71f ? 1
-                         : rng < 0.83f ? 4
-                         : rng < 0.95f ? 5
-                         :              6;
+                int type;
+                if (k < guaranteedCount) {
+                    type = guaranteed[k];
+                } else {
+                    // Filler mix: lean on chefs but keep variety. Wave 1 only
+                    // — caco/cyber not yet unlocked here.
+                    float rng = (float)rand()/RAND_MAX;
+                    type = rng < 0.42f ? 0
+                         : rng < 0.58f ? 2
+                         : rng < 0.66f ? 1
+                         : rng < 0.76f ? 4
+                         : rng < 0.86f ? 5
+                         : rng < 0.92f ? 6
+                         :              7;   // soldier
+                }
                 Enemy *ne=&g_e[g_ec++]; *ne=(Enemy){0};
                 ne->pos=(Vector3){wx, PlatGroundAt(wx,wz,100.f), wz};
                 ne->type=type; ne->state=ES_PATROL;
+                if      (type == 8)  ne->pos.y = 1.5f;  // cacodemon
+                else if (type == 11) ne->pos.y = 2.2f;  // lost soul
+                else if (type == 12) ne->pos.y = 2.0f;  // pain elemental
                 ne->hp=ne->maxHp=ET_HP[type]; ne->speed=ET_SPD[type];
                 ne->dmg=ET_DMG[type]; ne->rate=ne->cd=ET_RATE[type];
                 ne->alertR=ET_AR[type]; ne->atkR=ET_ATK[type]; ne->score=ET_SC[type]; ne->active=true;
@@ -3394,9 +3822,143 @@ static void InitGame(void) {
 // single-threaded browser context).
 static Camera3D g_cam;
 
+// ── SPRITE BROWSER (debug, F8) ──────────────────────────────────────────────
+// Flip through every PNG in a curated list of source-asset folders so we
+// can see what each Beautiful-Doom / DOOM-style-Game prefix actually looks
+// like. The Beautiful-Doom revenant alone has 12+ sprite prefixes (REVP,
+// REVI, REVN, REVM, REVX, RSKE, RMIL, RMIR, RMIS, SKEB, SSKE, FBXP) and
+// guessing which is "walk" vs "pain" vs "missile-tracer" from filenames is
+// painful — this lets you eyeball each one and update the copy script
+// accordingly. Absolute paths because this is dev-only and only ever runs
+// out of the repo on the developer's Mac.
+static const char *SB_FOLDERS[] = {
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Revenant",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/LostSoul",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/PainElemental",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Cacodemon",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Cyberdemon",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Arachnotron",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/ArchVile",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/BaronOfHell",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/HellKnight",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Mancubus",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/DoomImp",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/PinkyDemon",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/SpiderMastermind",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/IconOfSin",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Cleaner",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/ShotgunGuy",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/ChaingunGuy",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/RifleGuy",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Zombieman",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/WolfensteinSS",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/DOOM-style-Game/resources/sprites/npc/soldier",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/DOOM-style-Game/resources/sprites/npc/caco_demon",
+    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/DOOM-style-Game/resources/sprites/npc/cyber_demon",
+};
+#define SB_FOLDER_COUNT (int)(sizeof(SB_FOLDERS)/sizeof(SB_FOLDERS[0]))
+
+static bool          g_sbActive  = false;
+static int           g_sbFolder  = 0;
+static int           g_sbFile    = 0;
+static int           g_sbZoom    = 4;
+static FilePathList  g_sbList;
+static bool          g_sbHasList = false;
+static Texture2D     g_sbTex;
+static bool          g_sbHasTex  = false;
+
+static void SBLoadFile(void) {
+    if (g_sbHasTex) { UnloadTexture(g_sbTex); g_sbHasTex = false; }
+    if (!g_sbHasList || g_sbList.count == 0) return;
+    if (g_sbFile < 0) g_sbFile = (int)g_sbList.count - 1;
+    if (g_sbFile >= (int)g_sbList.count) g_sbFile = 0;
+    g_sbTex = LoadTexture(g_sbList.paths[g_sbFile]);
+    if (g_sbTex.id) {
+        SetTextureFilter(g_sbTex, TEXTURE_FILTER_POINT);
+        g_sbHasTex = true;
+    }
+}
+
+static void SBLoadFolder(void) {
+    if (g_sbHasList) { UnloadDirectoryFiles(g_sbList); g_sbHasList = false; }
+    g_sbList = LoadDirectoryFilesEx(SB_FOLDERS[g_sbFolder], ".png", false);
+    g_sbHasList = true;
+    g_sbFile = 0;
+    SBLoadFile();
+}
+
+static void SBOpen(void) {
+    g_sbActive = true;
+    if (g_sbFolder < 0 || g_sbFolder >= SB_FOLDER_COUNT) g_sbFolder = 0;
+    SBLoadFolder();
+}
+
+static void SBClose(void) {
+    g_sbActive = false;
+    if (g_sbHasTex)  { UnloadTexture(g_sbTex);          g_sbHasTex  = false; }
+    if (g_sbHasList) { UnloadDirectoryFiles(g_sbList);  g_sbHasList = false; }
+}
+
+static void SBStep(void) {
+    if (IsKeyPressed(KEY_F8) || IsKeyPressed(KEY_ESCAPE)) { SBClose(); return; }
+    if (IsKeyPressed(KEY_LEFT))  { g_sbFile--; SBLoadFile(); }
+    if (IsKeyPressed(KEY_RIGHT)) { g_sbFile++; SBLoadFile(); }
+    if (IsKeyPressed(KEY_LEFT_BRACKET))  {
+        g_sbFolder = (g_sbFolder + SB_FOLDER_COUNT - 1) % SB_FOLDER_COUNT;
+        SBLoadFolder();
+    }
+    if (IsKeyPressed(KEY_RIGHT_BRACKET)) {
+        g_sbFolder = (g_sbFolder + 1) % SB_FOLDER_COUNT;
+        SBLoadFolder();
+    }
+    if (IsKeyPressed(KEY_EQUAL) && g_sbZoom < 12) g_sbZoom++;
+    if (IsKeyPressed(KEY_MINUS) && g_sbZoom > 1)  g_sbZoom--;
+
+    BeginDrawing();
+    ClearBackground((Color){25, 25, 35, 255});
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+
+    // Centred sprite at current zoom.
+    if (g_sbHasTex && g_sbTex.id) {
+        int dw = g_sbTex.width  * g_sbZoom;
+        int dh = g_sbTex.height * g_sbZoom;
+        DrawTextureEx(g_sbTex, (Vector2){(sw - dw) * 0.5f, (sh - dh) * 0.5f},
+                      0.f, (float)g_sbZoom, WHITE);
+    }
+
+    // Top header — folder name + index counts.
+    const char *folder = SB_FOLDERS[g_sbFolder];
+    const char *folderTail = strrchr(folder, '/');
+    folderTail = folderTail ? folderTail + 1 : folder;
+    char hdr[256];
+    int fileCount = g_sbHasList ? (int)g_sbList.count : 0;
+    int fileNum   = (fileCount > 0) ? g_sbFile + 1 : 0;
+    snprintf(hdr, sizeof(hdr), "FOLDER [%d/%d] %s   FILE %d/%d",
+             g_sbFolder + 1, SB_FOLDER_COUNT, folderTail, fileNum, fileCount);
+    DrawText(hdr, 20, 20, 22, (Color){240, 200, 80, 255});
+
+    // Big filename label so the prefix is easy to read.
+    if (g_sbHasList && fileCount > 0 && g_sbFile < fileCount) {
+        const char *path = g_sbList.paths[g_sbFile];
+        const char *fn = strrchr(path, '/');
+        fn = fn ? fn + 1 : path;
+        DrawText(fn, 20, 50, 32, WHITE);
+    } else {
+        DrawText("(no PNGs in folder)", 20, 50, 28, RED);
+    }
+
+    DrawText("LEFT/RIGHT file   [ ] folder   - / + zoom   ESC/F8 exit",
+             20, sh - 28, 16, (Color){180, 180, 200, 255});
+    EndDrawing();
+}
+
 static void StepFrame(void) {
     float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
     DebugLogTick();
+    // F8 — toggle the sprite browser (debug). When active, swallows the
+    // entire frame and renders the single-sprite viewer instead of the game.
+    if (IsKeyPressed(KEY_F8) && !g_sbActive) { SBOpen(); }
+    if (g_sbActive) { SBStep(); return; }
     // Alt+Enter — fullscreen toggle. Borderless-windowed flavour: no
     // resolution change, no swoop animation, instant. Skipped on web — the
     // browser shell owns canvas sizing and the Fullscreen API needs its own
@@ -3425,31 +3987,65 @@ static void StepFrame(void) {
     if (g_gs==GS_MENU) {
         bool altHeld = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
         if (!altHeld && (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)||IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) {
-            g_bossMode = false;
-            g_mutMode  = false;
-            g_mechMode = false;
+            g_arenaMode = false;
             InitGame();
         }
-        if (IsKeyPressed(KEY_B)) {
-            g_bossMode = true;  g_mutMode = false; g_mechMode = false;
-            InitGame();
+        if (IsKeyPressed(KEY_A)) {
+            g_pickerT = 0.f;
+            g_gs = GS_PICK_ENEMY;
         }
-        if (IsKeyPressed(KEY_M)) {
-            g_mutMode = true;   g_bossMode = false; g_mechMode = false;
-            InitGame();
+        // S — open the sprite browser (debug). Same effect as F8 but
+        // doesn't need the fn-modifier on a Mac laptop. ESC inside the
+        // browser exits back to the menu.
+        if (IsKeyPressed(KEY_S) && !g_sbActive) { SBOpen(); }
+    } else if (g_gs == GS_PICK_ENEMY) {
+        // Enemy picker — navigate 13 picker slots: 10 in-game enemies (0..9)
+        // plus 3 preview-only Beautiful-Doom enemies (10/11/12 — revenant,
+        // lostsoul, painelem) you can spawn in the arena to look at, but
+        // they aren't yet in waves. Arrow keys cycle all 13; 1-9 + 0 jump
+        // to slots 0..9; slots 10/11/12 reachable only via arrows.
+        g_pickerT += dt;
+        if (IsKeyPressed(KEY_ESCAPE)) g_gs = GS_MENU;
+        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 12) % 13;
+        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 13;
+        for (int k = 0; k < 10; k++) {
+            // Number keys 1-9 + 0 (for slot 9) so all are reachable
+            int key = (k == 9) ? KEY_ZERO : (KEY_ONE + k);
+            if (IsKeyPressed(key)) g_pickerIdx = k;
         }
-        if (IsKeyPressed(KEY_K)) {
-            g_mechMode = true;  g_bossMode = false; g_mutMode = false;
+        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            g_arenaMode = true; g_arenaType = g_pickerIdx;
             InitGame();
         }
     } else if (g_gs==GS_PLAY) {
         if (IsKeyPressed(KEY_ESCAPE)){g_gs=GS_MENU;}
+        // P toggles a hard pause — Upd* calls and the visibility-stinger
+        // logic are gated below so enemies freeze, projectiles hang, and
+        // sound timers don't tick. Music keeps playing for ambience.
+        if (IsKeyPressed(KEY_P)) {
+            g_paused = !g_paused;
+            // Mute the streaming music while paused — raylib's pause/resume
+            // properly halts the decoder so the buffer doesn't drift.
+            if (g_musicOK) {
+                if (g_paused) PauseMusicStream(g_music);
+                else          ResumeMusicStream(g_music);
+            }
+            // SetMasterVolume(0) silences ALL one-shot Sounds too — without
+            // this, in-flight SFX (chef-die, mech-rocket, tesla buzz, etc.)
+            // keep audibly playing through the pause overlay.
+            SetMasterVolume(g_paused ? 0.f : 1.f);
+            // After unpause, swallow the held click so it doesn't register
+            // as a shot from the menu/pause overlay.
+            if (!g_paused) g_needMouseRelease = true;
+        }
+        if (!g_paused) {
         UpdPlayer(dt,&g_cam);
         UpdEnemies(dt);
         UpdBullets(dt);
         UpdParts(dt);
         UpdBolts(dt);
         UpdEShots(dt);
+        UpdSplats(dt);
         UpdPicks();
 
         // "Distant enemy" stinger — plays once when the first enemy comes into sight
@@ -3506,6 +4102,7 @@ static void StepFrame(void) {
             }
             g_hadVisibleEnemy = anyVisible;
         }
+        }  // end if (!g_paused) — pause gate from above
     } else if (g_gs==GS_DEAD) {
         if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
     }
@@ -3515,7 +4112,8 @@ static void StepFrame(void) {
 
     if (g_gs==GS_PLAY||g_gs==GS_DEAD) {
         BeginMode3D(g_cam);
-        DrawModel(g_wallModel,Vector3Zero(),1.f,WHITE);
+        for (int wmi = 0; wmi < WALL_TEX_COUNT; wmi++)
+            DrawModel(g_wallModels[wmi], Vector3Zero(), 1.f, WHITE);
         DrawModel(g_floorModel,Vector3Zero(),1.f,(Color){110,110,110,255});
         DrawModel(g_ceilModel,Vector3Zero(),1.f,(Color){70,70,90,255});
         // Platforms (stairs + raised decks) — unit cube mesh scaled per-platform.
@@ -3553,12 +4151,18 @@ static void StepFrame(void) {
         // no enemy z-value to be occluded by. New world-space sprite types
         // (props, decor, etc.) should follow the same rule — see CLAUDE.md.
         DrawPicks(g_cam);
+        // Alpha-test the barrel sprites so the transparent fringe around the
+        // flame doesn't write depth and clip enemies passing behind. See the
+        // ALPHA-TEST BILLBOARD SHADER block at the top of game.c for why.
+        BeginShaderMode(g_alphaShader);
         DrawBarrels(g_cam);
+        EndShaderMode();
         DrawEnemies(g_cam);
         DrawBullets();
         DrawParts();
         DrawBolts();
         DrawEShots();
+        DrawSplats(g_cam);
         // Ceiling lights drawn LAST so the additive glow shines over enemies,
         // pickups, and bullets — otherwise opaque billboards cover the light cones.
         DrawCeilingLights(g_cam);
@@ -3566,6 +4170,15 @@ static void StepFrame(void) {
         EndMode3D();
         DrawSpriteWeapon();
         DrawHUD();
+        if (g_paused) {
+            int sw3 = GetScreenWidth(), sh3 = GetScreenHeight();
+            DrawRectangle(0, 0, sw3, sh3, (Color){0, 0, 0, 140});
+            const char *p = "PAUSED";
+            DrawText(p, sw3/2 - MeasureText(p, 80)/2 + 4, sh3/3 + 4, 80, (Color){0,0,0,200});
+            DrawText(p, sw3/2 - MeasureText(p, 80)/2,     sh3/3,     80, (Color){255,220,80,255});
+            const char *h = "P TO RESUME    ESC TO MAIN MENU";
+            DrawText(h, sw3/2 - MeasureText(h, 18)/2, sh3/3 + 110, 18, (Color){200,200,200,220});
+        }
     }
 
     if (g_gs==GS_MENU) {
@@ -3587,12 +4200,182 @@ static void StepFrame(void) {
         const char *st="[ ENTER  /  CLICK  TO  START ]";
         if (sinf(GetTime()*3.f)>0)
             DrawText(st,sw2/2-MeasureText(st,22)/2,sh2*3/4,22,RED);
-        const char *bt="[ B FOR BOSS TEST ]";
-        DrawText(bt,sw2/2-MeasureText(bt,16)/2,sh2*3/4+36,16,(Color){200,120,120,255});
-        const char *mt="[ M FOR MUTANT TEST ]";
-        DrawText(mt,sw2/2-MeasureText(mt,16)/2,sh2*3/4+58,16,(Color){180,120,200,255});
-        const char *kt="[ K FOR MECH TEST ]";
-        DrawText(kt,sw2/2-MeasureText(kt,16)/2,sh2*3/4+80,16,(Color){120,140,210,255});
+        const char *at="[ A FOR ARENA - PICK YOUR ENEMY ]";
+        DrawText(at,sw2/2-MeasureText(at,18)/2,sh2*3/4+36,18,(Color){240,200,80,255});
+        const char *sb="[ S FOR SPRITE BROWSER ]";
+        DrawText(sb,sw2/2-MeasureText(sb,16)/2,sh2*3/4+62,16,(Color){180,180,200,255});
+        DrawFPS(10,10);
+    } else if (g_gs == GS_PICK_ENEMY) {
+        // Enemy picker screen — show a big preview of the currently-selected
+        // enemy with their walk cycle animating, and the attack frame in a
+        // side panel. Player navigates with ← → / 1-7 and confirms with
+        // ENTER / SPACE / click.
+        int sw2=GetScreenWidth(), sh2=GetScreenHeight();
+        ClearBackground((Color){8, 6, 12, 255});
+        // Title
+        const char *title = "ARENA - PICK YOUR ENEMY";
+        DrawText(title, sw2/2 - MeasureText(title, 36)/2, 48, 36, (Color){240,200,80,255});
+
+        // Enemy metadata table — slots 0..9 are full in-game; 10..12 are
+        // preview-only (sprites loaded, arena spawn works, but melee AI as a
+        // placeholder until proper behaviours are wired in).
+        static const char *enemyBlurb[] = {
+            "Standard cleaver-swinging chef.",
+            "Beefy melee threat. Tanky but slow.",
+            "Glass cannon. Closes the gap fast.",
+            "Boss tier. Massive HP, huge hitbox.",
+            "Wafen-SS officer with MP40. Fast hitscan.",
+            "Lobs purple energy balls at you.",
+            "Heavy mech, splash-damage rockets.",
+            "Doom shotgunner. Hitscan tracer fire.",
+            "Floating fireball spitter. Wave 2+.",
+            "Cyber Demon - boss-tier rocket spammer.",
+            "[PREVIEW] Revenant - skeleton, melee placeholder.",
+            "[PREVIEW] Lost Soul - fast charging head.",
+            "[PREVIEW] Pain Elemental - floating mob spawner."
+        };
+        static const char *enemyNamesExt[] = {
+            "CHEF", "HEAVY CHEF", "FAST CHEF", "BOSS CHEF",
+            "SS GUARD", "MUTANT", "MECH",
+            "SOLDIER", "CACODEMON", "CYBER DEMON",
+            "REVENANT", "LOST SOUL", "PAIN ELEMENTAL"
+        };
+
+        // Preview animation: walk frames cycle at ~5 fps. For 8-rotation
+        // enemies (SS, mutant, mech) the rotation slot also cycles 0..7
+        // every ~1.6s so the model "spins" through every facing — single-
+        // rotation chef variants keep the walk-only animation.
+        //
+        // Doom rotation indexing: slots 0..4 are unique sprites (front, ¾,
+        // side, ¾-back, back); 5..7 are slots 3,2,1 mirrored (so a full
+        // 360° rotation cycles 0→1→2→3→4→3'→2'→1'→0).
+        int t = g_pickerIdx;
+        if (t < 0) t = 0; if (t > 12) t = 12;
+        int walkFrame = (int)(g_pickerT * 5.f) % 4;
+        int rotIdx    = (int)(g_pickerT * 5.f) % 8;
+        static const int   rotSlot[8]  = {0, 1, 2, 3, 4, 3, 2, 1};
+        static const bool  rotFlip[8]  = {false,false,false,false,false,true,true,true};
+        int slot = rotSlot[rotIdx];
+        bool flip = rotFlip[rotIdx];
+
+        // The attack-frame panel cycles too — single-frame enemies alternate
+        // between the attack pose and a walk frame so the swing reads as a
+        // windup-strike loop. Mutant and mech have 2 native attack frames
+        // (charge/fire and L/R-arm fire respectively), so they cycle between
+        // those two poses instead. ~2.5 Hz / 0.4s per phase.
+        bool atkPhase = ((int)(g_pickerT * 2.5f)) & 1;
+        Texture2D walkTex = {0}, atkTex = {0};
+        bool walkFlip = false;
+        if (t == 0 && g_chefOK) {
+            walkTex = g_chefTex[walkFrame];
+            atkTex  = (atkPhase && g_chefAtkOK) ? g_chefAtkTex : g_chefTex[walkFrame];
+        }
+        else if (t == 1 && g_tormOK) {
+            walkTex = g_tormTex[walkFrame];
+            atkTex  = (atkPhase && g_tormAtkOK) ? g_tormAtkTex : g_tormTex[walkFrame];
+        }
+        else if (t == 2 && g_schOK) {
+            walkTex = g_schTex[walkFrame];
+            atkTex  = (atkPhase && g_schAtkOK) ? g_schAtkTex : g_schTex[walkFrame];
+        }
+        else if (t == 3 && g_bossOK) {
+            walkTex = g_bossTex[walkFrame];
+            atkTex  = (atkPhase && g_bossAtkOK) ? g_bossAtkTex : g_bossTex[walkFrame];
+        }
+        else if (t == 4 && g_cultOK) {
+            walkTex  = g_cultWalk[walkFrame].rot[slot];
+            walkFlip = flip;
+            atkTex   = (atkPhase && g_cultAtkOK) ? g_cultAtk.rot[0] : g_cultWalk[walkFrame].rot[0];
+        }
+        else if (t == 5 && g_mutOK) {
+            walkTex  = g_mutWalk[walkFrame].rot[slot];
+            walkFlip = flip;
+            // Mutant: cycle E (charge) ↔ G (fire) — both real attack frames.
+            atkTex   = g_mutAtkOK
+                       ? (atkPhase ? g_mutAtkFire.rot[0] : g_mutAtkCharge.rot[0])
+                       : g_mutWalk[walkFrame].rot[0];
+        }
+        else if (t == 6 && g_mechOK) {
+            walkTex  = g_mechWalk[walkFrame].rot[slot];
+            walkFlip = flip;
+            // Mech: cycle F (left arm fire) ↔ G (right arm fire) so it reads
+            // as a sustained barrage, matching its in-game attack pattern.
+            atkTex   = g_mechFireOK
+                       ? (atkPhase ? g_mechFireR.rot[0] : g_mechFireL.rot[0])
+                       : g_mechWalk[walkFrame].rot[0];
+        }
+        // PreviewEnemy slots 7..12 — DOOM-style + Beautiful-Doom imports.
+        // Walk frame count is per-enemy (whatever walk_N.png files exist),
+        // so the modulo is dynamic.
+        else if (t >= 7 && t <= 12) {
+            PreviewEnemy *pe = (t == 7)  ? &g_prevSoldier
+                              : (t == 8)  ? &g_prevCaco
+                              : (t == 9)  ? &g_prevCyber
+                              : (t == 10) ? &g_prevRevenant
+                              : (t == 11) ? &g_prevLostSoul
+                                          : &g_prevPainElem;
+            if (pe->ok) {
+                int idx = (int)(g_pickerT * 5.f) % pe->walkCount;
+                walkTex = pe->walk[idx];
+                if (atkPhase && pe->atkCount > 0) {
+                    int ai = (int)(g_pickerT * 8.f) % pe->atkCount;
+                    atkTex = pe->atk[ai];
+                } else {
+                    atkTex = pe->walk[idx];
+                }
+            }
+        }
+
+        // Big walk preview centred-left — flip horizontally when showing
+        // a mirrored rotation so the spin reads correctly all the way round.
+        const float previewH = 320.f;
+        if (walkTex.id) {
+            float aspect = (float)walkTex.width / (float)walkTex.height;
+            float pw = previewH * aspect, ph = previewH;
+            float px = sw2*0.30f - pw*0.5f;
+            float py = sh2*0.45f - ph*0.5f;
+            Rectangle src = {0, 0, (float)walkTex.width, (float)walkTex.height};
+            if (walkFlip) src.width = -src.width;
+            DrawTexturePro(walkTex, src,
+                (Rectangle){px, py, pw, ph},
+                (Vector2){0,0}, 0.f, WHITE);
+        }
+        // Attack frame on the right
+        const float atkH = 240.f;
+        if (atkTex.id) {
+            float aspect = (float)atkTex.width / (float)atkTex.height;
+            float aw = atkH * aspect, ah = atkH;
+            float ax = sw2*0.70f - aw*0.5f;
+            float ay = sh2*0.45f - ah*0.5f;
+            DrawText("ATTACK", (int)(sw2*0.70f) - MeasureText("ATTACK",16)/2, (int)(ay - 22), 16, (Color){180,180,180,255});
+            DrawRectangle((int)(ax-6), (int)(ay-6), (int)(aw+12), (int)(ah+12), (Color){20,16,28,200});
+            DrawTexturePro(atkTex,
+                (Rectangle){0,0,(float)atkTex.width,(float)atkTex.height},
+                (Rectangle){ax, ay, aw, ah},
+                (Vector2){0,0}, 0.f, WHITE);
+        } else {
+            DrawText("(no attack frame)", (int)(sw2*0.70f) - 70, sh2/2 - 8, 14, (Color){120,120,120,255});
+        }
+
+        // Selected name + blurb
+        const char *name = enemyNamesExt[t];
+        DrawText(name, sw2/2 - MeasureText(name, 56)/2, (int)(sh2*0.45f + previewH*0.5f + 24), 56, (Color){255,220,90,255});
+        const char *blurb = enemyBlurb[t];
+        DrawText(blurb, sw2/2 - MeasureText(blurb, 18)/2, (int)(sh2*0.45f + previewH*0.5f + 90), 18, (Color){200,200,200,220});
+
+        // Selector dots — 7 markers along bottom, current one highlighted
+        for (int i = 0; i < 10; i++) {
+            int cx = sw2/2 - (10*22)/2 + i*22 + 11;
+            int cy = sh2 - 80;
+            Color c = (i == t) ? (Color){255,220,90,255} : (Color){90,90,100,255};
+            DrawCircle(cx, cy, (i == t) ? 8 : 5, c);
+        }
+
+        // Hints
+        const char *hint1 = "<- / ->  OR  1-7 TO PICK";
+        const char *hint2 = "ENTER / SPACE / CLICK TO START   |   ESC TO BACK";
+        DrawText(hint1, sw2/2 - MeasureText(hint1,16)/2, sh2 - 56, 16, (Color){180,180,180,255});
+        DrawText(hint2, sw2/2 - MeasureText(hint2,14)/2, sh2 - 30, 14, (Color){140,140,140,255});
         DrawFPS(10,10);
     } else if (g_gs==GS_DEAD) {
         int sw2=GetScreenWidth(),sh2=GetScreenHeight();
@@ -3925,6 +4708,54 @@ int main(int argc, char **argv) {
 
         InitHUD(appBase);  // Doom mugshot etc — implemented in hud.c
 
+        // DOOM-style + Beautiful-Doom enemies — types 7..12. Each folder has
+        // walk_N / atk_N / pain_N / death_N PNG sequences; load as many as
+        // exist (capped per array). Same sprites back the arena picker
+        // preview AND the in-game render.
+        //   7  soldier      8  caco        9  cyber
+        //   10 revenant    11 lostsoul   12 painelem
+        {
+            char fp[700];
+            const char *folders[6] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem"};
+            PreviewEnemy *previews[6] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
+                                         &g_prevRevenant, &g_prevLostSoul, &g_prevPainElem};
+            for (int p = 0; p < 6; p++) {
+                PreviewEnemy *pe = previews[p];
+                pe->walkCount = pe->atkCount = pe->painCount = pe->deathCount = 0;
+                pe->ok = false;
+                struct { Texture2D *arr; int *count; int max; const char *prefix; } sets[4] = {
+                    { pe->walk,  &pe->walkCount,  PREV_WALK_MAX,  "walk"  },
+                    { pe->atk,   &pe->atkCount,   PREV_ATK_MAX,   "atk"   },
+                    { pe->pain,  &pe->painCount,  PREV_PAIN_MAX,  "pain"  },
+                    { pe->death, &pe->deathCount, PREV_DEATH_MAX, "death" },
+                };
+                for (int s = 0; s < 4; s++) {
+                    for (int i = 0; i < sets[s].max; i++) {
+                        snprintf(fp, sizeof(fp), "%smonsters/preview/%s/%s_%d.png",
+                                 appBase, folders[p], sets[s].prefix, i);
+                        Texture2D tx = LoadTexture(fp);
+                        if (tx.id == 0) break;
+                        SetTextureFilter(tx, TEXTURE_FILTER_POINT);
+                        SetTextureWrap  (tx, TEXTURE_WRAP_CLAMP);
+                        sets[s].arr[(*sets[s].count)++] = tx;
+                    }
+                }
+                pe->ok = (pe->walkCount > 0);
+            }
+        }
+
+        // Beautiful-Doom YBL7 animated blood-splat (19 frames A..S, ~15 fps).
+        {
+            char fp[700];
+            g_bloodSplatOK = true;
+            for (int i = 0; i < BLOOD_SPLAT_FRAMES; i++) {
+                snprintf(fp, sizeof(fp), "%sblood/YBL7%c0.png", appBase, 'A' + i);
+                g_bloodSplatTex[i] = LoadTexture(fp);
+                if (g_bloodSplatTex[i].id == 0) { g_bloodSplatOK = false; continue; }
+                SetTextureFilter(g_bloodSplatTex[i], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_bloodSplatTex[i], TEXTURE_WRAP_CLAMP);
+            }
+        }
 
         // Chef death animation (G→H→I→J, freezes on J)
         {
@@ -4053,6 +4884,14 @@ int main(int argc, char **argv) {
                 SetTextureWrap  (g_bossPainTex, TEXTURE_WRAP_CLAMP);
                 g_bossPainOK = true;
             }
+            // Attack frame (cleaver mid-swing) — flashes during ATTACK windup
+            snprintf(fp, sizeof(fp), "%smonsters/BTCNE0.png", appBase);
+            g_bossAtkTex = LoadTexture(fp);
+            if (g_bossAtkTex.id) {
+                SetTextureFilter(g_bossAtkTex, TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_bossAtkTex, TEXTURE_WRAP_CLAMP);
+                g_bossAtkOK = true;
+            }
             // Death frames: G → H → I → J (freeze on J)
             const char *dnames[4] = {"BTCNG0.png","BTCNH0.png","BTCNI0.png","BTCNJ0.png"};
             g_bossDeathOK = true;
@@ -4065,58 +4904,47 @@ int main(int argc, char **argv) {
             }
         }
 
-        // CULTIST (type 4) — SSCT* WolfenDoom occult sprites. 8-directional.
-        // Naming: SSCT<frame><rot> for unique rotations 1 and 5,
-        //         SSCT<frame><rot1><frame><rot2> for the mirror pairs (2/8, 3/7, 4/6).
-        // Loads A-D (walk), E (pain), I0..M0 (death). Per DirFrame:
-        //   slot 0 = rot 1 (front)   — file SSCT<F>1.png
-        //   slot 1 = rot 2/8         — file SSCT<F>2<F>8.png  (flip for rot 8)
-        //   slot 2 = rot 3/7         — file SSCT<F>3<F>7.png  (flip for rot 7)
-        //   slot 3 = rot 4/6         — file SSCT<F>4<F>6.png  (flip for rot 6)
-        //   slot 4 = rot 5 (back)    — file SSCT<F>5.png
+        // CULTIST slot (type 4) — swapped from SSCT occult sprites to PARA*
+        // Wafen-SS officer (nazis_ss/) so the firing animation actually
+        // matches the gameplay. PARA uses individual files per rotation
+        // (PARA<L><1..8>.png), so we load the front + 4 unique rotations
+        // and flip 6/7/8 at draw time. State letters per the WolfenDoom
+        // DECORATE: A-D walk, E aim, F pre-fire, G fire (muzzle flash),
+        // H pain, I-M death sequence (single rotation).
         {
             char fp[700];
-            // Helper inlined: load one DirFrame for a given letter into `df`.
-            // Returns false (and leaves df.ok=false) if any of the 5 PNGs miss.
-            // Open-coded because lambdas aren't a thing in C and the call is local.
-            #define LOAD_DIRFRAME(letter, dfPtr) do {                                   \
-                DirFrame *df = (dfPtr); df->ok = false;                                 \
-                const char *suf[5];                                                     \
-                char s2[8], s3[8], s4[8];                                               \
-                snprintf(s2, 8, "%c2%c8", letter, letter);                              \
-                snprintf(s3, 8, "%c3%c7", letter, letter);                              \
-                snprintf(s4, 8, "%c4%c6", letter, letter);                              \
-                char s1[8], s5[8];                                                      \
-                snprintf(s1, 8, "%c1", letter);                                         \
-                snprintf(s5, 8, "%c5", letter);                                         \
-                suf[0] = s1; suf[1] = s2; suf[2] = s3; suf[3] = s4; suf[4] = s5;        \
-                bool ok = true;                                                         \
-                for (int _r = 0; _r < 5; _r++) {                                        \
-                    snprintf(fp, sizeof(fp), "%smonsters/SSCT%s.png", appBase, suf[_r]); \
-                    df->rot[_r] = LoadTexture(fp);                                      \
-                    if (df->rot[_r].id == 0) { ok = false; continue; }                  \
-                    SetTextureFilter(df->rot[_r], TEXTURE_FILTER_POINT);                \
-                    SetTextureWrap  (df->rot[_r], TEXTURE_WRAP_CLAMP);                  \
-                }                                                                       \
-                df->ok = ok;                                                            \
+            #define LOAD_SS_FRAME(letter, dfPtr) do {                                    \
+                DirFrame *df = (dfPtr); df->ok = false;                                  \
+                bool ok = true;                                                          \
+                for (int _r = 0; _r < 5; _r++) {                                         \
+                    snprintf(fp, sizeof(fp), "%smonsters/nazis_ss/PARA%c%d.png",         \
+                             appBase, (letter), _r + 1);                                 \
+                    df->rot[_r] = LoadTexture(fp);                                       \
+                    if (df->rot[_r].id == 0) { ok = false; continue; }                   \
+                    SetTextureFilter(df->rot[_r], TEXTURE_FILTER_POINT);                 \
+                    SetTextureWrap  (df->rot[_r], TEXTURE_WRAP_CLAMP);                   \
+                }                                                                        \
+                df->ok = ok;                                                             \
             } while (0)
 
             const char letters[4] = {'A','B','C','D'};
             g_cultOK = true;
             for (int i = 0; i < 4; i++) {
-                LOAD_DIRFRAME(letters[i], &g_cultWalk[i]);
+                LOAD_SS_FRAME(letters[i], &g_cultWalk[i]);
                 if (!g_cultWalk[i].ok) g_cultOK = false;
             }
-            LOAD_DIRFRAME('E', &g_cultPain);
+            LOAD_SS_FRAME('H', &g_cultPain);   // SS pain frame (was 'E' for SSCT)
             g_cultPainOK = g_cultPain.ok;
+            LOAD_SS_FRAME('G', &g_cultAtk);    // firing pose with muzzle flash
+            g_cultAtkOK = g_cultAtk.ok;
 
-            #undef LOAD_DIRFRAME
+            #undef LOAD_SS_FRAME
 
             // Death — single rotation, frames I0..M0.
-            const char *dnames[5] = {"SSCTI0.png","SSCTJ0.png","SSCTK0.png","SSCTL0.png","SSCTM0.png"};
+            const char *dnames[5] = {"PARAI0.png","PARAJ0.png","PARAK0.png","PARAL0.png","PARAM0.png"};
             g_cultDeathOK = true;
             for (int i = 0; i < 5; i++) {
-                snprintf(fp, sizeof(fp), "%smonsters/%s", appBase, dnames[i]);
+                snprintf(fp, sizeof(fp), "%smonsters/nazis_ss/%s", appBase, dnames[i]);
                 g_cultDeathTex[i] = LoadTexture(fp);
                 if (g_cultDeathTex[i].id == 0) { g_cultDeathOK = false; continue; }
                 SetTextureFilter(g_cultDeathTex[i], TEXTURE_FILTER_POINT);
@@ -4219,29 +5047,70 @@ int main(int argc, char **argv) {
     float amb[4]={0.40f,0.32f,0.46f,1.f};
     SetShaderValue(g_shader,u_ambient,amb,SHADER_UNIFORM_VEC4);
 
-    // Try to load the bundled BRIK texture first; fall back to procedural.
-    Texture2D tBrick;
+    // Wall textures: load all 6 candidates (BRIK_B01 + the five DOOM-style-Game
+    // wall1..5). Each cell is hashed into one of these slots in BuildWallMesh,
+    // so the level uses a mix of textures every run instead of a single
+    // repeating brick. tWalls[i] is the texture for wall slot i; tBrick aliases
+    // the first valid one and is reused for platforms.
+    Texture2D tWalls[WALL_TEX_COUNT] = {0};
+    Texture2D tBrick = {0};
     {
         char fp[700];
-        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sprites/textures/BRIK_B01.png",
-                 AppDir());
-        tBrick = LoadTexture(fp);
+        const char *walls[WALL_TEX_COUNT] = {
+            "sprites/textures/BRIK_B01.png",
+            "sprites/textures/wall1.png",
+            "sprites/textures/wall2.png",
+            "sprites/textures/wall3.png",
+            "sprites/textures/wall4.png",
+            "sprites/textures/wall5.png",
+        };
+        for (int i = 0; i < WALL_TEX_COUNT; i++) {
+            snprintf(fp, sizeof(fp), "%s" RES_PREFIX "%s", AppDir(), walls[i]);
+            tWalls[i] = LoadTexture(fp);
+            if (tWalls[i].id) {
+                GenTextureMipmaps(&tWalls[i]);
+                SetTextureFilter(tWalls[i], TEXTURE_FILTER_TRILINEAR);
+                SetTextureWrap  (tWalls[i], TEXTURE_WRAP_REPEAT);
+                if (tBrick.id == 0) tBrick = tWalls[i];
+            }
+        }
+        // Last-resort fallback: procedural brick fills all slots that failed.
         if (tBrick.id == 0) {
             tBrick = MkBrick();
+            for (int i = 0; i < WALL_TEX_COUNT; i++) tWalls[i] = tBrick;
         } else {
-            GenTextureMipmaps(&tBrick);
-            SetTextureFilter(tBrick, TEXTURE_FILTER_TRILINEAR);
-            SetTextureWrap  (tBrick, TEXTURE_WRAP_REPEAT);
+            for (int i = 0; i < WALL_TEX_COUNT; i++) {
+                if (tWalls[i].id == 0) tWalls[i] = tBrick;
+            }
         }
     }
     Texture2D tFloor = MkFloor();
-    Texture2D tCeil  = MkCeil();
+    // Ceiling: prefer DOOM-style-Game's sky.png panoramic if available, else
+    // fall back to the procedural starfield/ceiling texture.
+    Texture2D tCeil;
+    {
+        char fp[700];
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sprites/textures/sky.png", AppDir());
+        tCeil = LoadTexture(fp);
+        if (tCeil.id == 0) {
+            tCeil = MkCeil();
+        } else {
+            GenTextureMipmaps(&tCeil);
+            SetTextureFilter(tCeil, TEXTURE_FILTER_TRILINEAR);
+            SetTextureWrap  (tCeil, TEXTURE_WRAP_REPEAT);
+        }
+    }
 
-    Mesh wm = BuildWallMesh();
-    g_wallModel  = MakeShaderModel(wm, tBrick);
+    ComputeWallSlots();
+    for (int i = 0; i < WALL_TEX_COUNT; i++) {
+        Mesh wm = BuildWallMesh(i, WALL_TEX_COUNT);
+        g_wallModels[i] = MakeShaderModel(wm, tWalls[i]);
+    }
     Mesh fm = BuildPlaneMesh(0.f,  (float)COLS*CELL/4.f, (float)ROWS*CELL/4.f, false);
     g_floorModel = MakeShaderModel(fm, tFloor);
-    Mesh cm = BuildPlaneMesh(WALL_H, (float)COLS*CELL/6.f, (float)ROWS*CELL/6.f, true);
+    // Ceiling: UV span = 1×1 so the panoramic sky texture stretches once
+    // across the whole ceiling instead of tiling across the map.
+    Mesh cm = BuildPlaneMesh(WALL_H, 1.f, 1.f, true);
     g_ceilModel  = MakeShaderModel(cm, tCeil);
 
     // Shared unit cube for platforms — lit via custom shader, textured with brick
@@ -4267,7 +5136,8 @@ int main(int argc, char **argv) {
 
     while (!WindowShouldClose()) StepFrame();
 
-    UnloadModel(g_wallModel); UnloadModel(g_floorModel); UnloadModel(g_ceilModel);
+    for (int i = 0; i < WALL_TEX_COUNT; i++) UnloadModel(g_wallModels[i]);
+    UnloadModel(g_floorModel); UnloadModel(g_ceilModel);
     UnloadModel(g_platModel);
     UnloadTexture(tBrick); UnloadTexture(tFloor); UnloadTexture(tCeil);
     for (int w=0;w<4;w++) {
@@ -4280,6 +5150,7 @@ int main(int argc, char **argv) {
     for (int i=0;i<5;i++) if (g_ammoTex[i].id)   UnloadTexture(g_ammoTex[i]);
     if (g_teslaPickupTex.id) UnloadTexture(g_teslaPickupTex);
     ShutdownHUD();
+    for (int i=0;i<BLOOD_SPLAT_FRAMES;i++) if (g_bloodSplatTex[i].id) UnloadTexture(g_bloodSplatTex[i]);
     for (int i=0;i<4;i++) if (g_chefTex[i].id)      UnloadTexture(g_chefTex[i]);
     for (int i=0;i<4;i++) if (g_chefDeathTex[i].id) UnloadTexture(g_chefDeathTex[i]);
     if (g_chefPainTex.id) UnloadTexture(g_chefPainTex);
@@ -4306,6 +5177,7 @@ int main(int argc, char **argv) {
     for (int i=0;i<4;i++) if (g_bossTex[i].id)      UnloadTexture(g_bossTex[i]);
     for (int i=0;i<5;i++) if (g_bossDeathTex[i].id) UnloadTexture(g_bossDeathTex[i]);
     if (g_bossPainTex.id) UnloadTexture(g_bossPainTex);
+    if (g_bossAtkTex.id)  UnloadTexture(g_bossAtkTex);
     UnloadShader(g_shader);
     UnloadSound(g_sPistol); UnloadSound(g_sShotgun); UnloadSound(g_sRocket);
     UnloadSound(g_sExplode); UnloadSound(g_sHurt); UnloadSound(g_sPickup);
