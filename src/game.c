@@ -1676,11 +1676,15 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             g_bossInterlude = true;
             if (g_sNextWaveOK) { SetSoundVolume(g_sNextWave, 1.5f); PlaySound(g_sNextWave); }
             // Wave-specific bosses:
-            //   wave 2  -> cyber demon (type 9)
-            //   wave 3  -> spider mastermind (type 16)
-            //   else    -> regular chef boss (type 3)
+            //   wave 2   -> cyber demon (type 9), the iconic spectacle
+            //   wave 3+  -> spider mastermind (type 16), recurring big boss
+            //   wave 1   -> chef boss fallback (this branch shouldn't fire
+            //               on wave 1 in practice — included for safety)
+            // Wave-scaling (hm = 1 + wave*0.12) auto-buffs the spider's
+            // 1500 base HP so he doesn't get trivial later: ~2400 HP at
+            // wave 5, ~3100 at wave 9, etc.
             int bt = (g_wave == 2) ? 9
-                   : (g_wave == 3) ? 16
+                   : (g_wave >= 3) ? 16
                    :                 3;
             const char *bmsg = (bt == 9)  ? "-- CYBER DEMON --"
                              : (bt == 16) ? "-- SPIDER MASTERMIND --"
@@ -2588,11 +2592,13 @@ static void DrawEnemies(Camera3D cam) {
                     if (ai < 0) ai = 0;
                     if (ai >= pe->atkCount) ai = pe->atkCount - 1;
                     tex = pe->atk[ai];
-                } else if (e->type == 10 || e->type == 14 || e->type == 15) {
-                    // Revenant (10), Walking Eye (14), Baron (15) — walk_N
-                    // is a multi-pose front-only animation cycle. Time-
-                    // cycle so the enemy reads as walking; sprite always
-                    // faces the camera.
+                } else if (e->type == 10 || e->type == 14
+                        || e->type == 15 || e->type == 16) {
+                    // Revenant (10), Walking Eye (14), Baron (15),
+                    // Spider Mastermind (16) — walk_N is a multi-pose
+                    // front-only animation cycle. Time-cycle so the
+                    // enemy reads as walking; sprite always faces the
+                    // camera.
                     int af = (int)(e->legT * 0.45f) % pe->walkCount;
                     if (af < 0) af += pe->walkCount;
                     tex = pe->walk[af];
