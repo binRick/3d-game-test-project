@@ -4211,6 +4211,7 @@ static FilePathList  g_sbList;
 static bool          g_sbHasList = false;
 static Texture2D     g_sbTex;
 static bool          g_sbHasTex  = false;
+static float         g_sbScroll  = 0.f;     // sidebar scroll offset, pixels
 // Filter buffer — indices into g_sbList.paths[] for files whose basename
 // starts with the entry's prefix. With a NULL/empty prefix every path
 // passes through. Sized for freedoom's 1329-file flat sprites/ folder
@@ -4267,6 +4268,11 @@ static void SBOpen(void) {
     g_sbActive = true;
     if (g_sbFolder < 0 || g_sbFolder >= SB_FOLDER_COUNT) g_sbFolder = 0;
     SBLoadFolder();
+    // Free the OS cursor so the sidebar list can be clicked. SBClose
+    // returns to GS_MENU where the cursor is already visible, so no
+    // explicit re-hide on close is needed.
+    EnableCursor();
+    ShowCursor();
 }
 
 static void SBClose(void) {
@@ -4281,6 +4287,40 @@ static void SBStep(void) {
         g_gs = GS_MENU;  // ESC always lands on the main menu
         return;
     }
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+
+    // ── Layout ──────────────────────────────────────────────────────────
+    // Sidebar on the left lists every SB_FOLDERS entry; main viewport on
+    // the right shows the currently-loaded sprite.
+    const int sidebarW = 280;
+    const int rowH     = 22;
+    const int listX    = 12;
+    const int listY    = 60;
+    const int listH    = sh - listY - 12;
+
+    // Mouse-wheel scroll inside the sidebar.
+    Vector2 mp = GetMousePosition();
+    bool mouseInSidebar = (mp.x >= 0 && mp.x < (float)sidebarW);
+    float wheel = GetMouseWheelMove();
+    if (mouseInSidebar && wheel != 0.f) {
+        g_sbScroll -= wheel * rowH * 3.f;
+    }
+    int totalListPx = SB_FOLDER_COUNT * rowH;
+    float maxScroll = (float)(totalListPx > listH ? totalListPx - listH : 0);
+    if (g_sbScroll < 0.f)        g_sbScroll = 0.f;
+    if (g_sbScroll > maxScroll)  g_sbScroll = maxScroll;
+
+    // Click-to-pick on a sidebar row.
+    if (mouseInSidebar && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+        && mp.y >= (float)listY && mp.y < (float)(listY + listH)) {
+        int rowI = (int)((mp.y - (float)listY + g_sbScroll) / (float)rowH);
+        if (rowI >= 0 && rowI < SB_FOLDER_COUNT && rowI != g_sbFolder) {
+            g_sbFolder = rowI;
+            SBLoadFolder();
+        }
+    }
+
+    // Keyboard nav still works for files + folder paging.
     if (IsKeyPressed(KEY_LEFT))  { g_sbFile--; SBLoadFile(); }
     if (IsKeyPressed(KEY_RIGHT)) { g_sbFile++; SBLoadFile(); }
     if (IsKeyPressed(KEY_LEFT_BRACKET))  {
@@ -4294,19 +4334,81 @@ static void SBStep(void) {
     if (IsKeyPressed(KEY_EQUAL) && g_sbZoom < 12) g_sbZoom++;
     if (IsKeyPressed(KEY_MINUS) && g_sbZoom > 1)  g_sbZoom--;
 
+    // Click in the main viewport — left half = prev file, right half = next.
+    if (!mouseInSidebar && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (mp.x < (float)((sidebarW + sw) / 2)) g_sbFile--;
+        else                                     g_sbFile++;
+        SBLoadFile();
+    }
+
     BeginDrawing();
     ClearBackground((Color){25, 25, 35, 255});
-    int sw = GetScreenWidth(), sh = GetScreenHeight();
 
-    // Centred sprite at current zoom.
+    // Auto-scroll the sidebar so the currently-selected folder is in view.
+    {
+        int rowTop = g_sbFolder * rowH;
+        int rowBot = rowTop + rowH;
+        if ((float)rowTop < g_sbScroll) g_sbScroll = (float)rowTop;
+        if ((float)rowBot > g_sbScroll + (float)listH) g_sbScroll = (float)(rowBot - listH);
+        if (g_sbScroll > maxScroll) g_sbScroll = maxScroll;
+        if (g_sbScroll < 0.f) g_sbScroll = 0.f;
+    }
+
+    // ── Sidebar ────────────────────────────────────────────────────────
+    DrawRectangle(0, 0, sidebarW, sh, (Color){15, 15, 25, 240});
+    DrawRectangle(sidebarW, 0, 2, sh, (Color){80, 200, 120, 200});
+    DrawText("SPRITE GROUPS", 12, 18, 18, (Color){240, 200, 80, 255});
+    DrawText("(scroll / click)", 12, 38, 12, (Color){140, 140, 160, 220});
+
+    BeginScissorMode(0, listY, sidebarW, listH);
+    for (int i = 0; i < SB_FOLDER_COUNT; i++) {
+        int y = listY + i * rowH - (int)g_sbScroll;
+        if (y > sh) break;
+        if (y + rowH < listY) continue;
+        bool current = (i == g_sbFolder);
+        bool hover   = mouseInSidebar
+                       && mp.y >= (float)y && mp.y < (float)(y + rowH);
+        if (current) {
+            DrawRectangle(0, y, sidebarW, rowH, (Color){70, 90, 50, 220});
+        } else if (hover) {
+            DrawRectangle(0, y, sidebarW, rowH, (Color){40, 40, 60, 200});
+        }
+        const SBEntry *e = &SB_FOLDERS[i];
+        const char *lab = e->label;
+        if (!lab) {
+            lab = strrchr(e->path, '/');
+            lab = lab ? lab + 1 : e->path;
+        }
+        Color txt = current ? (Color){255, 255, 200, 255}
+                  : hover   ? (Color){240, 240, 240, 255}
+                            : (Color){200, 200, 220, 230};
+        DrawText(lab, listX, y + 4, 14, txt);
+    }
+    EndScissorMode();
+
+    // Scrollbar indicator on the sidebar's right edge.
+    if (totalListPx > listH) {
+        float frac    = g_sbScroll / (float)(totalListPx);
+        float thumbH  = (float)listH * (float)listH / (float)totalListPx;
+        float thumbY  = (float)listY + frac * (float)listH;
+        DrawRectangle(sidebarW - 6, listY, 4, listH, (Color){30, 30, 40, 200});
+        DrawRectangle(sidebarW - 6, (int)thumbY, 4, (int)thumbH,
+                      (Color){180, 180, 200, 220});
+    }
+
+    // ── Main viewport ─────────────────────────────────────────────────
+    int viewX = sidebarW;
+    int viewW = sw - sidebarW;
+
     if (g_sbHasTex && g_sbTex.id) {
         int dw = g_sbTex.width  * g_sbZoom;
         int dh = g_sbTex.height * g_sbZoom;
-        DrawTextureEx(g_sbTex, (Vector2){(sw - dw) * 0.5f, (sh - dh) * 0.5f},
+        DrawTextureEx(g_sbTex, (Vector2){viewX + (viewW - dw) * 0.5f,
+                                         (sh - dh) * 0.5f},
                       0.f, (float)g_sbZoom, WHITE);
     }
 
-    // Top header — folder label + index counts.
+    // Header above the sprite — current label + counters.
     const SBEntry *e = &SB_FOLDERS[g_sbFolder];
     const char *label = e->label;
     if (!label) {
@@ -4316,23 +4418,21 @@ static void SBStep(void) {
     char hdr[256];
     int fileCount = g_sbFilteredCount;
     int fileNum   = (fileCount > 0) ? g_sbFile + 1 : 0;
-    snprintf(hdr, sizeof(hdr), "FOLDER [%d/%d] %s   FILE %d/%d",
-             g_sbFolder + 1, SB_FOLDER_COUNT, label, fileNum, fileCount);
-    DrawText(hdr, 20, 20, 22, (Color){240, 200, 80, 255});
+    snprintf(hdr, sizeof(hdr), "%s   FILE %d/%d", label, fileNum, fileCount);
+    DrawText(hdr, viewX + 20, 20, 22, (Color){240, 200, 80, 255});
 
-    // Big filename label so the prefix is easy to read.
     if (g_sbHasList && fileCount > 0 && g_sbFile < fileCount) {
         int actual = g_sbFiltered[g_sbFile];
         const char *path = g_sbList.paths[actual];
         const char *fn = strrchr(path, '/');
         fn = fn ? fn + 1 : path;
-        DrawText(fn, 20, 50, 32, WHITE);
+        DrawText(fn, viewX + 20, 50, 32, WHITE);
     } else {
-        DrawText("(no PNGs in folder)", 20, 50, 28, RED);
+        DrawText("(no PNGs in folder)", viewX + 20, 50, 28, RED);
     }
 
-    DrawText("LEFT/RIGHT file   [ ] folder   - / + zoom   ESC/F8 exit",
-             20, sh - 28, 16, (Color){180, 180, 200, 255});
+    DrawText("CLICK row to pick group   CLICK viewport L/R for file   - / + zoom   ESC exit",
+             viewX + 20, sh - 28, 14, (Color){180, 180, 200, 255});
     EndDrawing();
 }
 
