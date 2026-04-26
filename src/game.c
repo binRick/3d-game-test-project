@@ -571,7 +571,7 @@ static bool     g_sFirstBloodOK = false;
 // Enemy-sighted stingers — one is picked at random each time the first enemy
 // enters the player's view. Add more by appending to the ENEMY_ALERT_FILES
 // table; the loader skips any file that fails to load.
-#define ENEMY_ALERT_MAX 4
+#define ENEMY_ALERT_MAX 8
 static Sound    g_sEnemyAlert[ENEMY_ALERT_MAX];
 static bool     g_sEnemyAlertOK[ENEMY_ALERT_MAX] = {0};
 static int      g_sEnemyAlertCount = 0;
@@ -5135,6 +5135,7 @@ int main(int argc, char **argv) {
             "sounds/distant-enemy.mp3",
             "sounds/bombin-alert.mp3",
             "sounds/scary-alert.mp3",
+            "sounds/alien-scream.mp3",
         };
         int na = (int)(sizeof(ENEMY_ALERT_FILES)/sizeof(ENEMY_ALERT_FILES[0]));
         if (na > ENEMY_ALERT_MAX) na = ENEMY_ALERT_MAX;
