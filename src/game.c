@@ -332,6 +332,10 @@ static Model    g_wallModels[WALL_TEX_COUNT];
 static int      g_wallSlot[ROWS][COLS];   // texture slot per wall cell, -1 if not a wall
 static Model    g_floorModel, g_ceilModel;
 
+// Forward decl for the high-score POST. Implemented below in score_post.c
+// (web: EM_JS fetch; native: NSURLSession on macOS, no-op on Windows).
+static void SubmitScore(void);
+
 // Forward decl — TriggerMultiKill is defined alongside Shoot() but called
 // from the earlier rocket-splash branches in UpdBullets.
 static void TriggerMultiKill(void);
@@ -505,6 +509,21 @@ static int       g_pickerIdx = 0;     // current selection on the GS_PICK_ENEMY 
 static float     g_pickerT   = 0.f;   // time accumulator for preview anim
 static bool      g_paused    = false; // P toggles in-game pause; freezes Upd* calls
 static bool      g_quit      = false; // set by ESC on the main menu; main loop exits next iteration
+
+// High-score submission stats — accumulated through one game session and
+// posted to https://ironfist.ximg.app/api/scores on death (or skip via
+// ESC on the initials screen). Reset in InitGame.
+static int       g_statShots    = 0;
+static float     g_statDamage   = 0.f;
+static int       g_statPickups  = 0;
+static float     g_statTime     = 0.f;
+// Three-character initials entry on the death screen. Letters A-Z and
+// digits 0-9; arrows cycle the highlighted slot, letter/digit keys type
+// directly. ENTER submits, ESC skips submission.
+static char      g_initials[4]    = "AAA";
+static int       g_initialsPos    = 0;
+static bool      g_initialsDone   = false;  // true after submit-or-skip
+static bool      g_initialsSubmitted = false; // true if posted (vs skipped)
 static bool      g_bossInterlude = false;  // true between waves while a boss is up
 
 static Sound    g_sPistol, g_sShotgun, g_sRocket, g_sExplode;
@@ -1127,6 +1146,7 @@ static void UpdPicks(void) {
             // Don't grab a health pickup if we're already at full HP
             if (pk->type == 0 && g_p.hp >= g_p.maxHp) continue;
             pk->active=false;
+            g_statPickups++;  // high-score stat
             if      (pk->type == 0 && g_sHealthPickupOK) PlaySound(g_sHealthPickup);
             else if (pk->type == 4 && g_sMGPickupOK)     PlaySound(g_sMGPickup);
             else                                         PlaySound(g_sPickup);
@@ -1624,6 +1644,9 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
 
 static void DmgEnemy(int i, float d) {
     Enemy *e=&g_e[i]; if (!e->active || e->dying) return;
+    // High-score stat: count damage that landed on a live target. Cap at
+    // remaining HP so overkill doesn't inflate the number.
+    g_statDamage += (d > e->hp) ? e->hp : d;
     e->hp-=d; e->flashT=0.12f; e->state=ES_CHASE;
     if (e->hp<=0) KillEnemy(i);
 }
@@ -3020,6 +3043,9 @@ static void Shoot(void) {
     if (w==1&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);return;}
     if (w==2&&g_p.rockets<=0){PlaySound(g_sEmpty);return;}
     if (w==3&&g_p.cells<=0){PlaySound(g_sEmpty);return;}
+    // High-score stat: count one shot per actual fire (shotgun pellets and
+    // tesla chain bolts are still one user-perceived "shot").
+    g_statShots++;
     // Shotgun sound is deferred until after the pellet loop so we can make it
     // LOUDER when the shot didn't actually kill an enemy (no kill stinger plays).
     if (w==0){g_p.shells--;}
@@ -3713,6 +3739,16 @@ static void UpdPlayer(float dt, Camera3D *cam) {
 // ── INIT ─────────────────────────────────────────────────────────────────────
 static void InitGame(void) {
     srand((unsigned)time(NULL));
+    // Reset high-score submission stats for the new run.
+    g_statShots = 0;
+    g_statDamage = 0.f;
+    g_statPickups = 0;
+    g_statTime = 0.f;
+    g_initialsPos = 0;
+    g_initialsDone = false;
+    g_initialsSubmitted = false;
+    // Preserve initials across runs so a recurring player doesn't have to
+    // retype "AAA" every time. Defaults to "AAA" on first run.
     // Preserve facing direction across runs — without this, every restart
     // snaps yaw back to 0 (which faces the corner wall from the spawn point)
     // regardless of where the player was looking. First-run default: face
@@ -3841,6 +3877,49 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
 // StepFrame after main has returned (the while-loop model doesn't work in a
 // single-threaded browser context).
 static Camera3D g_cam;
+
+// ── HIGH-SCORE SUBMISSION ───────────────────────────────────────────────────
+// Build the per-run JSON payload for the leaderboard API and POST it.
+// Web build: emscripten-side fetch via EM_JS (no curl, no native lib).
+// macOS native: NSURLSession via the Objective-C bridge in score_post.m.
+// Windows: no-op for now (could add WinHTTP later if it matters).
+#ifdef __EMSCRIPTEN__
+EM_JS(void, IronFistPostScoreWeb, (const char *json), {
+    fetch('https://ironfist.ximg.app/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: UTF8ToString(json)
+    });
+});
+#elif defined(__APPLE__)
+extern void IronFistPostScoreMacOS(const char *json);  // src/score_post.m
+#endif
+
+static const char *ScoreWeaponName(int w) {
+    return (w == 0) ? "shotgun"
+         : (w == 1) ? "machinegun"
+         : (w == 2) ? "launcher"
+         : (w == 3) ? "tesla"
+         :            "unknown";
+}
+
+static void SubmitScore(void) {
+    char json[512];
+    snprintf(json, sizeof(json),
+        "{\"initials\":\"%c%c%c\",\"score\":%d,\"kills\":%d,\"wave\":%d,"
+        "\"weapon\":\"%s\",\"time\":%.1f,\"pickups\":%d,\"shots\":%d,\"damage\":%d}",
+        g_initials[0], g_initials[1], g_initials[2],
+        g_p.score, g_p.kills, g_wave,
+        ScoreWeaponName(g_p.weapon),
+        (double)g_statTime, g_statPickups, g_statShots, (int)g_statDamage);
+#ifdef __EMSCRIPTEN__
+    IronFistPostScoreWeb(json);
+#elif defined(__APPLE__)
+    IronFistPostScoreMacOS(json);
+#else
+    (void)json;  // Windows: not yet wired
+#endif
+}
 
 // ── SPRITE BROWSER (debug, F8) ──────────────────────────────────────────────
 // Flip through every PNG in a curated list of source-asset folders so we
@@ -4051,6 +4130,8 @@ static void StepFrame(void) {
             InitGame();
         }
     } else if (g_gs==GS_PLAY) {
+        // Time-played stat — accumulate while actually in-play (not paused).
+        if (!g_paused) g_statTime += dt;
         if (IsKeyPressed(KEY_ESCAPE)){g_gs=GS_MENU;}
         // P toggles a hard pause — Upd* calls and the visibility-stinger
         // logic are gated below so enemies freeze, projectiles hang, and
@@ -4151,11 +4232,54 @@ static void StepFrame(void) {
         }
         }  // end if (!g_paused) — pause gate from above
     } else if (g_gs==GS_DEAD) {
-        if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
-        // ESC on the death screen quits the app — same exit ramp as ESC
-        // on the main menu. The death screen is already terminal; one
-        // keypress to bail out feels right.
-        if (IsKeyPressed(KEY_ESCAPE)) g_quit = true;
+        if (!g_initialsDone) {
+            // Initials entry. Up/down cycle the highlighted slot through
+            // A-Z then 0-9; left/right move between slots; letter and
+            // digit keys type directly and auto-advance; backspace steps
+            // back; ENTER submits the score; ESC skips submission.
+            if (IsKeyPressed(KEY_LEFT))  g_initialsPos = (g_initialsPos + 2) % 3;
+            if (IsKeyPressed(KEY_RIGHT)) g_initialsPos = (g_initialsPos + 1) % 3;
+            if (IsKeyPressed(KEY_UP)) {
+                char c = g_initials[g_initialsPos];
+                c = (c == 'Z') ? '0' : (c == '9') ? 'A' : c + 1;
+                g_initials[g_initialsPos] = c;
+            }
+            if (IsKeyPressed(KEY_DOWN)) {
+                char c = g_initials[g_initialsPos];
+                c = (c == '0') ? 'Z' : (c == 'A') ? '9' : c - 1;
+                g_initials[g_initialsPos] = c;
+            }
+            for (int k = KEY_A; k <= KEY_Z; k++) {
+                if (IsKeyPressed(k)) {
+                    g_initials[g_initialsPos] = (char)('A' + (k - KEY_A));
+                    if (g_initialsPos < 2) g_initialsPos++;
+                }
+            }
+            for (int k = KEY_ZERO; k <= KEY_NINE; k++) {
+                if (IsKeyPressed(k)) {
+                    g_initials[g_initialsPos] = (char)('0' + (k - KEY_ZERO));
+                    if (g_initialsPos < 2) g_initialsPos++;
+                }
+            }
+            if (IsKeyPressed(KEY_BACKSPACE)) {
+                if (g_initialsPos > 0) g_initialsPos--;
+                g_initials[g_initialsPos] = 'A';
+            }
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)) {
+                SubmitScore();
+                g_initialsSubmitted = true;
+                g_initialsDone = true;
+            }
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                // Skip submission — go straight to the restart prompt.
+                g_initialsDone = true;
+            }
+        } else {
+            if (IsKeyPressed(KEY_ENTER)||IsKeyPressed(KEY_SPACE)) InitGame();
+            // ESC on the (post-initials) death screen quits the app —
+            // same exit ramp as ESC on the main menu.
+            if (IsKeyPressed(KEY_ESCAPE)) g_quit = true;
+        }
     }
 
     BeginDrawing();
@@ -4438,10 +4562,45 @@ static void StepFrame(void) {
         const char *d="YOU DIED";
         DrawText(d,sw2/2-MeasureText(d,88)/2+4,sh2/3+4,88,(Color){80,0,0,255});
         DrawText(d,sw2/2-MeasureText(d,88)/2,sh2/3,88,RED);
-        char sc2[64]; snprintf(sc2,64,"SCORE: %d     WAVE: %d",g_p.score,g_wave);
-        DrawText(sc2,sw2/2-MeasureText(sc2,24)/2,sh2/2+10,24,YELLOW);
-        if (sinf(GetTime()*3.f)>0)
-            DrawText("[ ENTER  /  SPACE  TO  PLAY  AGAIN ]",sw2/2-190,sh2*2/3,20,WHITE);
+        char sc2[80];
+        int mins = (int)(g_statTime / 60.f);
+        int secs = (int)g_statTime % 60;
+        snprintf(sc2,80,"SCORE %d   WAVE %d   KILLS %d   %d:%02d",
+                 g_p.score, g_wave, g_p.kills, mins, secs);
+        DrawText(sc2,sw2/2-MeasureText(sc2,22)/2,sh2/3+100,22,YELLOW);
+
+        if (!g_initialsDone) {
+            const char *prompt = "ENTER YOUR INITIALS";
+            DrawText(prompt, sw2/2 - MeasureText(prompt, 28)/2, sh2/2 + 10, 28, WHITE);
+            // Three big char boxes; highlighted slot has a yellow border.
+            const int cellW = 64, cellH = 84, gap = 24;
+            const int total = 3*cellW + 2*gap;
+            int sx = sw2/2 - total/2;
+            int by = sh2/2 + 50;
+            for (int i = 0; i < 3; i++) {
+                int bx = sx + i*(cellW+gap);
+                Color box = (i == g_initialsPos) ? (Color){255,220,80,255}
+                                                 : (Color){120,120,130,255};
+                DrawRectangleLines(bx, by, cellW, cellH, box);
+                DrawRectangleLines(bx-1, by-1, cellW+2, cellH+2, box);
+                char ch[2] = {g_initials[i], 0};
+                int tw = MeasureText(ch, 64);
+                DrawText(ch, bx + cellW/2 - tw/2, by + 8, 64, WHITE);
+            }
+            const char *h1 = "UP/DOWN cycle    LEFT/RIGHT pick slot    A-Z 0-9 to type";
+            DrawText(h1, sw2/2 - MeasureText(h1, 16)/2, by + cellH + 14, 16, (Color){200,200,210,230});
+            const char *h2 = "ENTER submit    ESC skip";
+            DrawText(h2, sw2/2 - MeasureText(h2, 18)/2, by + cellH + 40, 18, (Color){180,255,180,240});
+        } else {
+            const char *status = g_initialsSubmitted ? "SCORE SUBMITTED" : "SCORE NOT SUBMITTED";
+            Color statusCol = g_initialsSubmitted ? (Color){80,255,120,255}
+                                                   : (Color){200,200,200,200};
+            DrawText(status, sw2/2 - MeasureText(status, 22)/2, sh2/2 + 30, 22, statusCol);
+            if (sinf(GetTime()*3.f)>0)
+                DrawText("[ ENTER / SPACE  TO  PLAY  AGAIN ]",
+                         sw2/2 - MeasureText("[ ENTER / SPACE  TO  PLAY  AGAIN ]", 20)/2,
+                         sh2*2/3, 20, WHITE);
+        }
     }
     if (g_gs==GS_PLAY) DrawFPS(GetScreenWidth()-90, 10);
     EndDrawing();

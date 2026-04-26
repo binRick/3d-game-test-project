@@ -1,9 +1,14 @@
 CC      = clang
 RDIR    = $(shell brew --prefix raylib)
 CFLAGS  = -O2 -Wall -Wno-unused-result -I$(RDIR)/include
+# Foundation framework is needed by src/score_post.m (NSURLSession-based
+# high-score POST). Native macOS only — the web build skips score_post.m
+# and uses EM_JS fetch instead; the Windows target currently no-ops the
+# submission.
 LDFLAGS = -L$(RDIR)/lib -lraylib -lm \
           -framework OpenGL -framework Cocoa -framework IOKit \
-          -framework CoreAudio -framework CoreVideo -framework AudioToolbox
+          -framework CoreAudio -framework CoreVideo -framework AudioToolbox \
+          -framework Foundation
 
 APP     = IronFist3D.app
 BIN     = $(APP)/Contents/MacOS/IronFist3D
@@ -11,6 +16,8 @@ ICNS    = $(APP)/Contents/Resources/icon.icns
 SPRITES = $(APP)/Contents/Resources/sprites
 SOUNDS  = $(APP)/Contents/Resources/sounds
 SRC     = src/game.c src/hud.c src/effects.c src/level.c
+# Objective-C bridge for macOS-only NSURLSession HTTP POST.
+SRC_M   = src/score_post.m
 
 game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES) $(SOUNDS)
 	@echo "Built $(APP) — run with: open $(APP)"
@@ -21,8 +28,8 @@ $(APP)/Contents/MacOS:
 $(APP)/Contents/Resources:
 	mkdir -p $(APP)/Contents/Resources
 
-$(BIN): $(SRC) | $(APP)/Contents/MacOS
-	$(CC) $(CFLAGS) $(SRC) $(LDFLAGS) -o $(BIN)
+$(BIN): $(SRC) $(SRC_M) | $(APP)/Contents/MacOS
+	$(CC) $(CFLAGS) $(SRC) $(SRC_M) $(LDFLAGS) -o $(BIN)
 
 $(APP)/Contents/Info.plist: | $(APP)/Contents/MacOS
 	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $@
