@@ -11,4 +11,5 @@ game-sounds-main/
 third_party/*
 !third_party/Beautiful-Doom
 !third_party/DOOM-style-Game
+!third_party/bstone
 ~/.ironfist3d.cfg
