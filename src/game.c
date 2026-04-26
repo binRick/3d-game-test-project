@@ -403,7 +403,8 @@ static PreviewEnemy g_prevRevenant;
 static PreviewEnemy g_prevLostSoul;
 static PreviewEnemy g_prevPainElem;
 static PreviewEnemy g_prevSkel;       // freedoom squid character (type 13)
-static PreviewEnemy g_prevArchVile;   // freedoom arch-vile (type 14, resurrector)
+static PreviewEnemy g_prevArchVile;   // freedoom arch-vile / Walking Eye (type 14, resurrector)
+static PreviewEnemy g_prevBaron;      // freedoom Baron of Hell (type 15)
 #define DGAME_DEATH_FRAME_TIME 0.16f
 #define DGAME_ATK_FRAME_TIME   0.10f
 
@@ -696,15 +697,16 @@ static bool     g_lastHitHead = false;  // set while processing a headshot shot;
 // 9 = CYBER DEMON (boss-tier, rockets), 10 = REVENANT (preview/melee for
 // now), 11 = LOST SOUL (preview/charging melee), 12 = PAIN ELEMENTAL
 // (preview/floater), 13 = TENTACLE FIEND (preview/melee — freedoom skel),
-// 14 = WALKING EYE (resurrects nearby corpses; melee fallback).
-static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280, 700  };
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f, 7.0f};
-static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18,   25  };
-static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f, 1.7f, 2.5f};
-static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30,   30,   40  };
-static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f, 3.8f, 4.0f};
-static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450,  380,  1000};
-const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255},{60,200,180,255},{255,140,40,255}};
+// 14 = WALKING EYE (resurrects nearby corpses; freedoom vile),
+// 15 = BARON OF HELL (heavy armored bruiser, slow + tanky melee).
+static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280, 700, 600 };
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f, 7.0f, 4.5f};
+static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18,   25,   30  };
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f, 1.7f, 2.5f, 2.0f};
+static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30,   30,   40,   35  };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f, 3.8f, 4.0f, 4.0f};
+static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450,  380,  1000, 1500};
+const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255},{60,200,180,255},{255,140,40,255},{120,255,80,255}};
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
@@ -1424,7 +1426,8 @@ static const char *TypeName(int t) {
     return t==0 ? "CHEF"  : t==1 ? "HEAVY" : t==2 ? "FAST"  : t==3 ? "BOSS"
          : t==4 ? "CULT"  : t==5 ? "MUTNT" : t==6 ? "MECH"
          : t==7 ? "SOLDR" : t==8 ? "CACO"  : t==9 ? "CYBER"
-         : t==10 ? "REVN" : t==11 ? "LSOUL" : t==12 ? "PAINE" : t==13 ? "TFIND" : t==14 ? "VILE" : "?";
+         : t==10 ? "REVN" : t==11 ? "LSOUL" : t==12 ? "PAINE" : t==13 ? "TFIND"
+         : t==14 ? "VILE" : t==15 ? "BARON" : "?";
 }
 
 static void DebugLogTick(void) {
@@ -1558,7 +1561,7 @@ static void KillEnemy(int i) {
     }
     static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH",
                                 "SOLDIER","CACODEMON","CYBER DEMON","REVENANT","LOST SOUL","PAIN ELEMENTAL","TENTACLE FIEND",
-                                "WALKING EYE"};
+                                "WALKING EYE","BARON OF HELL"};
     int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
@@ -1583,7 +1586,8 @@ static void KillEnemy(int i) {
                        (t == 7) ? "SOLDIER" : (t == 8) ? "CACODEMON" :
                        (t == 9) ? "CYBER DEMON" :
                        (t == 13) ? "TENTACLE FIEND" :
-                       (t == 14) ? "WALKING EYE" : "TARGET";
+                       (t == 14) ? "WALKING EYE" :
+                       (t == 15) ? "BARON OF HELL" : "TARGET";
         }
         char dynLine[80];
         snprintf(dynLine, sizeof(dynLine), "FINAL %s - HUNT HIM DOWN!", survName);
@@ -1604,8 +1608,8 @@ static void KillEnemy(int i) {
         if (g_arenaMode) {
             int t = g_arenaType;
             int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon — solo respawn
-            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","WALKING EYES"};
-            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<15)?t:0]);
+            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","WALKING EYES","BARONS OF HELL"};
+            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<16)?t:0]);
             Msg(buf);
             for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
                 for (int tries = 0; tries < 120; tries++) {
@@ -2507,7 +2511,7 @@ static void DrawEnemies(Camera3D cam) {
         // they appear to spin in place. atk/pain/death are real animation
         // sequences and DO cycle on time. Caco (8) and Lost Soul (11) are
         // flying; Pain Elemental (12) is also a floater.
-        if (e->type >= 7 && e->type <= 14) {
+        if (e->type >= 7 && e->type <= 15) {
             PreviewEnemy *pe = (e->type == 7)  ? &g_prevSoldier
                               : (e->type == 8)  ? &g_prevCaco
                               : (e->type == 9)  ? &g_prevCyber
@@ -2515,7 +2519,8 @@ static void DrawEnemies(Camera3D cam) {
                               : (e->type == 11) ? &g_prevLostSoul
                               : (e->type == 12) ? &g_prevPainElem
                               : (e->type == 13) ? &g_prevSkel
-                                                : &g_prevArchVile;
+                              : (e->type == 14) ? &g_prevArchVile
+                                                : &g_prevBaron;
             if (pe->ok) {
                 // Reference (live walking) sprite height per type. Each
                 // frame's actual world height is scaled by tex.height /
@@ -2529,7 +2534,8 @@ static void DrawEnemies(Camera3D cam) {
                                   : (e->type == 11) ? 1.0f
                                   : (e->type == 12) ? 2.6f
                                   : (e->type == 13) ? 2.2f   // tentacle fiend
-                                                    : 2.6f;  // arch-vile (tall lanky)
+                                  : (e->type == 14) ? 2.6f   // walking eye
+                                                    : 2.8f;  // baron of hell
                 Texture2D tex = {0};
                 bool isCorpse = e->dying && pe->deathCount > 0;
                 bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
@@ -2544,12 +2550,11 @@ static void DrawEnemies(Camera3D cam) {
                     if (ai < 0) ai = 0;
                     if (ai >= pe->atkCount) ai = pe->atkCount - 1;
                     tex = pe->atk[ai];
-                } else if (e->type == 10 || e->type == 14) {
-                    // Revenant (10) and Walking Eye (14) — walk_N is a
-                    // multi-pose front-only animation cycle. Time-cycle
-                    // through them so the enemy reads as walking; the
-                    // sprite always faces the camera. (Other preview
-                    // enemies use rotation-indexed rendering instead.)
+                } else if (e->type == 10 || e->type == 14 || e->type == 15) {
+                    // Revenant (10), Walking Eye (14), Baron (15) — walk_N
+                    // is a multi-pose front-only animation cycle. Time-
+                    // cycle so the enemy reads as walking; sprite always
+                    // faces the camera.
                     int af = (int)(e->legT * 0.45f) % pe->walkCount;
                     if (af < 0) af += pe->walkCount;
                     tex = pe->walk[af];
@@ -3949,7 +3954,7 @@ static void InitGame(void) {
         // ARENA TEST: 8 enemies of g_arenaType. Boss arena uses fewer
         // (just 1) since they're tanky. KillEnemy respawns more.
         int t = g_arenaType;
-        if (t < 0) t = 0; if (t > 14) t = 14;
+        if (t < 0) t = 0; if (t > 15) t = 15;
         int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon are solo by default
         for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
             for (int tries = 0; tries < 120; tries++) {
@@ -4323,13 +4328,24 @@ static void SBStep(void) {
     // Keyboard nav still works for files + folder paging.
     if (IsKeyPressed(KEY_LEFT))  { g_sbFile--; SBLoadFile(); }
     if (IsKeyPressed(KEY_RIGHT)) { g_sbFile++; SBLoadFile(); }
-    if (IsKeyPressed(KEY_LEFT_BRACKET))  {
+    // UP/DOWN walk the sidebar folder list (horizontal arrows are for the
+    // file-within-folder strip; vertical matches the sidebar's layout).
+    // [ / ] do the same as a fallback for users on keyboards where the
+    // arrow cluster is awkward. Track when the folder change came from
+    // the keyboard so we only ensure-visibility in that case (mouse-wheel
+    // shouldn't jerk the view back to wherever the selection lives).
+    bool keyboardFolderChange = false;
+    if (IsKeyPressed(KEY_UP)
+        || IsKeyPressed(KEY_LEFT_BRACKET)) {
         g_sbFolder = (g_sbFolder + SB_FOLDER_COUNT - 1) % SB_FOLDER_COUNT;
         SBLoadFolder();
+        keyboardFolderChange = true;
     }
-    if (IsKeyPressed(KEY_RIGHT_BRACKET)) {
+    if (IsKeyPressed(KEY_DOWN)
+        || IsKeyPressed(KEY_RIGHT_BRACKET)) {
         g_sbFolder = (g_sbFolder + 1) % SB_FOLDER_COUNT;
         SBLoadFolder();
+        keyboardFolderChange = true;
     }
     if (IsKeyPressed(KEY_EQUAL) && g_sbZoom < 12) g_sbZoom++;
     if (IsKeyPressed(KEY_MINUS) && g_sbZoom > 1)  g_sbZoom--;
@@ -4344,8 +4360,13 @@ static void SBStep(void) {
     BeginDrawing();
     ClearBackground((Color){25, 25, 35, 255});
 
-    // Auto-scroll the sidebar so the currently-selected folder is in view.
-    {
+    // Only auto-scroll-to-selection on KEYBOARD folder change. If the user
+    // is mouse-wheeling, the view stays put — even when the highlighted
+    // row goes off-screen — so they can browse the full list freely and
+    // pick a different folder by clicking. Without this gate the per-
+    // frame auto-scroll yanked the view back to the selection and made
+    // upward wheel-scroll feel "stuck".
+    if (keyboardFolderChange) {
         int rowTop = g_sbFolder * rowH;
         int rowBot = rowTop + rowH;
         if ((float)rowTop < g_sbScroll) g_sbScroll = (float)rowTop;
@@ -4881,8 +4902,8 @@ static void StepFrame(void) {
         // to slots 0..9; slots 10/11/12 reachable only via arrows.
         g_pickerT += dt;
         if (IsKeyPressed(KEY_ESCAPE)) g_gs = GS_MENU;
-        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 14) % 15;
-        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 15;
+        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 15) % 16;
+        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 16;
         for (int k = 0; k < 10; k++) {
             // Number keys 1-9 + 0 (for slot 9) so all are reachable
             int key = (k == 9) ? KEY_ZERO : (KEY_ONE + k);
@@ -5250,14 +5271,15 @@ static void StepFrame(void) {
             "[PREVIEW] Lost Soul - fast charging head.",
             "[PREVIEW] Pain Elemental - floating mob spawner.",
             "[PREVIEW] Tentacle Fiend - armored cyborg w/ tentacles.",
-            "[PREVIEW] Arch-Vile - resurrects nearby corpses."
+            "[PREVIEW] Arch-Vile - resurrects nearby corpses.",
+            "[PREVIEW] Baron of Hell - tanky armored bruiser."
         };
         static const char *enemyNamesExt[] = {
             "CHEF", "HEAVY CHEF", "FAST CHEF", "BOSS CHEF",
             "SS GUARD", "MUTANT", "MECH",
             "SOLDIER", "CACODEMON", "CYBER DEMON",
             "REVENANT", "LOST SOUL", "PAIN ELEMENTAL", "TENTACLE FIEND",
-            "WALKING EYE"
+            "WALKING EYE", "BARON OF HELL"
         };
 
         // Preview animation: walk frames cycle at ~5 fps. For 8-rotation
@@ -5269,7 +5291,7 @@ static void StepFrame(void) {
         // side, ¾-back, back); 5..7 are slots 3,2,1 mirrored (so a full
         // 360° rotation cycles 0→1→2→3→4→3'→2'→1'→0).
         int t = g_pickerIdx;
-        if (t < 0) t = 0; if (t > 14) t = 14;
+        if (t < 0) t = 0; if (t > 15) t = 15;
         int walkFrame = (int)(g_pickerT * 5.f) % 4;
         int rotIdx    = (int)(g_pickerT * 5.f) % 8;
         static const int   rotSlot[8]  = {0, 1, 2, 3, 4, 3, 2, 1};
@@ -5326,7 +5348,7 @@ static void StepFrame(void) {
         // PreviewEnemy slots 7..12 — DOOM-style + Beautiful-Doom imports.
         // Walk frame count is per-enemy (whatever walk_N.png files exist),
         // so the modulo is dynamic.
-        else if (t >= 7 && t <= 14) {
+        else if (t >= 7 && t <= 15) {
             PreviewEnemy *pe = (t == 7)  ? &g_prevSoldier
                               : (t == 8)  ? &g_prevCaco
                               : (t == 9)  ? &g_prevCyber
@@ -5334,7 +5356,8 @@ static void StepFrame(void) {
                               : (t == 11) ? &g_prevLostSoul
                               : (t == 12) ? &g_prevPainElem
                               : (t == 13) ? &g_prevSkel
-                                          : &g_prevArchVile;
+                              : (t == 14) ? &g_prevArchVile
+                                          : &g_prevBaron;
             if (pe->ok) {
                 int idx = (int)(g_pickerT * 5.f) % pe->walkCount;
                 walkTex = pe->walk[idx];
@@ -5872,11 +5895,11 @@ int main(int argc, char **argv) {
         //   10 revenant    11 lostsoul   12 painelem
         {
             char fp[700];
-            const char *folders[8] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem", "skel", "archvile"};
-            PreviewEnemy *previews[8] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
+            const char *folders[9] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem", "skel", "archvile", "baron"};
+            PreviewEnemy *previews[9] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
                                          &g_prevRevenant, &g_prevLostSoul, &g_prevPainElem,
-                                         &g_prevSkel, &g_prevArchVile};
-            for (int p = 0; p < 8; p++) {
+                                         &g_prevSkel, &g_prevArchVile, &g_prevBaron};
+            for (int p = 0; p < 9; p++) {
                 PreviewEnemy *pe = previews[p];
                 pe->walkCount = pe->atkCount = pe->painCount = pe->deathCount = 0;
                 pe->ok = false;
