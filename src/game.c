@@ -593,8 +593,20 @@ static bool     g_sNextWaveOK = false;
 static Sound    g_sMG;          // machine gun firing sound
 static bool     g_sMGOK = false;
 static int      g_killsThisShot = 0;  // incremented by KillEnemy, reset around each shot/explosion
-static Music    g_music;          // looping background track (streamed)
-static bool     g_musicOK = false;
+// Alternating background-music playlist. Tracks are streamed (not loaded
+// into memory), play once each (looping=false), and the per-frame Update
+// block below swaps to the next when the current one ends. g_musicOK is
+// true when ANY track loaded — existing pause/volume/update guards still
+// short-circuit correctly when the user has no audio assets at all.
+#define MUSIC_TRACK_COUNT 2
+static Music    g_musicTracks[MUSIC_TRACK_COUNT];
+static bool     g_musicTracksOK[MUSIC_TRACK_COUNT] = {false};
+static int      g_musicIdx = 0;
+static bool     g_musicOK = false;        // true if any track loaded
+static const char *g_musicFiles[MUSIC_TRACK_COUNT] = {
+    "sounds/hell-march.mp3",
+    "sounds/funeral-queen-mary.mp3",
+};
 static float    g_musicVol = 0.36f;  // adjustable via - / + (persisted to disk)
 #define VOL_CONFIG_FILE ".ironfist3d.cfg"
 
@@ -4432,14 +4444,33 @@ static void StepFrame(void) {
     }
 #endif
     if (g_musicOK) {
-        UpdateMusicStream(g_music);   // feed the streaming decoder
-        // Music volume: - / + (and numpad equivalents)
+        UpdateMusicStream(g_musicTracks[g_musicIdx]);   // feed the streaming decoder
+        // Track alternation: when the current track has played out (and we're
+        // not just paused), advance to the next loaded track. Tracks have
+        // looping=false so IsMusicStreamPlaying flips false at the end.
+        if (!g_paused && !IsMusicStreamPlaying(g_musicTracks[g_musicIdx])) {
+            int next = (g_musicIdx + 1) % MUSIC_TRACK_COUNT;
+            // Skip past tracks that failed to load
+            for (int tries = 0; tries < MUSIC_TRACK_COUNT; tries++) {
+                if (g_musicTracksOK[next]) break;
+                next = (next + 1) % MUSIC_TRACK_COUNT;
+            }
+            if (g_musicTracksOK[next]) {
+                StopMusicStream(g_musicTracks[g_musicIdx]);
+                g_musicIdx = next;
+                SetMusicVolume(g_musicTracks[g_musicIdx], g_musicVol);
+                PlayMusicStream(g_musicTracks[g_musicIdx]);
+            }
+        }
+        // Music volume: - / + (and numpad equivalents) — apply to ALL tracks
+        // so the next-up track plays at the same level when we switch.
         bool vDown = IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT);
         bool vUp   = IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD);
         if (vDown) g_musicVol = fmaxf(0.f,  g_musicVol - 0.1f);
         if (vUp)   g_musicVol = fminf(1.5f, g_musicVol + 0.1f);
         if (vDown || vUp) {
-            SetMusicVolume(g_music, g_musicVol);
+            for (int i = 0; i < MUSIC_TRACK_COUNT; i++)
+                if (g_musicTracksOK[i]) SetMusicVolume(g_musicTracks[i], g_musicVol);
             SaveMusicVol();  // persist to disk
             char buf[48]; snprintf(buf, 48, "MUSIC VOL %d%%", (int)(g_musicVol * 100.f + 0.5f));
             Msg(buf);
@@ -4499,8 +4530,8 @@ static void StepFrame(void) {
             // Mute the streaming music while paused — raylib's pause/resume
             // properly halts the decoder so the buffer doesn't drift.
             if (g_musicOK) {
-                if (g_paused) PauseMusicStream(g_music);
-                else          ResumeMusicStream(g_music);
+                if (g_paused) PauseMusicStream(g_musicTracks[g_musicIdx]);
+                else          ResumeMusicStream(g_musicTracks[g_musicIdx]);
             }
             // SetMasterVolume(0) silences ALL one-shot Sounds too — without
             // this, in-flight SFX (chef-die, mech-rocket, tesla buzz, etc.)
@@ -5204,16 +5235,30 @@ int main(int argc, char **argv) {
             g_sDieAltOK[i] = (g_sDieAlt[i].frameCount > 0);
         }
 
-        // Streamed background music (C&C Red Alert — Hell March)
+        // Streamed background music — alternating playlist (Hell March,
+        // then Funeral March of Queen Mary, then back). Both tracks load
+        // at startup so swapping between them at end-of-track is just a
+        // PlayMusicStream call, no disk hit mid-game.
         LoadMusicVol();  // restore user's last-saved volume from ~/.ironfist3d.cfg
-        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/hell-march.mp3", AppDir());
-        g_music = LoadMusicStream(fp);
-        g_musicOK = (g_music.frameCount > 0);
-        if (g_musicOK) {
-            g_music.looping = true;
-            SetMusicVolume(g_music, g_musicVol);  // under the gunfire / sfx
-            PlayMusicStream(g_music);
+        g_musicOK = false;
+        for (int t = 0; t < MUSIC_TRACK_COUNT; t++) {
+            snprintf(fp, sizeof(fp), "%s" RES_PREFIX "%s", AppDir(), g_musicFiles[t]);
+            g_musicTracks[t] = LoadMusicStream(fp);
+            g_musicTracksOK[t] = (g_musicTracks[t].frameCount > 0);
+            if (g_musicTracksOK[t]) {
+                // looping=false so the per-frame block can detect end-of-
+                // track and advance to the next entry in the playlist.
+                g_musicTracks[t].looping = false;
+                SetMusicVolume(g_musicTracks[t], g_musicVol);
+                g_musicOK = true;
+            }
         }
+        // Start on whichever track is loaded first.
+        g_musicIdx = 0;
+        for (int t = 0; t < MUSIC_TRACK_COUNT; t++) {
+            if (g_musicTracksOK[t]) { g_musicIdx = t; break; }
+        }
+        if (g_musicOK) PlayMusicStream(g_musicTracks[g_musicIdx]);
     }
     srand((unsigned)time(NULL));
 
@@ -5827,7 +5872,12 @@ int main(int argc, char **argv) {
     if (g_sHealthPickupOK) UnloadSound(g_sHealthPickup);
     if (g_sMGPickupOK)     UnloadSound(g_sMGPickup);
     if (g_sOneLeftOK)      UnloadSound(g_sOneLeft);
-    if (g_musicOK) { StopMusicStream(g_music); UnloadMusicStream(g_music); }
+    for (int t = 0; t < MUSIC_TRACK_COUNT; t++) {
+        if (g_musicTracksOK[t]) {
+            StopMusicStream(g_musicTracks[t]);
+            UnloadMusicStream(g_musicTracks[t]);
+        }
+    }
     if (g_dbgLog) { fclose(g_dbgLog); g_dbgLog = NULL; }
     CloseAudioDevice(); CloseWindow();
     return 0;
