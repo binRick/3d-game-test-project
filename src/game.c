@@ -402,6 +402,7 @@ static PreviewEnemy g_prevCyber;
 static PreviewEnemy g_prevRevenant;
 static PreviewEnemy g_prevLostSoul;
 static PreviewEnemy g_prevPainElem;
+static PreviewEnemy g_prevSkel;       // freedoom squid character (type 13)
 #define DGAME_DEATH_FRAME_TIME 0.16f
 #define DGAME_ATK_FRAME_TIME   0.10f
 
@@ -693,15 +694,15 @@ static bool     g_lastHitHead = false;  // set while processing a headshot shot;
 // 7 = SOLDIER (Doom shotgunner, hitscan), 8 = CACODEMON (flying, fireball),
 // 9 = CYBER DEMON (boss-tier, rockets), 10 = REVENANT (preview/melee for
 // now), 11 = LOST SOUL (preview/charging melee), 12 = PAIN ELEMENTAL
-// (preview/floater).
-static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420  };
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f };
-static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18   };
-static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f };
-static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30   };
-static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f };
-static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450  };
-const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255}};
+// (preview/floater), 13 = TENTACLE FIEND (preview/melee — freedoom skel).
+static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280  };
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f };
+static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18   };
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f, 1.7f };
+static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30,   30   };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f, 3.8f };
+static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450,  380  };
+const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255},{60,200,180,255}};
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
@@ -1421,7 +1422,7 @@ static const char *TypeName(int t) {
     return t==0 ? "CHEF"  : t==1 ? "HEAVY" : t==2 ? "FAST"  : t==3 ? "BOSS"
          : t==4 ? "CULT"  : t==5 ? "MUTNT" : t==6 ? "MECH"
          : t==7 ? "SOLDR" : t==8 ? "CACO"  : t==9 ? "CYBER"
-         : t==10 ? "REVN" : t==11 ? "LSOUL" : t==12 ? "PAINE" : "?";
+         : t==10 ? "REVN" : t==11 ? "LSOUL" : t==12 ? "PAINE" : t==13 ? "TFIND" : "?";
 }
 
 static void DebugLogTick(void) {
@@ -1554,7 +1555,7 @@ static void KillEnemy(int i) {
         SpawnPick(e->pos.x+ox, e->pos.z+oz, t);
     }
     static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH",
-                                "SOLDIER","CACODEMON","CYBER DEMON","REVENANT","LOST SOUL","PAIN ELEMENTAL"};
+                                "SOLDIER","CACODEMON","CYBER DEMON","REVENANT","LOST SOUL","PAIN ELEMENTAL","TENTACLE FIEND"};
     int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
@@ -1577,7 +1578,8 @@ static void KillEnemy(int i) {
                        (t == 2) ? "FAST CHEF" : (t == 4) ? "CULTIST" :
                        (t == 5) ? "MUTANT" : (t == 6) ? "MECH" :
                        (t == 7) ? "SOLDIER" : (t == 8) ? "CACODEMON" :
-                       (t == 9) ? "CYBER DEMON" : "TARGET";
+                       (t == 9) ? "CYBER DEMON" :
+                       (t == 13) ? "TENTACLE FIEND" : "TARGET";
         }
         char dynLine[80];
         snprintf(dynLine, sizeof(dynLine), "FINAL %s - HUNT HIM DOWN!", survName);
@@ -1598,8 +1600,8 @@ static void KillEnemy(int i) {
         if (g_arenaMode) {
             int t = g_arenaType;
             int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon — solo respawn
-            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS"};
-            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<13)?t:0]);
+            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS"};
+            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<14)?t:0]);
             Msg(buf);
             for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
                 for (int tries = 0; tries < 120; tries++) {
@@ -2450,13 +2452,14 @@ static void DrawEnemies(Camera3D cam) {
         // they appear to spin in place. atk/pain/death are real animation
         // sequences and DO cycle on time. Caco (8) and Lost Soul (11) are
         // flying; Pain Elemental (12) is also a floater.
-        if (e->type >= 7 && e->type <= 12) {
+        if (e->type >= 7 && e->type <= 13) {
             PreviewEnemy *pe = (e->type == 7)  ? &g_prevSoldier
                               : (e->type == 8)  ? &g_prevCaco
                               : (e->type == 9)  ? &g_prevCyber
                               : (e->type == 10) ? &g_prevRevenant
                               : (e->type == 11) ? &g_prevLostSoul
-                                                : &g_prevPainElem;
+                              : (e->type == 12) ? &g_prevPainElem
+                                                : &g_prevSkel;
             if (pe->ok) {
                 // Reference (live walking) sprite height per type. Each
                 // frame's actual world height is scaled by tex.height /
@@ -2468,7 +2471,8 @@ static void DrawEnemies(Camera3D cam) {
                                   : (e->type == 9)  ? 3.4f
                                   : (e->type == 10) ? 2.4f
                                   : (e->type == 11) ? 1.0f
-                                                    : 2.6f;
+                                  : (e->type == 12) ? 2.6f
+                                                    : 2.2f;  // tentacle fiend
                 Texture2D tex = {0};
                 bool isCorpse = e->dying && pe->deathCount > 0;
                 bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
@@ -2483,6 +2487,13 @@ static void DrawEnemies(Camera3D cam) {
                     if (ai < 0) ai = 0;
                     if (ai >= pe->atkCount) ai = pe->atkCount - 1;
                     tex = pe->atk[ai];
+                } else if (e->type == 10) {
+                    // Revenant — walk_0..walk_7 are 8 RSKE animation
+                    // frames at FRONT rotation only. Time-cycle them so
+                    // he reads as walking; he always faces the camera.
+                    int af = (int)(e->legT * 0.45f) % pe->walkCount;
+                    if (af < 0) af += pe->walkCount;
+                    tex = pe->walk[af];
                 } else {
                     // Pick rotation slot from enemy facing vs player angle.
                     Vector3 facing;
@@ -3879,7 +3890,7 @@ static void InitGame(void) {
         // ARENA TEST: 8 enemies of g_arenaType. Boss arena uses fewer
         // (just 1) since they're tanky. KillEnemy respawns more.
         int t = g_arenaType;
-        if (t < 0) t = 0; if (t > 12) t = 12;
+        if (t < 0) t = 0; if (t > 13) t = 13;
         int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon are solo by default
         for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
             for (int tries = 0; tries < 120; tries++) {
@@ -4711,8 +4722,8 @@ static void StepFrame(void) {
         // to slots 0..9; slots 10/11/12 reachable only via arrows.
         g_pickerT += dt;
         if (IsKeyPressed(KEY_ESCAPE)) g_gs = GS_MENU;
-        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 12) % 13;
-        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 13;
+        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 13) % 14;
+        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 14;
         for (int k = 0; k < 10; k++) {
             // Number keys 1-9 + 0 (for slot 9) so all are reachable
             int key = (k == 9) ? KEY_ZERO : (KEY_ONE + k);
@@ -5078,13 +5089,14 @@ static void StepFrame(void) {
             "Cyber Demon - boss-tier rocket spammer.",
             "[PREVIEW] Revenant - skeleton, melee placeholder.",
             "[PREVIEW] Lost Soul - fast charging head.",
-            "[PREVIEW] Pain Elemental - floating mob spawner."
+            "[PREVIEW] Pain Elemental - floating mob spawner.",
+            "[PREVIEW] Tentacle Fiend - armored cyborg w/ tentacles."
         };
         static const char *enemyNamesExt[] = {
             "CHEF", "HEAVY CHEF", "FAST CHEF", "BOSS CHEF",
             "SS GUARD", "MUTANT", "MECH",
             "SOLDIER", "CACODEMON", "CYBER DEMON",
-            "REVENANT", "LOST SOUL", "PAIN ELEMENTAL"
+            "REVENANT", "LOST SOUL", "PAIN ELEMENTAL", "TENTACLE FIEND"
         };
 
         // Preview animation: walk frames cycle at ~5 fps. For 8-rotation
@@ -5096,7 +5108,7 @@ static void StepFrame(void) {
         // side, ¾-back, back); 5..7 are slots 3,2,1 mirrored (so a full
         // 360° rotation cycles 0→1→2→3→4→3'→2'→1'→0).
         int t = g_pickerIdx;
-        if (t < 0) t = 0; if (t > 12) t = 12;
+        if (t < 0) t = 0; if (t > 13) t = 13;
         int walkFrame = (int)(g_pickerT * 5.f) % 4;
         int rotIdx    = (int)(g_pickerT * 5.f) % 8;
         static const int   rotSlot[8]  = {0, 1, 2, 3, 4, 3, 2, 1};
@@ -5153,13 +5165,14 @@ static void StepFrame(void) {
         // PreviewEnemy slots 7..12 — DOOM-style + Beautiful-Doom imports.
         // Walk frame count is per-enemy (whatever walk_N.png files exist),
         // so the modulo is dynamic.
-        else if (t >= 7 && t <= 12) {
+        else if (t >= 7 && t <= 13) {
             PreviewEnemy *pe = (t == 7)  ? &g_prevSoldier
                               : (t == 8)  ? &g_prevCaco
                               : (t == 9)  ? &g_prevCyber
                               : (t == 10) ? &g_prevRevenant
                               : (t == 11) ? &g_prevLostSoul
-                                          : &g_prevPainElem;
+                              : (t == 12) ? &g_prevPainElem
+                                          : &g_prevSkel;
             if (pe->ok) {
                 int idx = (int)(g_pickerT * 5.f) % pe->walkCount;
                 walkTex = pe->walk[idx];
@@ -5692,10 +5705,11 @@ int main(int argc, char **argv) {
         //   10 revenant    11 lostsoul   12 painelem
         {
             char fp[700];
-            const char *folders[6] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem"};
-            PreviewEnemy *previews[6] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
-                                         &g_prevRevenant, &g_prevLostSoul, &g_prevPainElem};
-            for (int p = 0; p < 6; p++) {
+            const char *folders[7] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem", "skel"};
+            PreviewEnemy *previews[7] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
+                                         &g_prevRevenant, &g_prevLostSoul, &g_prevPainElem,
+                                         &g_prevSkel};
+            for (int p = 0; p < 7; p++) {
                 PreviewEnemy *pe = previews[p];
                 pe->walkCount = pe->atkCount = pe->painCount = pe->deathCount = 0;
                 pe->ok = false;
