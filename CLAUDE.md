@@ -153,12 +153,28 @@ sprites/
   luger/          — luger pistol frames (unused since pistol was removed, kept archived)
   mp40/           — MP40/rifle gun body + muzzle overlay (RIF*.png)
   panzerschreck/  — rocket launcher pose + explosion frames (PAN*/EXP*)
-  monsters/       — chef billboards: AFAB* (walk/pain/death), AODE* (2nd type, unused)
-  pickups/        — health (CHIKA, EASTA), ammo (SBOXA shells, MCLPA bullets, MCLPB MG rounds, MNRBB rockets)
+  tesla/          — tesla cannon viewmodel frames (charge/fire cycle)
+  monsters/       — chef billboards: AFAB*/TORM*/SCH2*/BTCN* (chefs + boss)
+                    plus PARA (SS), MTNT (mutant), MAVY (mech)
+  monsters/preview/ — DOOM-style-Game and Beautiful-Doom and freedoom imports:
+                    soldier/, caco/, cyber/, revenant/, lostsoul/, painelem/,
+                    skel/ (tentacle fiend), archvile/ (walking eye), baron/,
+                    spider/, chaingun/. Each has walk_N/atk_N/pain_N/death_N
+                    flat in the folder (NOT nested subdirs).
+  pickups/        — health (CHIKA, EASTA), ammo (SBOXA shells, MCLPA bullets,
+                    MCLPB MG rounds, MNRBB rockets), tesla unlock
+  pickups/quad/   — 6-frame Icon-of-Sin SCUB cube (QUAD damage)
+  pickups/speed/  — 4-frame freedoom Computer Map / PMAP (SPEED boost)
   crosshairs/     — per-weapon crosshair overrides (SHOT.png for shotgun)
+  hud/mugshot/    — Doom STF* mugshot tiers (5 health × 3 idle poses)
 sounds/
-  *.mp3           — all music + SFX (hell-march background, headshot/fatality/
-                    holy-shit/first-blood announcers, shotgun, chef-die, rocket-hit)
+  hell-march, funeral-queen-mary, soviet-march — 3-track in-game shuffle
+  title-music    — menu loop
+  *.mp3          — all SFX: shotgun-kill, mg-sound, launcher-shot, rocket-hit,
+                   chef-die*, first-blood, headshot, fatality, holy-shit,
+                   next-wave, distant-enemy, tesla-*, mech-rocket, mut-attack,
+                   ss-fire, soldier-mg, cyber-fire, chaingun (CPOS burst),
+                   player-ough, chef-hit, idle-sigh
 ```
 
 ### When the user adds new assets (IMPORTANT)
@@ -283,29 +299,81 @@ wiring a 5th weapon:
   preloaded via the Makefile's `--preload-file` directives, so no
   Makefile change is needed for assets.
 
-## Enemies (13 types, all share state machine PATROL/CHASE/ATTACK/DYING)
+## Enemies (18 types, all share state machine PATROL/CHASE/ATTACK/DYING)
 
 Stat tables are arrays indexed by `e->type` — `ET_HP[]`, `ET_SPD[]`,
 `ET_DMG[]`, `ET_RATE[]`, `ET_AR[]` (alert radius), `ET_ATK[]` (attack
 radius), `ET_SC[]` (score), `ET_COL[]` (minimap colour). All arrays MUST
-have 13 entries; bounds checks on `e->type < ARRAY_COUNT` guard the few
+have 18 entries; bounds checks on `e->type < ARRAY_COUNT` guard the few
 sites that access them via name lookup tables.
 
-| #  | Type           | Sprite source            | AI / attack                 | Notes |
-|----|----------------|--------------------------|-----------------------------|-------|
-| 0  | Chef           | sprites/monsters/AFAB*   | Melee cleaver               | Wave 1 staple |
-| 1  | Heavy chef     | sprites/monsters/TORM*   | Melee cleaver, slow         | |
-| 2  | Fast chef      | sprites/monsters/SCH2*   | Melee cleaver, fast         | |
-| 3  | Boss chef      | sprites/monsters/BTCN*   | Melee, big hitbox           | Between-wave interlude (except wave 2) |
-| 4  | SS guard       | sprites/monsters/PARA*   | Hitscan tracer + sparks     | 8-rotational, mirror pairs |
-| 5  | Mutant         | sprites/monsters/MTNT*   | Energy ball (SpawnEShot)    | 8-rotational |
-| 6  | Mech           | sprites/monsters/MAVY*   | Heavy rocket (SpawnEShotRocket) | 8-rotational, splash dmg, no death sprite (explodes + removed) |
-| 7  | Soldier        | sprites/monsters/preview/soldier/  | Hitscan tracer (cultist path) | DOOM-style-Game source |
-| 8  | Cacodemon      | sprites/monsters/preview/caco/     | Fireball, **flying y=1.5** | DOOM-style-Game · joins wave 2+ |
-| 9  | Cyber demon    | sprites/monsters/preview/cyber/    | Heavy rocket               | DOOM-style-Game · **wave 2 boss** (replaces type 3) |
-| 10 | Revenant       | sprites/monsters/preview/revenant/ | Melee placeholder          | Beautiful-Doom · arena-only preview, walks via `RSKEa1..h1` time-cycle |
-| 11 | Lost soul      | sprites/monsters/preview/lostsoul/ | Melee placeholder, **flying y=2.2** | Beautiful-Doom · arena-only preview |
-| 12 | Pain elemental | sprites/monsters/preview/painelem/ | Melee placeholder, **floats y=2.0** | Beautiful-Doom · arena-only preview |
+| #  | Type           | Sprite source                             | AI / attack                 | Notes |
+|----|----------------|-------------------------------------------|-----------------------------|-------|
+| 0  | Chef           | sprites/monsters/AFAB*                    | Melee cleaver               | Wave 1 staple |
+| 1  | Heavy chef     | sprites/monsters/TORM*                    | Melee cleaver, slow         | |
+| 2  | Fast chef      | sprites/monsters/SCH2*                    | Melee cleaver, fast         | |
+| 3  | Boss chef      | sprites/monsters/BTCN*                    | Melee, big hitbox           | Between-wave fallback (waves 2/3+ replaced) |
+| 4  | SS guard       | sprites/monsters/PARA*                    | Hitscan tracer + sparks     | 8-rotational, mirror pairs |
+| 5  | Mutant         | sprites/monsters/MTNT*                    | Energy ball (SpawnEShot)    | 8-rotational |
+| 6  | Mech           | sprites/monsters/MAVY*                    | Heavy rocket (SpawnEShotRocket) | 8-rotational, splash dmg, no death sprite (explodes + removed) |
+| 7  | Soldier        | sprites/monsters/preview/soldier/         | Hitscan tracer (cultist path) | DOOM-style-Game source |
+| 8  | Cacodemon      | sprites/monsters/preview/caco/            | Fireball, **flying y=1.5**  | DOOM-style-Game · joins wave 2+ |
+| 9  | Cyber demon    | sprites/monsters/preview/cyber/           | Heavy rocket                | DOOM-style-Game · **wave 2 boss** (replaces type 3) |
+| 10 | Revenant       | sprites/monsters/preview/revenant/        | Melee placeholder           | Beautiful-Doom · arena-only preview, time-cycle walk |
+| 11 | Lost soul      | sprites/monsters/preview/lostsoul/        | Melee placeholder, **flying y=2.2** | Beautiful-Doom · arena-only preview |
+| 12 | Pain elemental | sprites/monsters/preview/painelem/        | Melee placeholder, **floats y=2.0** | Beautiful-Doom · arena-only preview |
+| 13 | Tentacle fiend | sprites/monsters/preview/skel/            | Melee placeholder           | freedoom (squid character — *not* the original revenant) |
+| 14 | Walking eye    | sprites/monsters/preview/archvile/        | Resurrects nearby corpses   | freedoom (vile asset, renamed at user request — "it's a walking eye, not arch-vile") |
+| 15 | Baron of hell  | sprites/monsters/preview/baron/           | Tanky melee, big hitbox     | freedoom · 600 HP, time-cycle walk |
+| 16 | Spider mastermind | sprites/monsters/preview/spider/       | Chaingun walker, huge sprite| freedoom · **wave 3+ recurring boss** (replaces type 3 from wave 3 on); 4m sprite, feetBias 1.0m, 6 walk-cycle frames |
+| 17 | Chaingun zombie| sprites/monsters/preview/chaingun/        | Rapid hitscan burst         | freedoom CPOS · 16m atkR, 0.45s rate, 8 dmg per shot, isRanged so LOS-gated. Joins wave 2+ rolls. |
+
+### Boss interlude logic
+
+The between-waves boss is decided in `KillEnemy()` when `Alive() == 0`
+and `!g_bossInterlude`:
+
+```c
+int bt = (g_wave == 2) ? 9   // cyber demon
+       : (g_wave >= 3) ? 16  // spider mastermind (recurring)
+       :                 3;  // chef boss (wave 1 fallback)
+```
+
+Spider Mastermind scales with the wave HP buff (`hm = 1 + g_wave*0.12`),
+so his 1500 base HP grows to ~2400 at wave 5, ~3100 at wave 9. Don't
+remove this scaling or wave 8+ becomes a victory lap.
+
+### isRanged AI gating
+
+The per-tick attack dispatch in `UpdEnemies` keys off these flags:
+
+```c
+bool isMutant   = (e->type == 5);
+bool isMech     = (e->type == 6);
+bool isCaco     = (e->type == 8);
+bool isCyber    = (e->type == 9);
+bool isChaingun = (e->type == 17);
+bool isRanged = isMutant || isMech || isCaco || isCyber || isChaingun;
+```
+
+`isRanged` enables LOS gating (TeslaLOS muzzle→player) and exempts the
+y-gate so a flying or rooftop ranged enemy can still engage the player
+at floor level. New ranged enemies must opt in here, otherwise a wall
+between them and the player won't break their attack and they'll fire
+straight through it.
+
+### Walking Eye resurrection AI
+
+Type 14 has a special branch at the top of `UpdEnemies`:
+- Scans for nearby corpses (`e->dying && e->deathT > some threshold`)
+- On cooldown (~5s), picks one, plays a resurrect SFX, restores
+  `hp = maxHp`, clears `dying`, resets `deathT`
+- Resurrected enemy keeps its original type/stats — the eye doesn't
+  spawn new types, just re-animates whatever just died.
+
+This reverses the leaderboard kill count if the player tries to game it
+by farming pre-kills near a walking eye — kills bank when `KillEnemy`
+fires; the resurrected enemy must be killed *again* to score again.
 
 ### Flying enemy rules (types 8, 11, 12)
 
@@ -346,10 +414,19 @@ others. **Whenever you add a new enemy type N, touch ALL of these:**
 - `KillEnemy()` `names[]`               (kill banner)
 - arena respawn `names[]` + `<N` clamps (arena picker)
 - final-survivor name lookup `(t == N) ? "..."`
-- debug-log abbrev `t==N ? "..."`
+- debug-log abbrev in `TypeName()` `t==N ? "..."`
 - picker bounds `% (N+1)`, `if (t > N) t = N` clamps
+- picker left/right key wraps: `(g_pickerIdx + N) % (N+1)`
 - selector-dot count near the bottom of GS_PICK_ENEMY draw block
-  (currently a single `slots = ` constant — bump it!)
+  (`const int slots = N+1;` — bump it AND verify the spacing tier on
+  the next line is enough for the new count)
+
+**isRanged for ranged enemies (IMPORTANT):**
+- If the new enemy fires at distance, add it to the `isRanged` flags
+  block in `UpdEnemies` (`isMutant || isMech || isCaco || isCyber ||
+  isChaingun || ...`). Without this, LOS isn't checked and the enemy
+  fires through walls; also the y-gate stays active and a flying
+  ranged enemy can't shoot the player at floor level.
 
 **Hit-volume sites — 3 of them, miss one and the enemy is unkillable:**
 1. `Shoot()` per-pellet hitscan (shotgun, MG) — per-type `headY/headR/
@@ -395,6 +472,95 @@ enemy isn't taking damage — go fix the hit volumes.
   See=RSKE, Pain=REVP, Melee=SSKE, Death1=REVN, Death=REVM, XDeath=REVX,
   missile tracer=SKEB, tracer death=FBXP. Use the in-game sprite browser
   (S on main menu) to verify visually.
+
+## Animated pickup sprite pattern (QUAD / SPEED)
+
+The two power-ups (QUAD damage, SPEED boost) use a cycling-billboard
+treatment instead of the pulsing-sphere primitive the original
+implementation had. Pattern, in case a third power-up gets added:
+
+1. Drop N sprite frames into `sprites/pickups/<name>/<name>_0..<N-1>.png`
+2. Add globals near the existing `g_quadTex`:
+   ```c
+   #define FOO_FRAMES N
+   static Texture2D g_fooTex[FOO_FRAMES];
+   static int       g_fooTexCount = 0;
+   ```
+3. Load loop in `main()` near the QUAD load (sprite path
+   `pickups/<name>/<name>_<i>.png`, `SetTextureFilter POINT`,
+   `SetTextureWrap CLAMP`)
+4. In `DrawPickups`, replace the type-N sphere block with:
+   ```c
+   if (pk->type == TYPE_FOO) {
+       Color c = tc[pk->type];
+       Vector3 pos = pk->pos;
+       pos.y += sinf(t * 2.5f + (float)i) * 0.08f;     // bob
+       DrawCircle3D(pos, 0.65f, ..., Fade(c, 0.55f));   // halo ring 1
+       DrawCircle3D(pos, 0.55f, ..., Fade(c, 0.45f));   // halo ring 2
+       if (g_fooTexCount > 0) {
+           int frame = (int)(t * 5.f) % g_fooTexCount;
+           DrawBillboard(cam, g_fooTex[frame], pos, 0.7f, WHITE);
+       } else {
+           // fallback sphere if sprites failed to load
+       }
+       continue;
+   }
+   ```
+5. **Draw order**: pickups loop runs BEFORE `DrawEnemies(g_cam)` so the
+   billboard writes depth normally and a chef in front of the pickup
+   correctly occludes it. If you ship a sprite that "shows through"
+   enemies, the call moved.
+
+QUAD uses 6 frames at 5fps (Icon-of-Sin SCUBA0..F0), magenta halo.
+SPEED uses 4 frames at 5fps (freedoom PMAP a..d), cyan halo.
+
+## Music playlist (3-track shuffle + M-skip)
+
+In-game music is a 3-track random shuffle:
+- `sounds/hell-march.mp3` (C&C Red Alert)
+- `sounds/funeral-queen-mary.mp3` (Purcell, Wendy Carlos)
+- `sounds/soviet-march.mp3` (C&C Red Alert 3)
+
+Title screen plays a separate `sounds/title-music.mp3` loop until the
+player hits ENTER. On menu→play transition, the title track is stopped
+and a random in-game track starts; on track-end the next track is picked
+randomly from the **other** loaded tracks (no immediate repeats — if
+only one track loaded successfully, it loops).
+
+Pressing **M** during gameplay manually rotates to the next random
+track. A small "M-SKIP MUSIC" hint shows on the HUD so players know the
+key exists. Also gated on GS_PLAY (don't fire on menu).
+
+`Sound`-played stingers (announcer / chef vocals / fire samples) are
+unaffected — they go through `PlaySound` not the streamed music
+channel. Music volume is shared between music and sound output via
+`SetMusicVolume` / `SetMasterVolume`.
+
+## Rear-arc warning (always-on)
+
+When an enemy is alive within ±90° of the player's back-facing arc and
+within 25m, the HUD draws two cues:
+
+1. **Red triangle arrow** at the bottom of the screen (drawn in
+   `hud.c`), pointing at the closest rear threat. Size scales by
+   distance (closer = bigger), capped.
+2. **Minimap rear half tint** — the back semicircle of the minimap is
+   washed with a faint red overlay matching the same arc.
+
+Helper: `static int FindClosestRearEnemy(float range)` in `game.c`.
+Both indicators are always-on (no toggle command — earlier `warn`
+console toggles for A/B testing were removed in v1.3.18.2).
+
+## K-key speed-pickup candidate previewer (macOS dev only)
+
+Press **K** on the main menu to enter `g_spActive` mode. Cycles through
+a hardcoded list of 6 freedoom candidate prefixes (pinsa0 / megaa0 /
+soula0 / pmapa0 / pvisa0 / pstra0), each loaded as a 4-frame animation
+played at 5fps. Used during development to compare candidates side-by-
+side before picking one to wire as a new pickup. PMAP won the v1.3.19
+selection. macOS-only (paths absolute to `third_party/freedoom`).
+
+Keys: ←/→ candidate, - / + zoom, ESC exit.
 
 ## Level
 
@@ -504,22 +670,40 @@ or god mode will leak through them.
 
 ## Arena picker (A on main menu)
 
-`g_gs == GS_PICK_ENEMY`. 13 slots cycling sprite + attack-frame previews
-with the picker time accumulator `g_pickerT`. Slots 0..6 are full in-game
-enemies; 7..9 are full in-game enemies via DOOM-style-Game; 10..12 are
-preview-only (not in waves). ENTER spawns 8 of the picked type (or 1 for
-boss type 3 / cyber demon type 9). Uses `g_arenaMode` flag in the spawn /
+`g_gs == GS_PICK_ENEMY`. 18 slots cycling sprite + attack-frame previews
+with the picker time accumulator `g_pickerT`.
+
+- 0..6 are original full in-game enemies (chefs/SS/mutant/mech)
+- 7..9 are DOOM-style-Game (soldier/caco/cyber)
+- 10..12 are Beautiful-Doom preview-only (revenant/lostsoul/painelem,
+  placeholder melee AI)
+- 13 is freedoom tentacle fiend (placeholder melee)
+- 14 is walking eye (resurrects corpses, full AI)
+- 15 is baron of hell (full melee AI)
+- 16 is spider mastermind (full ranged AI; also wave 3+ boss)
+- 17 is chaingun zombie (full hitscan AI; also joins wave 2+ rolls)
+
+ENTER spawns 8 of the picked type — except for **bosses (types 3, 9, 16)
+where it spawns 1** so the arena reads as a boss fight rather than a
+hangar full of cyber demons. Uses `g_arenaMode` flag in the spawn /
 respawn paths to skip the wave system.
 
 ## Sprite browser (debug, S on main menu / F8 anywhere)
 
 `g_sbActive` flag swallows the entire frame in StepFrame and renders a
 single sprite at variable zoom from a hardcoded list of source folders
-(`SB_FOLDERS[]`). 23 folders covering Beautiful-Doom MONSTERS subdirs
-plus DOOM-style-Game npc subdirs. Used to identify which 4-letter prefix
-in a folder maps to which animation role.
+(`SB_FOLDERS[]`). Folders cover Beautiful-Doom MONSTERS, DOOM-style-Game
+npc, and the freedoom sprite trove (3000+ sprites in one folder, with
+prefix-based filter so you can isolate e.g. "cpos" or "spid"). Used to
+identify which 4-letter prefix in a folder maps to which animation role.
 
-Keys: ←/→ file, [ ] folder, - / + zoom, ESC/F8/S exit.
+UI: scrollable mouse-navigable sidebar listing folders. Mouse wheel
+scrolls the sidebar. Auto-scroll-to-selection runs ONLY on keyboard
+folder change (`[ ]`), not on mouse wheel — otherwise the wheel can't
+scroll up past the current selection.
+
+Keys: ←/→ file, [ ] folder, - / + zoom, ESC/F8/S exit. Mouse wheel
+scrolls sidebar. For freedoom: type a 4-letter prefix to filter.
 
 **macOS-only** — paths are absolute `/Users/.../third_party/...` which
 don't resolve in the WASM sandbox or a Windows build. The toggle key, the
@@ -550,21 +734,30 @@ raylib's default ESC-closes-window is disabled at startup with
 - GS_PLAY (in-game / paused) → `g_gs = GS_MENU`
 - GS_PICK_ENEMY (arena picker) → `g_gs = GS_MENU`
 - Sprite browser → close + `g_gs = GS_MENU`
+- Speed-pickup previewer → close + `g_gs = GS_MENU`
 
 Main loop is `while (!WindowShouldClose() && !g_quit) StepFrame();`.
 
 ## Third-party submodules (third_party/)
 
-Two are kept (whitelisted in `.gitignore` — everything else under
+Three are kept (whitelisted in `.gitignore` — everything else under
 `third_party/*` is gitignored):
 
 - `third_party/Beautiful-Doom` — GZDoom mod. Sprite source for the preview
-  enemies (revenant / lost soul / pain elemental). The `Z_BDoom/m_*.zc`
-  ZScript files document which prefix is which animation; read those when
-  porting a new enemy in.
+  enemies (revenant / lost soul / pain elemental) and the QUAD-damage
+  Icon-of-Sin SCUB cube pickup. The `Z_BDoom/m_*.zc` ZScript files document
+  which prefix is which animation; read those when porting a new enemy in.
 - `third_party/DOOM-style-Game` — Doom-style-Game project. Sprite source
   for soldier / cacodemon / cyber demon. Simpler folder layout (`idle/`,
   `walk/`, `attack/`, `pain/`, `death/` with rotation-numbered PNGs).
+- `third_party/freedoom` — BSD-licensed Doom-compatible sprite trove. Source
+  for tentacle fiend (skel*), walking eye / arch-vile (vile*), baron of
+  hell, spider mastermind (spid*), chaingun zombie (cpos*), and the SPEED
+  pickup Computer Map (pmap*). Single flat sprites/ folder with all
+  prefixes — use the sprite browser's prefix filter to isolate one enemy.
+
+A short-lived bstone submodule was added then removed (no usable assets).
+Don't re-add it.
 
 After cloning the repo, run `git submodule update --init --recursive` to
 populate them. The game itself doesn't need them at runtime — sprites are

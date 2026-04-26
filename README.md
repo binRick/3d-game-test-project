@@ -13,21 +13,24 @@ No install, no download. WebGL 2 required.
 A `src/game.c` core (plus 3 helper modules and an Objective-C bridge for the
 macOS leaderboard POST). No engine. No scripting layer. Real OpenGL, real
 audio, real 3D collision. You fight an escalating horde of cleaver-swinging
-**chefs** plus 9 other enemy types — Doom-style soldier, cacodemon and cyber
-demon, Beautiful-Doom revenant / lost soul / pain elemental, Wolfenstein SS
-guard, ranged mutant, heavy mech, and a cyber-demon **wave 2 boss** — through
-an industrial arena with textured walls, Q3-style stairs, a tesla cannon
-that chains lightning, friendly-fire splash, and an honest-to-god C&C Red
-Alert soundtrack.
+**chefs** plus 14 other enemy types — Doom-style soldier, cacodemon, and
+cyber-demon **wave 2 boss**, Beautiful-Doom revenant / lost soul / pain
+elemental, Wolfenstein SS guard, ranged mutant, heavy mech, freedoom
+walking eye / baron of hell / spider mastermind / chaingun zombie / tentacle
+fiend, plus the recurring spider-mastermind **wave 3+ boss** — through an
+industrial arena with textured walls, Q3-style stairs, a tesla cannon that
+chains lightning, friendly-fire splash, and a 3-track Red Alert / Soviet
+March soundtrack.
 
 ```
-    ╔════════════════════════════════════════════════════╗
-    ║  1 - SHOTGUN  2 - MG  3 - LAUNCHER  4 - TESLA      ║
-    ║  WASD move  ·  MOUSE aim  ·  LMB fire              ║
-    ║  SPACE jump · SHIFT sprint · P pause · -/+ music   ║
-    ║  ESC: in-game -> menu   /   menu -> quit           ║
-    ║  A on menu -> ARENA picker (test any enemy solo)   ║
-    ╚════════════════════════════════════════════════════╝
+    ╔══════════════════════════════════════════════════════════╗
+    ║  1 - SHOTGUN  2 - MG  3 - LAUNCHER  4 - TESLA            ║
+    ║  WASD move  ·  MOUSE aim  ·  LMB fire                    ║
+    ║  SPACE jump · SHIFT sprint · P pause · -/+ music · M skip║
+    ║  ` (backtick) - dev console (give / god / kill / wave)   ║
+    ║  ESC: in-game -> menu   /   menu -> quit                 ║
+    ║  A on menu -> ARENA picker (test any of 18 enemies solo) ║
+    ╚══════════════════════════════════════════════════════════╝
 ```
 
 Web build also posts your run to a public leaderboard at
@@ -175,7 +178,7 @@ is one line.
 
 ---
 
-## 🧟 Enemy roster (13 types)
+## 🧟 Enemy roster (18 types)
 
 Every enemy uses the same shared AI state machine (`PATROL → CHASE → ATTACK
 → DYING`) but stats, attack style and sprite set differ. Wave scaling:
@@ -192,26 +195,41 @@ stateDiagram-v2
     DYING --> [*]: corpse persists (depth mask off; flying enemies fall)
 ```
 
-| # | Enemy               | HP   | Speed | Dmg | Rate | Attack             | Notes |
-|---|---------------------|------|-------|-----|------|--------------------|---|
-| 0 | **Chef**            | 65   | 6.0   | 10  | 1.5s | Melee cleaver      | AFAB sprites · wave 1 staple |
-| 1 | **Heavy chef**      | 145  | 3.6   | 24  | 2.1s | Melee cleaver      | TORM sprites · tankier, slower |
-| 2 | **Fast chef**       | 42   | 8.8   | 8   | 1.0s | Melee cleaver      | SCH2 sprites · glass cannon |
-| 3 | **Boss chef**       | 800  | 7.5   | 40  | 1.6s | Melee, big hitbox  | BTCN sprites · between-wave interlude |
-| 4 | **SS guard**        | 80   | 5.0   | 14  | 1.8s | Hitscan tracer     | PARA sprites · 8-rotational |
-| 5 | **Mutant**          | 90   | 4.2   | 14  | 1.4s | Purple energy ball | MTNT sprites · ranged projectile |
-| 6 | **Mech**            | 260  | 2.6   | 28  | 2.6s | Heavy rocket       | MAVY sprites · slow, splash dmg |
-| 7 | **Soldier**         | 120  | 5.0   | 14  | 1.4s | Hitscan tracer     | DOOM-style-Game shotgunner |
-| 8 | **Cacodemon**       | 220  | 3.5   | 18  | 2.0s | Fireball, *flying* | DOOM-style-Game · joins wave 2+ |
-| 9 | **Cyber demon**     | 1500 | 3.8   | 34  | 2.6s | Twin rockets       | DOOM-style-Game · **wave 2 boss** (replaces chef boss) |
-| 10 | **Revenant**       | 250  | 5.5   | 16  | 1.6s | Melee placeholder  | Beautiful-Doom · arena-only preview |
-| 11 | **Lost soul**      | 60   | 9.0   | 8   | 0.9s | Charge-melee, *flying* | Beautiful-Doom · arena-only preview |
-| 12 | **Pain elemental** | 420  | 3.0   | 18  | 2.0s | Melee placeholder, *floats* | Beautiful-Doom · arena-only preview |
+| #  | Enemy               | HP   | Speed | Dmg | Rate  | Attack                       | Notes |
+|----|---------------------|------|-------|-----|-------|------------------------------|---|
+| 0  | **Chef**            | 65   | 6.0   | 10  | 1.5s  | Melee cleaver                | AFAB sprites · wave 1 staple |
+| 1  | **Heavy chef**      | 145  | 3.6   | 24  | 2.1s  | Melee cleaver                | TORM sprites · tankier, slower |
+| 2  | **Fast chef**       | 42   | 8.8   | 8   | 1.0s  | Melee cleaver                | SCH2 sprites · glass cannon |
+| 3  | **Boss chef**       | 800  | 7.5   | 40  | 1.6s  | Melee, big hitbox            | BTCN sprites · wave-1 interlude (waves 2/3+ replaced) |
+| 4  | **SS guard**        | 80   | 5.0   | 14  | 1.8s  | Hitscan tracer               | PARA sprites · 8-rotational |
+| 5  | **Mutant**          | 90   | 4.2   | 14  | 1.4s  | Purple energy ball           | MTNT sprites · ranged projectile |
+| 6  | **Mech**            | 260  | 2.6   | 28  | 2.6s  | Heavy rocket                 | MAVY sprites · slow, splash dmg |
+| 7  | **Soldier**         | 120  | 5.0   | 14  | 1.4s  | Hitscan tracer               | DOOM-style-Game shotgunner |
+| 8  | **Cacodemon**       | 220  | 3.5   | 18  | 2.0s  | Fireball, *flying*           | DOOM-style-Game · joins wave 2+ |
+| 9  | **Cyber demon**     | 1500 | 3.8   | 34  | 2.6s  | Twin rockets                 | DOOM-style-Game · **wave 2 boss** |
+| 10 | **Revenant**        | 250  | 5.5   | 16  | 1.6s  | Melee placeholder            | Beautiful-Doom · arena-only preview |
+| 11 | **Lost soul**       | 60   | 9.0   | 8   | 0.9s  | Charge-melee, *flying*       | Beautiful-Doom · arena-only preview |
+| 12 | **Pain elemental**  | 420  | 3.0   | 18  | 2.0s  | Melee placeholder, *floats*  | Beautiful-Doom · arena-only preview |
+| 13 | **Tentacle fiend**  | 280  | 5.0   | 18  | 1.7s  | Melee placeholder            | freedoom · armored cyborg w/ tentacles |
+| 14 | **Walking eye**     | 700  | 7.0   | 25  | 2.5s  | Resurrects nearby corpses    | freedoom (arch-vile) · brings dead enemies back |
+| 15 | **Baron of hell**   | 600  | 4.5   | 30  | 2.0s  | Tanky melee, big hitbox      | freedoom · armored bruiser |
+| 16 | **Spider mastermind**| 1500| 4.0   | 35  | 1.5s  | Chaingun walker, huge sprite | freedoom · **wave 3+ recurring boss** (HP scales w/ wave) |
+| 17 | **Chaingun zombie** | 95   | 4.6   | 8   | 0.45s | Rapid hitscan burst, 16m     | freedoom CPOS · ranged threat, joins wave 2+ |
 
-Types 10/11/12 are **preview-only** — sprites loaded, arena spawn works,
+Types 10/11/12/13 are **preview-only** — sprites loaded, arena spawn works,
 but they currently use chef-style melee placeholder AI; full Doom-style
 behaviours (homing missiles, kamikaze charge, lost-soul spawning) are
 deferred until they're greenlit for waves.
+
+### Boss interlude
+
+Between waves, a single boss spawns:
+
+| After wave | Boss                  | Type | Notes |
+|------------|-----------------------|------|-------|
+| 1          | Boss chef             | 3    | Original BTCN cleaver giant |
+| 2          | Cyber demon           | 9    | Twin-rocket spectacle |
+| 3+         | Spider mastermind     | 16   | Recurring; +12% HP per wave so he scales with you |
 
 ### Flying enemy handling
 
@@ -403,14 +421,73 @@ flowchart TD
 
 ---
 
+## 🎁 Pickups
+
+| Pickup            | Sprite source                          | Effect                                       |
+|-------------------|----------------------------------------|----------------------------------------------|
+| Health (CHIKA)    | sprites/pickups/                       | +25 HP                                       |
+| Mega-health       | sprites/pickups/                       | +50 HP                                       |
+| Shells / bullets / MG / rockets / cells | sprites/pickups/         | Replenish ammo for the matching weapon       |
+| **Tesla cannon**  | sprites/pickups/                       | One-time unlock + 30 cells                   |
+| **QUAD damage**   | sprites/pickups/quad/ (Icon-of-Sin SCUB) | 4× damage for 30s. Animated cube cycles 6 frames at 5fps with magenta double-ring halo |
+| **SPEED boost**   | sprites/pickups/speed/ (freedoom PMAP)   | 1.5× movement for 30s. Cycles the freedoom Computer Map across 4 frames with cyan halo |
+
+Both QUAD and SPEED are world-space billboards that pulse and animate on
+the floor. They draw **before** `DrawEnemies` so a chef walking between
+camera and pickup correctly occludes the sprite (depth-mask trick — see
+`CLAUDE.md`).
+
+---
+
+## 🎵 Music
+
+3-track random shuffle in-game:
+
+- **Hell March** (C&C Red Alert)
+- **Funeral March of Queen Mary** (Purcell, Wendy Carlos arrangement)
+- **Soviet March** (C&C Red Alert 3)
+
+Pressing **M** during gameplay skips to a different random track from the
+playlist (won't repeat the current one). A small "M-SKIP" hint shows
+under the kill counter. Track choice is shuffled — each end-of-track
+picks a random track that *isn't* the one just finished, so no immediate
+repeats. Volume persists to `~/.ironfist3d.cfg` on every `-` / `+`.
+
+Title screen plays a separate menu loop until the player hits ENTER.
+
+---
+
+## 🚨 Rear-arc warning
+
+When an enemy is alive and behind you (within ±90° of the back-facing
+arc, ≤25m), the HUD shows two cues:
+
+- A red arrow at the bottom of the screen pointing toward the closest
+  rear threat, scaled by distance (close = bigger).
+- The minimap rear half is washed with a faint red tint matching the
+  same arc.
+
+Both indicators are always-on (no toggle). They stop the moment the
+threat moves out of the rear arc or dies. Helps with the "where is that
+chaingun zombie shooting me from?" problem in late waves.
+
+---
+
 ## 🎮 Other things you'll find
 
 ### Arena picker (A on main menu)
 
-13 enemy slots. Arrow keys cycle through cycling sprite + attack-frame
-previews; ENTER spawns 8 of that type (or 1 for boss/cyber demon) into the
-arena map. Handy for testing AI / hit volumes / animations. Press ESC to
-return to the menu.
+18 enemy slots. Arrow keys cycle through cycling sprite + attack-frame
+previews; ENTER spawns 8 of that type (or 1 for boss / cyber demon /
+spider mastermind) into the arena map. Handy for testing AI / hit volumes
+/ animations. Press ESC to return to the menu.
+
+### Dev console (backtick during gameplay)
+
+Quake-style drop-down with `give` / `god` / `kill` / `wave N` / `tp X Z`
+/ `pos`. Capability-enhancing commands flag the run as cheated — the
+death screen suppresses leaderboard submission and shows "CHEATS USED -
+NO LEADERBOARD ENTRY" instead. Resets on every fresh run.
 
 ### Pause (P during gameplay)
 
@@ -435,13 +512,22 @@ runs.
 ### Sprite browser (S on main menu, macOS dev only)
 
 Press **S** on the main menu (or F8 anywhere) to flip through every PNG
-in 23 curated source folders (Beautiful-Doom MONSTERS + DOOM-style-Game
-npc). Shows filename + sprite + folder counters. Used to figure out which
-4-letter prefix in a Beautiful-Doom enemy folder maps to which animation
-role — REVI is "pain", REVP is "run", RSKE is "walk", REVN is "death", etc.
-Keys: ←/→ file, [ ] folder, - / + zoom, ESC exit. macOS-only because it
-reads absolute paths to `third_party/`; gated behind `!PLATFORM_WEB &&
-!_WIN32`.
+in curated source folders across Beautiful-Doom, DOOM-style-Game, and
+the freedoom sprite trove (3000+ sprites). Mouse-navigable sidebar with
+scroll-wheel folder switching, a prefix filter for the freedoom monolith
+folder, and live filename + sprite preview at variable zoom. Used to
+figure out which 4-letter prefix maps to which animation role — REVI is
+"pain", RSKE is "walk", REVN is "death" for revenant; CPOS = chaingun
+zombie; SPID = spider mastermind, etc. Keys: ←/→ file, [ ] folder, - /
++ zoom, ESC exit. macOS-only because it reads absolute paths to
+`third_party/`; gated behind `!PLATFORM_WEB && !_WIN32`.
+
+### Speed-pickup candidate previewer (K on main menu)
+
+Animated grid of 6 candidate pickup sprite sets cycling at 5fps. Used
+during development to compare freedoom candidates side-by-side before
+picking one to wire as the SPEED boost (PMAP / Computer Map won the v1.3.19
+selection). macOS-only.
 
 ### ESC navigation
 
@@ -459,14 +545,15 @@ and routing every ESC keypress through per-state handlers in `StepFrame`.
 
 ```
 src/
-  game.c                  ← main code (~5000 lines)
-  hud.c / .h              ← Doom mugshot HUD + status bar
+  game.c                  ← main code (~6000+ lines)
+  hud.c / .h              ← Doom mugshot HUD + status bar + rear-arc warning
   effects.c / .h          ← particle pool: blood, sparks, decals
   level.c / .h            ← MAP grid + Platform[] + collision predicates
   common.h                ← shared types (Player / Enemy / Pickup / Part / Platform)
   score_post.m            ← macOS NSURLSession bridge for high-score POST
 Makefile                  ← macOS .app + Windows single-file .exe + emcc web targets
 run.sh                    ← brew-installs deps → make -B → exec the binary in foreground
+debug.sh                  ← tail -F /tmp/ironfist-debug.log
 gen_icon.py               ← procedural iron-fist .icns
 pack_bundle.py            ← flattens sprites/ + sounds/ into dist-win/bundle.dat
                             (embedded into the Windows exe via windres RCDATA)
@@ -477,26 +564,38 @@ sprites/
   browning/ mp40/ panzerschreck/  weapon viewmodels (luger archived)
   monsters/                       AFAB/TORM/SCH2 chefs, BTCN boss, MTNT mutant,
                                   MAVY mech, PARA SS guard
-  monsters/preview/               soldier/caco/cyber + revenant/lostsoul/painelem
+  monsters/preview/               soldier / caco / cyber / revenant / lostsoul /
+                                  painelem / skel (tentacle fiend) / archvile
+                                  (walking eye) / baron / spider / chaingun
                                   (walk_N / atk_N / pain_N / death_N each)
   textures/                       sky.png + wall1..wall5.png (connected-component
                                   flood-fill picks one texture per wall block)
   blood/                          YBL7A..S animated splat decal
-  pickups/                        health, ammo, power-ups, tesla pickup
+  pickups/                        health, ammo, weapon unlocks
+    pickups/quad/                   6-frame Icon-of-Sin cube (QUAD damage)
+    pickups/speed/                  4-frame freedoom Computer Map (SPEED boost)
   crosshairs/                     per-weapon overrides
+  hud/mugshot/                    Doom STF* mugshot tiers
 
 sounds/
-  hell-march.mp3                  looping BG music
+  hell-march / funeral-queen-mary / soviet-march  3-track in-game shuffle
+  title-music                     menu loop
   shotgun-kill / mg-sound / launcher-shot / rocket-hit / chef-die*  weapon + chef vocals
   first-blood / headshot / fatality / holy-shit / next-wave / distant-enemy  announcers
-  tesla-* / mech-* / mut-* / chef-hit                              new-weapon + new-enemy
+  tesla-* / mech-* / mut-* / cyber-fire / chaingun                  per-enemy fire samples
+  ss-fire / soldier-mg                                              hitscan tracers
+  player-ough / chef-hit                                            damage feedback
 
-third_party/                      git submodules (gitignored except the two below)
-  Beautiful-Doom/                 GZDoom mod — MONSTERS sprite source for revenant/
-                                  lostsoul/painelem, plus the m_*.zc actor scripts
+third_party/                      git submodules (gitignored except the three below)
+  Beautiful-Doom/                 GZDoom mod — MONSTERS sprite source for revenant /
+                                  lostsoul / painelem, plus the m_*.zc actor scripts
                                   that decode which prefix is which animation
   DOOM-style-Game/                Doom-style-Game project — MONSTERS sprite source
-                                  for soldier/caco/cyber
+                                  for soldier / caco / cyber
+  freedoom/                       BSD-licensed Doom-compatible sprites — source for
+                                  tentacle fiend (skel), walking eye (archvile),
+                                  baron of hell, spider mastermind, chaingun zombie,
+                                  Computer Map pickup
 
 docs/screenshot-1.png             gameplay screenshots
 docs/screenshot-2.png
