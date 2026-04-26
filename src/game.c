@@ -696,7 +696,7 @@ static bool     g_lastHitHead = false;  // set while processing a headshot shot;
 // 9 = CYBER DEMON (boss-tier, rockets), 10 = REVENANT (preview/melee for
 // now), 11 = LOST SOUL (preview/charging melee), 12 = PAIN ELEMENTAL
 // (preview/floater), 13 = TENTACLE FIEND (preview/melee — freedoom skel),
-// 14 = ARCH-VILE (resurrects nearby corpses; melee fallback).
+// 14 = WALKING EYE (resurrects nearby corpses; melee fallback).
 static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280, 700  };
 static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f, 7.0f};
 static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18,   25  };
@@ -1558,7 +1558,7 @@ static void KillEnemy(int i) {
     }
     static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH",
                                 "SOLDIER","CACODEMON","CYBER DEMON","REVENANT","LOST SOUL","PAIN ELEMENTAL","TENTACLE FIEND",
-                                "ARCH-VILE"};
+                                "WALKING EYE"};
     int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
@@ -1583,7 +1583,7 @@ static void KillEnemy(int i) {
                        (t == 7) ? "SOLDIER" : (t == 8) ? "CACODEMON" :
                        (t == 9) ? "CYBER DEMON" :
                        (t == 13) ? "TENTACLE FIEND" :
-                       (t == 14) ? "ARCH-VILE" : "TARGET";
+                       (t == 14) ? "WALKING EYE" : "TARGET";
         }
         char dynLine[80];
         snprintf(dynLine, sizeof(dynLine), "FINAL %s - HUNT HIM DOWN!", survName);
@@ -1604,7 +1604,7 @@ static void KillEnemy(int i) {
         if (g_arenaMode) {
             int t = g_arenaType;
             int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon — solo respawn
-            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","ARCH-VILES"};
+            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","WALKING EYES"};
             char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<15)?t:0]);
             Msg(buf);
             for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
@@ -2544,10 +2544,12 @@ static void DrawEnemies(Camera3D cam) {
                     if (ai < 0) ai = 0;
                     if (ai >= pe->atkCount) ai = pe->atkCount - 1;
                     tex = pe->atk[ai];
-                } else if (e->type == 10) {
-                    // Revenant — walk_0..walk_7 are 8 RSKE animation
-                    // frames at FRONT rotation only. Time-cycle them so
-                    // he reads as walking; he always faces the camera.
+                } else if (e->type == 10 || e->type == 14) {
+                    // Revenant (10) and Walking Eye (14) — walk_N is a
+                    // multi-pose front-only animation cycle. Time-cycle
+                    // through them so the enemy reads as walking; the
+                    // sprite always faces the camera. (Other preview
+                    // enemies use rotation-indexed rendering instead.)
                     int af = (int)(e->legT * 0.45f) % pe->walkCount;
                     if (af < 0) af += pe->walkCount;
                     tex = pe->walk[af];
@@ -5155,7 +5157,7 @@ static void StepFrame(void) {
             "SS GUARD", "MUTANT", "MECH",
             "SOLDIER", "CACODEMON", "CYBER DEMON",
             "REVENANT", "LOST SOUL", "PAIN ELEMENTAL", "TENTACLE FIEND",
-            "ARCH-VILE"
+            "WALKING EYE"
         };
 
         // Preview animation: walk frames cycle at ~5 fps. For 8-rotation
@@ -5282,9 +5284,14 @@ static void StepFrame(void) {
         const char *blurb = enemyBlurb[t];
         DrawText(blurb, sw2/2 - MeasureText(blurb, 18)/2, (int)(sh2*0.45f + previewH*0.5f + 90), 18, (Color){200,200,200,220});
 
-        // Selector dots — 7 markers along bottom, current one highlighted
-        for (int i = 0; i < 10; i++) {
-            int cx = sw2/2 - (10*22)/2 + i*22 + 11;
+        // Selector dots — one per picker slot, current one highlighted.
+        // Spacing scales down a bit when the slot count grows past ~13 so
+        // the row stays comfortably inside the screen edges.
+        const int slots = 15;
+        int spacing = (slots <= 10) ? 22 : (slots <= 13) ? 18 : 16;
+        int rowW = slots * spacing;
+        for (int i = 0; i < slots; i++) {
+            int cx = sw2/2 - rowW/2 + i*spacing + spacing/2;
             int cy = sh2 - 80;
             Color c = (i == t) ? (Color){255,220,90,255} : (Color){90,90,100,255};
             DrawCircle(cx, cy, (i == t) ? 8 : 5, c);
