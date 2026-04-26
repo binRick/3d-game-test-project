@@ -5410,7 +5410,11 @@ static void StepFrame(void) {
         // Selector dots — one per picker slot, current one highlighted.
         // Spacing scales down a bit when the slot count grows past ~13 so
         // the row stays comfortably inside the screen edges.
-        const int slots = 15;
+        // Match the picker's actual slot count — keep this in sync with
+        // ENT type count (currently 16: chefs 0..3, SS/mut/mech 4..6,
+        // soldier/caco/cyber 7..9, revenant/lostsoul/painelem 10..12,
+        // tentacle fiend 13, walking eye 14, baron 15).
+        const int slots = 16;
         int spacing = (slots <= 10) ? 22 : (slots <= 13) ? 18 : 16;
         int rowW = slots * spacing;
         for (int i = 0; i < slots; i++) {
