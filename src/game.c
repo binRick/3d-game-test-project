@@ -633,7 +633,7 @@ static int      g_killsThisShot = 0;  // incremented by KillEnemy, reset around 
 // Title music is a SEPARATE looping stream that plays on the GS_MENU
 // state. The state-transition handler in StepFrame swaps between the
 // title track and the in-game playlist on entering / leaving GS_MENU.
-#define MUSIC_TRACK_COUNT 2
+#define MUSIC_TRACK_COUNT 3
 static Music    g_musicTracks[MUSIC_TRACK_COUNT];
 static bool     g_musicTracksOK[MUSIC_TRACK_COUNT] = {false};
 static int      g_musicIdx = 0;
@@ -641,6 +641,7 @@ static bool     g_musicOK = false;        // true if any in-game track loaded
 static const char *g_musicFiles[MUSIC_TRACK_COUNT] = {
     "sounds/hell-march.mp3",
     "sounds/funeral-queen-mary.mp3",
+    "sounds/soviet-march.mp3",
 };
 static Music    g_titleMusic;
 static bool     g_titleMusicOK = false;
