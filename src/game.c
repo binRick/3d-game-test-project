@@ -2483,16 +2483,6 @@ static void DrawEnemies(Camera3D cam) {
                     if (ai < 0) ai = 0;
                     if (ai >= pe->atkCount) ai = pe->atkCount - 1;
                     tex = pe->atk[ai];
-                } else if (e->type == 10) {
-                    // Revenant — walk_0..walk_7 are the 8 RSKE animation
-                    // frames at FRONT rotation only (Beautiful-Doom doesn't
-                    // give us a clean "static idle" view, so we cycle the
-                    // walk anim instead). Always faces the camera. Cycle
-                    // speed is tied to legT so the cadence scales with the
-                    // enemy's base speed.
-                    int af = (int)(e->legT * 0.45f) % pe->walkCount;
-                    if (af < 0) af += pe->walkCount;
-                    tex = pe->walk[af];
                 } else {
                     // Pick rotation slot from enemy facing vs player angle.
                     Vector3 facing;
