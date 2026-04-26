@@ -4098,6 +4098,12 @@ static char   g_conCmdHist[CON_CMD_HIST][CON_INPUT_MAX] = {{0}};
 static int    g_conCmdCount  = 0;
 static int    g_conCmdHead   = 0;
 static int    g_conCmdNav    = -1;    // -1 = current input; else steps back from head
+// Slide-down animation. 0 = fully retracted (panel invisible), 1 = fully
+// deployed (panel at half-screen). Eases toward whatever g_conOpen wants;
+// ConDraw is called as long as g_conAnim > 0 so the close animation still
+// plays after g_conOpen flips back to false.
+static float  g_conAnim      = 0.f;
+#define CON_ANIM_SPEED 8.0f   // 1/8 sec from closed to fully open
 
 // g_god and g_cheated declared at the top of the file alongside g_paused
 // so the damage-application sites in UpdEnemies / UpdBullets can see them
@@ -4307,11 +4313,23 @@ static void ConHandleInput(void) {
 }
 
 static void ConDraw(void) {
+    // Tick the slide animation toward the current open/closed target. Run
+    // here rather than in StepFrame so a single guard ("draw if animating
+    // OR open") keeps things simple.
+    float target = g_conOpen ? 1.f : 0.f;
+    float dt = GetFrameTime();
+    if (g_conAnim < target) g_conAnim = fminf(target, g_conAnim + dt * CON_ANIM_SPEED);
+    else if (g_conAnim > target) g_conAnim = fmaxf(target, g_conAnim - dt * CON_ANIM_SPEED);
+    if (g_conAnim <= 0.f) return;  // fully retracted — nothing to draw
+
     int sw = GetScreenWidth(), sh = GetScreenHeight();
-    int panelH = sh / 2;
+    int fullH = sh / 2;
+    int panelH = (int)(fullH * g_conAnim);
+    if (panelH < 1) return;
+
     DrawRectangle(0, 0, sw, panelH, (Color){10, 10, 20, 220});
     DrawRectangle(0, panelH, sw, 2, (Color){80, 200, 120, 200});
-    // Scrollback above the prompt, bottom-up.
+    // Scrollback above the prompt, bottom-up. Clipped naturally as panelH shrinks.
     const int lineH = 18;
     int y = panelH - 30 - lineH;
     int idx = g_conLineHead;
@@ -4322,13 +4340,16 @@ static void ConDraw(void) {
         y -= lineH;
         n--;
     }
-    // Prompt at the bottom of the panel.
-    char prompt[CON_INPUT_MAX + 4];
-    snprintf(prompt, sizeof(prompt), "> %s", g_conInput);
-    DrawText(prompt, 12, panelH - 26, 18, (Color){240, 240, 120, 255});
-    if (((int)(GetTime() * 2.f)) & 1) {
-        int textW = MeasureText(prompt, 18);
-        DrawRectangle(12 + textW + 2, panelH - 26, 8, 18, (Color){240, 240, 120, 200});
+    // Prompt at the bottom of the panel — only show once the panel is
+    // mostly extended, otherwise it reads as a flicker during the slide.
+    if (g_conAnim > 0.6f) {
+        char prompt[CON_INPUT_MAX + 4];
+        snprintf(prompt, sizeof(prompt), "> %s", g_conInput);
+        DrawText(prompt, 12, panelH - 26, 18, (Color){240, 240, 120, 255});
+        if (((int)(GetTime() * 2.f)) & 1) {
+            int textW = MeasureText(prompt, 18);
+            DrawRectangle(12 + textW + 2, panelH - 26, 8, 18, (Color){240, 240, 120, 200});
+        }
     }
 }
 
@@ -4926,7 +4947,8 @@ static void StepFrame(void) {
         DrawText(ind, 10, GetScreenHeight() - 26, 18, (Color){255, 100, 100, 230});
     }
     // Dev console panel goes ON TOP of the HUD so it's always readable.
-    if (g_conOpen) ConDraw();
+    // Draw while open OR while the close animation is still playing out.
+    if (g_conOpen || g_conAnim > 0.f) ConDraw();
     EndDrawing();
 }
 
