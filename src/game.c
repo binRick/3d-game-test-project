@@ -4901,7 +4901,7 @@ static void StepFrame(void) {
         DrawText(t2,sw2/2-MeasureText(t2,16)/2,sh2/3+96,16,(Color){120,120,120,255});
         const char *ctrl="WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE\n"
                          "SPACE - JUMP     SHIFT - SPRINT     - / + - MUSIC VOL\n"
-                         "1 - SHOTGUN     2 - MACHINE GUN     3 - LAUNCHER";
+                         "1 - SHOTGUN   2 - MACHINE GUN   3 - LAUNCHER   4 - TESLA";
         DrawText(ctrl,sw2/2-MeasureText("WASD / ARROWS - MOVE     MOUSE - LOOK     LMB - FIRE",15)/2,sh2/2+20,15,(Color){90,90,90,255});
         const char *st="[ ENTER  /  CLICK  TO  START ]";
         if (sinf(GetTime()*3.f)>0)

@@ -225,8 +225,63 @@ world-space sprite that lives at floor height.
 | 3   | Launcher      | 0.96s     | 200     | rockets(8)  | Panzerschreck sprite (static), rocket splash 200 over 5m |
 | 4   | Tesla cannon  | 0.45s     | 140 +chain | cells(30) | Wide-cone auto-aim, 6m range, 5-hop chain (85/70/58/48/40% falloff). Distance to target measured to enemy SURFACE not centre — `bodyR` per-type subtracted before comparing to range, so wide bosses (1.5m radius) can still be tagged. Pickup spawns near player on first run. |
 
-The four weapon slots use a shared `WepSprite g_wep[4]` array; adding a new
-weapon is one row in `packs[]` inside `main()`.
+### Adding a new weapon (checklist)
+
+The weapon system is mostly table-driven — most additions touch a small
+fixed set of arrays / sites. Use this as a canonical checklist when
+wiring a 5th weapon:
+
+**Stats (all length-N arrays — extend each by one entry):**
+- `WD[]` — base damage per fire
+- `WR[]` — fire rate (cooldown in seconds)
+- `WPEL[]` — pellet count (1 for single-shot, 8 for shotgun-style spread)
+- `WPN[]` — display name string (used by HUD and "WEAPON" line)
+- `g_wep[N]` — sprite-viewmodel slot. Extend the size of the array AND
+  add one row to the `packs[]` table inside `main()` with folder/frames/
+  scale/xShift/yShift/optional flash overlay.
+
+**Ammo + state in Player struct (`src/common.h`):**
+- Add a new ammo field (e.g. `int plasma`) AND a `bool hasNewWeapon` if
+  it's an unlockable rather than always-available. Reset both in
+  `InitGame`'s `memset(&g_p,0,sizeof(g_p))`.
+
+**Input + selection:**
+- The 1/2/3/4 number-key handler in `UpdPlayer` switches `g_p.weapon`.
+  Add the 5 case (and bump the bound check on auto-switch logic that
+  cycles through weapons).
+- Update the **main-menu controls hint** in StepFrame's GS_MENU draw
+  block (`"1 - SHOTGUN   2 - MACHINE GUN   3 - LAUNCHER   4 - TESLA"`)
+  so players see the new key.
+- Update the **HUD ammo display** in hud.c if it shows per-weapon ammo
+  type (currently switches on `g_p.weapon`).
+
+**Fire path:**
+- `Shoot()` in game.c is the dispatcher — add a new `if (w==N) {...}`
+  branch with the actual fire logic. Hitscan / projectile / chain — pick
+  whatever makes sense.
+- Per-fire SFX: load a sound globally (`g_sNewWeapon`) and trigger it
+  from the new branch.
+
+**Pickup (if unlockable):**
+- Add a new pickup type in `Pickup.type` numeric range, hand-place
+  spawns in `InitPickups` if needed, give it sprite + grab handler in
+  `UpdPicks`, and a "give all" handler in `ConExecute` so the dev
+  console can hand it out. Don't forget `g_p.hasNewWeapon = true;`.
+
+**Console give command:**
+- Add a `give newweapon` case in `ConExecute` that flips the unlock
+  flag + tops up ammo. **Set `g_cheated = true`** like the other give
+  branches do — capability-enhancing commands must poison the run for
+  leaderboard purposes.
+
+**Sound asset:**
+- Drop the sample under `sounds/` and load it in `main()` near the
+  existing weapon sounds. Unload in the shutdown block.
+
+**Web build:**
+- Sprites under `sprites/` and sounds under `sounds/` are auto-
+  preloaded via the Makefile's `--preload-file` directives, so no
+  Makefile change is needed for assets.
 
 ## Enemies (13 types, all share state machine PATROL/CHASE/ATTACK/DYING)
 
