@@ -2880,18 +2880,21 @@ static void UpdBullets(float dt) {
                            : (e->type==8)  ? 1.1f   // caco — center of 2.2m sprite above feet
                            : (e->type==11) ? 0.5f   // lost soul — small head
                            : (e->type==12) ? 1.3f   // pain elemental — big floating ball
+                           : (e->type==15) ? 1.4f   // baron of hell — center of 2.8m sprite
                            :                 1.0f;
             float _bodyR   = (e->type==3)  ? 1.5f
                            : (e->type==9)  ? 1.3f
                            : (e->type==8)  ? 1.0f
                            : (e->type==11) ? 0.45f
                            : (e->type==12) ? 1.10f
+                           : (e->type==15) ? 1.00f  // baron
                            :                 0.9f;
             float _bodyH   = (e->type==3)  ? 2.3f
                            : (e->type==9)  ? 1.9f
                            : (e->type==8)  ? 1.1f
                            : (e->type==11) ? 0.55f
                            : (e->type==12) ? 1.30f
+                           : (e->type==15) ? 1.50f  // baron
                            :                 1.2f;
             float _bodyWorldY = e->pos.y + _bodyY;
             float _ydist=fabsf(b->pos.y - _bodyWorldY);
@@ -3280,6 +3283,9 @@ static void Shoot(void) {
             } else if (g_e[j].type == 12) {  // PAIN ELEMENTAL (big floater, feet at e->pos.y=2.0)
                 headY = 1.80f; headR = 0.50f;
                 bodyY = 1.30f; bodyR = 1.05f;
+            } else if (g_e[j].type == 15) {  // BARON OF HELL (sprite ~2.8m tall)
+                headY = 2.50f; headR = 0.40f;
+                bodyY = 1.40f; bodyR = 0.90f;
             } else {
                 float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
                 headY = bh + 0.67f; headR = 0.26f;
@@ -3390,6 +3396,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
         float coneChestY = (g_e[j].type == 9) ? 1.7f
                          : (g_e[j].type == 8) ? 1.1f
                          : (g_e[j].type == 3) ? 1.4f
+                         : (g_e[j].type == 15) ? 1.4f
                          :                      0.95f;
         float dy = (g_e[j].pos.y + coneChestY) - origin.y;
         float dz = g_e[j].pos.z - origin.z;
@@ -3401,6 +3408,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
         float bodyR = (g_e[j].type == 3) ? 1.5f
                     : (g_e[j].type == 9) ? 1.3f
                     : (g_e[j].type == 6) ? 0.85f
+                    : (g_e[j].type == 15) ? 1.0f   // baron of hell
                     :                      0.55f;
         float d = sqrtf(d2);
         float surf = d - bodyR;
@@ -3435,6 +3443,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
         float biChest = (g_e[bi].type == 9) ? 1.7f
                       : (g_e[bi].type == 8) ? 1.1f
                       : (g_e[bi].type == 3) ? 1.4f
+                      : (g_e[bi].type == 15) ? 1.4f
                       :                       0.95f;
         Vector3 anchor = {g_e[bi].pos.x, g_e[bi].pos.y + biChest, g_e[bi].pos.z};
         pts[np++] = anchor;
@@ -3458,6 +3467,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
                 float jBodyR = (g_e[j].type == 3) ? 1.5f
                              : (g_e[j].type == 9) ? 1.3f
                              : (g_e[j].type == 6) ? 0.85f
+                             : (g_e[j].type == 15) ? 1.0f   // baron
                              :                      0.55f;
                 float dRaw = Vector3Distance(anchor, ec);
                 float d = dRaw - jBodyR;
@@ -3470,6 +3480,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
             float tChest = (g_e[target].type == 9) ? 1.7f
                          : (g_e[target].type == 8) ? 1.1f
                          : (g_e[target].type == 3) ? 1.4f
+                         : (g_e[target].type == 15) ? 1.4f
                          :                           0.95f;
             anchor = (Vector3){g_e[target].pos.x, g_e[target].pos.y + tChest, g_e[target].pos.z};
             pts[np++] = anchor;
@@ -4837,6 +4848,23 @@ static void StepFrame(void) {
         UpdateMusicStream(g_titleMusic);
     } else if (g_musicOK) {
         UpdateMusicStream(g_musicTracks[g_musicIdx]);
+        // M-key — manual track skip while in gameplay. Picks a random
+        // loaded track other than the current one (or replays current
+        // if only one loaded). Same shuffle logic as the natural-end
+        // advance below, just triggered by the player.
+        if (g_gs == GS_PLAY && !g_paused && IsKeyPressed(KEY_M)) {
+            int cand[MUSIC_TRACK_COUNT]; int nc = 0;
+            for (int t = 0; t < MUSIC_TRACK_COUNT; t++)
+                if (g_musicTracksOK[t] && t != g_musicIdx) cand[nc++] = t;
+            if (nc > 0) {
+                int next = cand[rand() % nc];
+                StopMusicStream(g_musicTracks[g_musicIdx]);
+                g_musicIdx = next;
+                SetMusicVolume(g_musicTracks[g_musicIdx], g_musicVol);
+                PlayMusicStream(g_musicTracks[g_musicIdx]);
+                Msg("MUSIC SKIPPED");
+            }
+        }
         // Track alternation: when the current track plays out (and we're
         // not paused), advance to the next loaded track in the playlist.
         if (!g_paused && !IsMusicStreamPlaying(g_musicTracks[g_musicIdx])) {
@@ -5499,7 +5527,13 @@ static void StepFrame(void) {
                          sh2*2/3, 20, WHITE);
         }
     }
-    if (g_gs==GS_PLAY) DrawFPS(GetScreenWidth()-90, 10);
+    if (g_gs==GS_PLAY) {
+        DrawFPS(GetScreenWidth()-90, 10);
+        // Tiny hint for the music-skip key (M). Bottom-left, dim grey so
+        // it doesn't fight the HUD; persistent so newcomers discover it.
+        DrawText("M - skip music",
+                 10, GetScreenHeight() - 18, 12, (Color){140, 140, 160, 180});
+    }
     // God-mode + cheat overlay strip — corner indicator while cheats are
     // active so the player always knows their run won't earn a leaderboard
     // entry. Drawn over the HUD; under the console panel.

@@ -320,18 +320,64 @@ sites that access them via name lookup tables.
   by 0.6 in `DrawEnemies` so the top-down gore sprite collapses to a flat
   pile instead of standing up vertically with blood floating mid-air
 
-### Hit-volume sites (3 of them — keep in sync)
+### ⚠️ Adding a new enemy (checklist) — READ THIS
 
-1. `Shoot()` — per-pellet hitscan (shotgun, MG): per-type `headY/headR/
-   bodyY/bodyR` offsets-from-feet
-2. `UpdBullets()` — enemy-projectile-vs-enemy AND player-rocket-vs-enemy:
-   per-type `_bodyY/_bodyR/_bodyH` offsets-from-feet (single cylinder)
-3. `FireTeslaShot()` — cone target + chain hops: per-type `coneChestY` for
-   the targeting reference, per-type `bodyR` for **surface-distance** test
-   (subtracted from centre distance before comparing to range)
+**Big enemies do not get hit volumes / HP bars by default.** The render
+path Just Works because it scales by sprite height, but the hit-volume
+tables are per-type lookups — miss any of them and the enemy will eat
+shots without taking damage and never display the HP bar above his
+head (because `e->hp == e->maxHp` forever, and the bar is gated on
+`hp < maxHp`). This bug has bitten cyber demon, baron of hell, and
+others. **Whenever you add a new enemy type N, touch ALL of these:**
 
-When you add a new enemy type, add entries in ALL THREE sites or rockets/
-hitscan/tesla will pass through.
+**Stat tables (length-N arrays — extend each by one entry):**
+- `ET_HP[]` `ET_SPD[]` `ET_DMG[]` `ET_RATE[]` `ET_AR[]` `ET_ATK[]`
+  `ET_SC[]` `ET_COL[]`
+
+**Render dispatch in `DrawEnemies`:**
+- Extend the `e->type >= 7 && e->type <= N` predicate
+- Add `g_prevX` to the PreviewEnemy chain (or whichever family it joins)
+- Add a `baseSpriteH` row for the new type
+- If it should time-cycle walk frames vs use rotation indexing, add it
+  to the `e->type == 10 || e->type == 14 || …` switch
+
+**Picker / labels (string arrays, all need one more entry):**
+- `enemyNamesExt[]` `enemyBlurb[]`     (picker UI)
+- `KillEnemy()` `names[]`               (kill banner)
+- arena respawn `names[]` + `<N` clamps (arena picker)
+- final-survivor name lookup `(t == N) ? "..."`
+- debug-log abbrev `t==N ? "..."`
+- picker bounds `% (N+1)`, `if (t > N) t = N` clamps
+- selector-dot count near the bottom of GS_PICK_ENEMY draw block
+  (currently a single `slots = ` constant — bump it!)
+
+**Hit-volume sites — 3 of them, miss one and the enemy is unkillable:**
+1. `Shoot()` per-pellet hitscan (shotgun, MG) — per-type `headY/headR/
+   bodyY/bodyR` offsets-from-feet block. The default fallback uses
+   chef-sized spheres which are ~0.85 m at body height; anything taller
+   needs an explicit `else if (g_e[j].type == N)` entry or rounds will
+   pass over the body.
+2. `UpdBullets()` enemy-projectile + player-rocket — per-type
+   `_bodyY / _bodyR / _bodyH` ternary chain. Same default-too-small
+   problem; tall enemies need their own entry or rockets pass through.
+3. `FireTeslaShot()` — TWO sub-sites: cone-target's `coneChestY` and
+   `bodyR`, and chain-hop's `biChest` / `tChest` / `jBodyR`. All four
+   ternary chains need the new type. Without `bodyR`, big enemies are
+   too far from the cone-test centre to be tagged in tesla's 6 m range.
+
+**HP bar above head** is drawn unconditionally inside the type-7..N
+preview-enemy branch in `DrawEnemies` once `e->hp < e->maxHp`, so as
+long as the hit volumes above are populated, the bar will appear
+the moment the enemy takes damage. If the bar isn't showing, the
+enemy isn't taking damage — go fix the hit volumes.
+
+**Spawn y for flying enemies:**
+- 4 spawn sites set `e->pos.y = 1.5f` (or whatever) for flying types
+  (cacodemon 8, lost soul 11, pain elemental 12). New flying types
+  need adding to all of: arena initial spawn, arena respawn, wave-1
+  init in `InitGame`, per-wave loop in `UpdEnemies`.
+- Plus the y-snap exemptions in PATROL / CHASE branches and the
+  ATTACK-y-gate ranged-exemption list.
 
 ### Walk-frame rendering for preview enemies (types 7-12)
 
