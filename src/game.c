@@ -4056,48 +4056,116 @@ static void SubmitScore(void) {
 // painful — this lets you eyeball each one and update the copy script
 // accordingly. Absolute paths because this is dev-only and only ever runs
 // out of the repo on the developer's Mac.
-static const char *SB_FOLDERS[] = {
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Revenant",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/LostSoul",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/PainElemental",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Cacodemon",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Cyberdemon",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Arachnotron",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/ArchVile",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/BaronOfHell",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/HellKnight",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Mancubus",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/DoomImp",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/PinkyDemon",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/SpiderMastermind",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/IconOfSin",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Cleaner",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/ShotgunGuy",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/ChaingunGuy",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/RifleGuy",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/Zombieman",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/WolfensteinSS",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/DOOM-style-Game/resources/sprites/npc/soldier",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/DOOM-style-Game/resources/sprites/npc/caco_demon",
-    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/DOOM-style-Game/resources/sprites/npc/cyber_demon",
+// Each entry is a {path, prefix, label} triple. `prefix` (NULL or "" for
+// none) filters the directory's PNGs to filenames starting with it —
+// freedoom dumps all 1329 sprite PNGs into one flat folder, so we use
+// prefixes (e.g. "troo" = imp, "cybr" = cyber demon) to give each
+// enemy class its own browsable group. `label` is a short display name
+// shown in the header; falls back to the directory tail when NULL.
+typedef struct {
+    const char *path;
+    const char *prefix;   // NULL/"" = no filter
+    const char *label;    // NULL = derive from path tail
+} SBEntry;
+
+#define BD_M  "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/Beautiful-Doom/Sprites/MONSTERS/"
+#define DSG   "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/DOOM-style-Game/resources/sprites/npc/"
+#define FD    "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/freedoom/sprites"
+
+static const SBEntry SB_FOLDERS[] = {
+    // Beautiful-Doom — one folder per monster, no prefix filter needed.
+    {BD_M "Revenant",         NULL, NULL},
+    {BD_M "LostSoul",         NULL, NULL},
+    {BD_M "PainElemental",    NULL, NULL},
+    {BD_M "Cacodemon",        NULL, NULL},
+    {BD_M "Cyberdemon",       NULL, NULL},
+    {BD_M "Arachnotron",      NULL, NULL},
+    {BD_M "ArchVile",         NULL, NULL},
+    {BD_M "BaronOfHell",      NULL, NULL},
+    {BD_M "HellKnight",       NULL, NULL},
+    {BD_M "Mancubus",         NULL, NULL},
+    {BD_M "DoomImp",          NULL, NULL},
+    {BD_M "PinkyDemon",       NULL, NULL},
+    {BD_M "SpiderMastermind", NULL, NULL},
+    {BD_M "IconOfSin",        NULL, NULL},
+    {BD_M "Cleaner",          NULL, NULL},
+    {BD_M "ShotgunGuy",       NULL, NULL},
+    {BD_M "ChaingunGuy",      NULL, NULL},
+    {BD_M "RifleGuy",         NULL, NULL},
+    {BD_M "Zombieman",        NULL, NULL},
+    {BD_M "WolfensteinSS",    NULL, NULL},
+    // DOOM-style-Game — already foldered.
+    {DSG  "soldier",          NULL, NULL},
+    {DSG  "caco_demon",       NULL, NULL},
+    {DSG  "cyber_demon",      NULL, NULL},
+    // Freedoom — flat folder, BSD-licensed. One entry per major prefix.
+    {FD,  "poss", "freedoom: zombie trooper (poss)"},
+    {FD,  "spos", "freedoom: shotgun zombie (spos)"},
+    {FD,  "cpos", "freedoom: chaingun zombie (cpos)"},
+    {FD,  "troo", "freedoom: imp (troo)"},
+    {FD,  "sarg", "freedoom: demon / sergeant (sarg)"},
+    {FD,  "head", "freedoom: cacodemon (head)"},
+    {FD,  "boss", "freedoom: baron of hell (boss)"},
+    {FD,  "bos2", "freedoom: hell knight (bos2)"},
+    {FD,  "skel", "freedoom: revenant (skel)"},
+    {FD,  "fatt", "freedoom: mancubus (fatt)"},
+    {FD,  "skul", "freedoom: lost soul (skul)"},
+    {FD,  "pain", "freedoom: pain elemental (pain)"},
+    {FD,  "vile", "freedoom: arch-vile (vile)"},
+    {FD,  "bspi", "freedoom: arachnotron (bspi)"},
+    {FD,  "cybr", "freedoom: cyber demon (cybr)"},
+    {FD,  "spid", "freedoom: spider mastermind (spid)"},
+    {FD,  "sht2", "freedoom: super shotgun (sht2)"},
+    {FD,  "shtf", "freedoom: shotgun firing (shtf)"},
+    {FD,  "shtg", "freedoom: shotgun viewmodel (shtg)"},
+    {FD,  "chgf", "freedoom: chaingun firing (chgf)"},
+    {FD,  "chgg", "freedoom: chaingun viewmodel (chgg)"},
+    {FD,  "pisf", "freedoom: pistol firing (pisf)"},
+    {FD,  "pisg", "freedoom: pistol viewmodel (pisg)"},
+    {FD,  "plsf", "freedoom: plasma firing (plsf)"},
+    {FD,  "plsg", "freedoom: plasma viewmodel (plsg)"},
+    {FD,  "bfgf", "freedoom: bfg firing (bfgf)"},
+    {FD,  "bfgg", "freedoom: bfg viewmodel (bfgg)"},
+    {FD,  "rocg", "freedoom: rocket launcher (rocg)"},
+    {FD,  "sawg", "freedoom: chainsaw (sawg)"},
+    {FD,  "pung", "freedoom: punch / fist (pung)"},
+    {FD,  "medi", "freedoom: medkit pickup (medi)"},
+    {FD,  "stim", "freedoom: stimpack (stim)"},
+    {FD,  "arm1", "freedoom: armor green (arm1)"},
+    {FD,  "arm2", "freedoom: armor blue (arm2)"},
+    {FD,  "bpak", "freedoom: backpack (bpak)"},
+    {FD,  "clip", "freedoom: bullet clip (clip)"},
+    {FD,  "shel", "freedoom: shells (shel)"},
+    {FD,  "rock", "freedoom: rockets (rock)"},
+    {FD,  "cell", "freedoom: cells (cell)"},
+    {FD,  "mega", "freedoom: megasphere (mega)"},
+    {FD,  NULL,   "freedoom: ALL sprites (1329)"},
 };
 #define SB_FOLDER_COUNT (int)(sizeof(SB_FOLDERS)/sizeof(SB_FOLDERS[0]))
 
 static bool          g_sbActive  = false;
 static int           g_sbFolder  = 0;
-static int           g_sbFile    = 0;
+static int           g_sbFile    = 0;       // index into g_sbFiltered[]
 static int           g_sbZoom    = 4;
 static FilePathList  g_sbList;
 static bool          g_sbHasList = false;
 static Texture2D     g_sbTex;
 static bool          g_sbHasTex  = false;
+// Filter buffer — indices into g_sbList.paths[] for files whose basename
+// starts with the entry's prefix. With a NULL/empty prefix every path
+// passes through. Sized for freedoom's 1329-file flat sprites/ folder
+// plus headroom.
+#define SB_FILTERED_MAX 2048
+static int           g_sbFiltered[SB_FILTERED_MAX];
+static int           g_sbFilteredCount = 0;
 
 static void SBLoadFile(void) {
     if (g_sbHasTex) { UnloadTexture(g_sbTex); g_sbHasTex = false; }
-    if (!g_sbHasList || g_sbList.count == 0) return;
-    if (g_sbFile < 0) g_sbFile = (int)g_sbList.count - 1;
-    if (g_sbFile >= (int)g_sbList.count) g_sbFile = 0;
-    g_sbTex = LoadTexture(g_sbList.paths[g_sbFile]);
+    if (!g_sbHasList || g_sbFilteredCount == 0) return;
+    if (g_sbFile < 0) g_sbFile = g_sbFilteredCount - 1;
+    if (g_sbFile >= g_sbFilteredCount) g_sbFile = 0;
+    int actual = g_sbFiltered[g_sbFile];
+    g_sbTex = LoadTexture(g_sbList.paths[actual]);
     if (g_sbTex.id) {
         SetTextureFilter(g_sbTex, TEXTURE_FILTER_POINT);
         g_sbHasTex = true;
@@ -4106,8 +4174,31 @@ static void SBLoadFile(void) {
 
 static void SBLoadFolder(void) {
     if (g_sbHasList) { UnloadDirectoryFiles(g_sbList); g_sbHasList = false; }
-    g_sbList = LoadDirectoryFilesEx(SB_FOLDERS[g_sbFolder], ".png", false);
+    g_sbList = LoadDirectoryFilesEx(SB_FOLDERS[g_sbFolder].path, ".png", false);
     g_sbHasList = true;
+    // Build the filtered-index array. With no prefix, accept every path;
+    // otherwise accept only paths whose basename starts with the prefix.
+    g_sbFilteredCount = 0;
+    const char *prefix = SB_FOLDERS[g_sbFolder].prefix;
+    bool noFilter = (prefix == NULL || prefix[0] == '\0');
+    int plen = noFilter ? 0 : (int)strlen(prefix);
+    for (int i = 0; i < (int)g_sbList.count && g_sbFilteredCount < SB_FILTERED_MAX; i++) {
+        if (noFilter) {
+            g_sbFiltered[g_sbFilteredCount++] = i;
+            continue;
+        }
+        const char *p = g_sbList.paths[i];
+        const char *base = strrchr(p, '/');
+        base = base ? base + 1 : p;
+        // Case-insensitive prefix match.
+        bool ok = true;
+        for (int k = 0; k < plen; k++) {
+            char a = base[k]; if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            char b = prefix[k]; if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) { ok = false; break; }
+        }
+        if (ok) g_sbFiltered[g_sbFilteredCount++] = i;
+    }
     g_sbFile = 0;
     SBLoadFile();
 }
@@ -4155,20 +4246,24 @@ static void SBStep(void) {
                       0.f, (float)g_sbZoom, WHITE);
     }
 
-    // Top header — folder name + index counts.
-    const char *folder = SB_FOLDERS[g_sbFolder];
-    const char *folderTail = strrchr(folder, '/');
-    folderTail = folderTail ? folderTail + 1 : folder;
+    // Top header — folder label + index counts.
+    const SBEntry *e = &SB_FOLDERS[g_sbFolder];
+    const char *label = e->label;
+    if (!label) {
+        label = strrchr(e->path, '/');
+        label = label ? label + 1 : e->path;
+    }
     char hdr[256];
-    int fileCount = g_sbHasList ? (int)g_sbList.count : 0;
+    int fileCount = g_sbFilteredCount;
     int fileNum   = (fileCount > 0) ? g_sbFile + 1 : 0;
     snprintf(hdr, sizeof(hdr), "FOLDER [%d/%d] %s   FILE %d/%d",
-             g_sbFolder + 1, SB_FOLDER_COUNT, folderTail, fileNum, fileCount);
+             g_sbFolder + 1, SB_FOLDER_COUNT, label, fileNum, fileCount);
     DrawText(hdr, 20, 20, 22, (Color){240, 200, 80, 255});
 
     // Big filename label so the prefix is easy to read.
     if (g_sbHasList && fileCount > 0 && g_sbFile < fileCount) {
-        const char *path = g_sbList.paths[g_sbFile];
+        int actual = g_sbFiltered[g_sbFile];
+        const char *path = g_sbList.paths[actual];
         const char *fn = strrchr(path, '/');
         fn = fn ? fn + 1 : path;
         DrawText(fn, 20, 50, 32, WHITE);
