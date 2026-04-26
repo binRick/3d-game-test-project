@@ -4116,6 +4116,114 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
 // single-threaded browser context).
 static Camera3D g_cam;
 
+// ── SPEED-PICKUP CANDIDATE PREVIEW (debug, K on main menu) ─────────────────
+// Renders 6 candidate sprite sets side-by-side, each animated at 5 fps so
+// the player can see how each rotation/cycle reads at full speed before
+// committing one as the SPEED-boost pickup. macOS-only since we read
+// absolute paths under third_party/.
+#define SP_CAND_COUNT 6
+#define SP_FRAME_MAX  4
+static bool      g_spActive = false;
+static Texture2D g_spTex[SP_CAND_COUNT][SP_FRAME_MAX];
+static int       g_spFrameCount[SP_CAND_COUNT];
+static bool      g_spLoaded = false;
+static const char *g_spNames[SP_CAND_COUNT] = {
+    "PINS  (blur sphere)",
+    "MEGA  (megasphere)",
+    "SOUL  (soulsphere)",
+    "PMAP  (computer map)",
+    "PVIS  (light visor)",
+    "PSTR  (berserk pack)",
+};
+// freedoom file basenames per candidate (NULL = no more frames)
+static const char *g_spFiles[SP_CAND_COUNT][SP_FRAME_MAX] = {
+    {"pinsa0.png","pinsb0.png","pinsc0.png","pinsd0.png"},
+    {"megaa0.png","megab0.png","megac0.png","megad0.png"},
+    {"soula0.png","soulb0.png","soulc0.png","sould0.png"},
+    {"pmapa0.png","pmapb0.png","pmapc0.png","pmapd0.png"},
+    {"pvisa0.png","pvisb0.png", NULL, NULL},
+    {"pstra0.png", NULL, NULL, NULL},
+};
+
+static void SPLoad(void) {
+    if (g_spLoaded) return;
+    char fp[700];
+    for (int c = 0; c < SP_CAND_COUNT; c++) {
+        g_spFrameCount[c] = 0;
+        for (int f = 0; f < SP_FRAME_MAX; f++) {
+            if (!g_spFiles[c][f]) break;
+            snprintf(fp, sizeof(fp),
+                "/Users/richardblundell/Desktop/repos/Iron-Fist/third_party/freedoom/sprites/%s",
+                g_spFiles[c][f]);
+            g_spTex[c][f] = LoadTexture(fp);
+            if (g_spTex[c][f].id) {
+                SetTextureFilter(g_spTex[c][f], TEXTURE_FILTER_POINT);
+                SetTextureWrap  (g_spTex[c][f], TEXTURE_WRAP_CLAMP);
+                g_spFrameCount[c]++;
+            } else {
+                break;
+            }
+        }
+    }
+    g_spLoaded = true;
+}
+
+static void SPOpen(void) {
+    g_spActive = true;
+    SPLoad();
+    EnableCursor(); ShowCursor();
+}
+
+static void SPClose(void) {
+    g_spActive = false;
+}
+
+static void SPStep(void) {
+    if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_K)) { SPClose(); return; }
+    BeginDrawing();
+    ClearBackground((Color){20, 20, 30, 255});
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    const char *title = "SPEED PICKUP CANDIDATES";
+    DrawText(title, sw/2 - MeasureText(title, 32)/2, 30, 32, (Color){255, 220, 80, 255});
+    const char *sub = "watching each cycle at 5 fps - tell me which one to wire as SPEED";
+    DrawText(sub,   sw/2 - MeasureText(sub,   16)/2, 70, 16, (Color){180, 180, 200, 220});
+
+    // 3x2 grid of candidate cells
+    int cols = 3, rows = 2;
+    int cellW = sw / cols;
+    int cellH = (sh - 140) / rows;
+    float t = (float)GetTime();
+    for (int c = 0; c < SP_CAND_COUNT; c++) {
+        int col = c % cols;
+        int row = c / cols;
+        int cx = col * cellW + cellW/2;
+        int cy = 110 + row * cellH + cellH/2;
+        // Frame cycle at 5 fps
+        if (g_spFrameCount[c] > 0) {
+            int f = (int)(t * 5.f) % g_spFrameCount[c];
+            if (f < 0) f += g_spFrameCount[c];
+            Texture2D tex = g_spTex[c][f];
+            if (tex.id) {
+                int scale = 6;
+                int dw = tex.width * scale;
+                int dh = tex.height * scale;
+                DrawTextureEx(tex,
+                    (Vector2){cx - dw/2.f, cy - dh/2.f},
+                    0.f, (float)scale, WHITE);
+            }
+        } else {
+            DrawText("(failed to load)", cx - 80, cy, 16, RED);
+        }
+        // Label below
+        DrawText(g_spNames[c],
+            cx - MeasureText(g_spNames[c], 18)/2,
+            cy + cellH/2 - 30, 18, WHITE);
+    }
+    DrawText("ESC / K to exit", 20, sh - 28, 16, (Color){160, 160, 180, 200});
+    EndDrawing();
+}
+
+
 // ── HIGH-SCORE SUBMISSION ───────────────────────────────────────────────────
 // Build the per-run JSON payload for the leaderboard API and POST it.
 // Web build: emscripten-side fetch via EM_JS (no curl, no native lib).
@@ -4852,6 +4960,7 @@ static void StepFrame(void) {
 #if !defined(PLATFORM_WEB) && !defined(_WIN32)
     if (IsKeyPressed(KEY_F8) && !g_sbActive) { SBOpen(); }
     if (g_sbActive) { SBStep(); return; }
+    if (g_spActive) { SPStep(); return; }
 #endif
     // Backtick (or shift+~) toggles the dev console — only meaningful in
     // GS_PLAY where there's live game state to act on. ConHandleInput()
@@ -4983,6 +5092,8 @@ static void StepFrame(void) {
         // in the WASM sandbox or a Windows build.
 #if !defined(PLATFORM_WEB) && !defined(_WIN32)
         if (IsKeyPressed(KEY_S) && !g_sbActive) { SBOpen(); }
+        // K — open the speed-pickup candidate previewer (animated grid).
+        if (IsKeyPressed(KEY_K) && !g_spActive) { SPOpen(); }
 #endif
     } else if (g_gs == GS_PICK_ENEMY) {
         // Enemy picker — navigate 13 picker slots: 10 in-game enemies (0..9)
@@ -5330,6 +5441,8 @@ static void StepFrame(void) {
 #if !defined(PLATFORM_WEB) && !defined(_WIN32)
         const char *sb="[ S FOR SPRITE BROWSER ]";
         DrawText(sb,sw2/2-MeasureText(sb,16)/2,sh2*3/4+62,16,(Color){180,180,200,255});
+        const char *kp="[ K FOR SPEED PICKUP CANDIDATES ]";
+        DrawText(kp,sw2/2-MeasureText(kp,16)/2,sh2*3/4+84,16,(Color){180,180,200,255});
 #endif
         DrawFPS(10,10);
     } else if (g_gs == GS_PICK_ENEMY) {
