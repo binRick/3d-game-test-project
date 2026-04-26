@@ -380,6 +380,13 @@ static Texture2D g_ammoTex[5];
 // Tesla pickup billboard (Pickup.type==7) — separate slot since it's outside
 // the 0..4 ammo range and grants the weapon itself on first grab.
 static Texture2D g_teslaPickupTex;
+// QUAD damage pickup (Pickup.type==5) — 6-frame rotating cube using
+// Beautiful-Doom Icon-of-Sin SCUBA0..SCUBF0 (the screaming skull cube).
+// Frames cycle on a per-frame timer so the pickup reads as "rotating
+// on the ground" without us having to actually rotate geometry.
+#define QUAD_FRAMES 6
+static Texture2D g_quadTex[QUAD_FRAMES];
+static int       g_quadTexCount = 0;
 
 // DOOM-style-Game enemies — sprite container for soldier (type 7),
 // cacodemon (type 8), cyber demon (type 9). Same struct backs the arena
@@ -405,6 +412,7 @@ static PreviewEnemy g_prevPainElem;
 static PreviewEnemy g_prevSkel;       // freedoom squid character (type 13)
 static PreviewEnemy g_prevArchVile;   // freedoom arch-vile / Walking Eye (type 14, resurrector)
 static PreviewEnemy g_prevBaron;      // freedoom Baron of Hell (type 15)
+static PreviewEnemy g_prevSpider;     // freedoom Spider Mastermind (type 16, boss)
 #define DGAME_DEATH_FRAME_TIME 0.16f
 #define DGAME_ATK_FRAME_TIME   0.10f
 
@@ -698,15 +706,16 @@ static bool     g_lastHitHead = false;  // set while processing a headshot shot;
 // now), 11 = LOST SOUL (preview/charging melee), 12 = PAIN ELEMENTAL
 // (preview/floater), 13 = TENTACLE FIEND (preview/melee — freedoom skel),
 // 14 = WALKING EYE (resurrects nearby corpses; freedoom vile),
-// 15 = BARON OF HELL (heavy armored bruiser, slow + tanky melee).
-static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280, 700, 600 };
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f, 7.0f, 4.5f};
-static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18,   25,   30  };
-static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f, 1.7f, 2.5f, 2.0f};
-static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30,   30,   40,   35  };
-static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f, 3.8f, 4.0f, 4.0f};
-static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450,  380,  1000, 1500};
-const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255},{60,200,180,255},{255,140,40,255},{120,255,80,255}};
+// 15 = BARON OF HELL (heavy armored bruiser, slow + tanky melee),
+// 16 = SPIDER MASTERMIND (boss-tier chaingunner, wave-3 boss).
+static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280, 700, 600, 1500};
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f, 7.0f, 4.5f, 4.0f};
+static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18,   25,   30,   35  };
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f, 1.7f, 2.5f, 2.0f, 1.5f};
+static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30,   30,   40,   35,   50  };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f, 3.8f, 4.0f, 4.0f, 4.0f};
+static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450,  380,  1000, 1500, 3500};
+const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255},{60,200,180,255},{255,140,40,255},{120,255,80,255},{200,80,40,255}};
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
@@ -1354,12 +1363,32 @@ static void DrawPicks(Camera3D cam) {
         Pickup *pk=&g_pk[i]; if (!pk->active) continue;
         // Power-ups have no sprite assets — draw a pulsing sphere with a
         // larger halo ring so they read as "special" against ammo crates.
-        if (pk->type == 5 || pk->type == 6) {
+        if (pk->type == 5) {
+            // QUAD damage — Icon-of-Sin cube cycling at 5 fps so it reads
+            // as rotating on the ground. Hovers slightly + double-ring
+            // halo behind so it still pops as a power-up against the
+            // surroundings.
+            Color c = tc[pk->type];
+            Vector3 cubePos = pk->pos;
+            cubePos.y += sinf(t * 2.5f + (float)i) * 0.08f;
+            DrawCircle3D(cubePos, 0.70f, (Vector3){1,0,0}, 90.f + t*40.f, Fade(c, 0.55f));
+            DrawCircle3D(cubePos, 0.55f, (Vector3){0,0,1}, 90.f - t*60.f, Fade(c, 0.45f));
+            if (g_quadTexCount > 0) {
+                int frame = (int)(t * 5.f) % g_quadTexCount;
+                if (frame < 0) frame += g_quadTexCount;
+                DrawBillboard(cam, g_quadTex[frame], cubePos, 0.9f, WHITE);
+            } else {
+                // Sprites missing — fall back to the old pulsing sphere.
+                float pulse = 0.85f + 0.25f*sinf(t*4.f + (float)i);
+                DrawSphere(cubePos, 0.34f * pulse, c);
+            }
+            continue;
+        }
+        if (pk->type == 6) {
+            // SPEED boost — pulsing sphere + halo (unchanged).
             float pulse = 0.85f + 0.25f*sinf(t*4.f + (float)i);
             Color c = tc[pk->type];
             DrawSphere(pk->pos, 0.34f * pulse, c);
-            // Two stacked halo rings rotating in opposite directions for that
-            // "this is a power-up" tell. Additive feels too much; semi-transparent.
             DrawCircle3D(pk->pos, 0.65f, (Vector3){1,0,0}, 90.f + t*40.f, Fade(c, 0.55f));
             DrawCircle3D(pk->pos, 0.55f, (Vector3){0,0,1}, 90.f - t*60.f, Fade(c, 0.45f));
             continue;
@@ -1427,7 +1456,7 @@ static const char *TypeName(int t) {
          : t==4 ? "CULT"  : t==5 ? "MUTNT" : t==6 ? "MECH"
          : t==7 ? "SOLDR" : t==8 ? "CACO"  : t==9 ? "CYBER"
          : t==10 ? "REVN" : t==11 ? "LSOUL" : t==12 ? "PAINE" : t==13 ? "TFIND"
-         : t==14 ? "VILE" : t==15 ? "BARON" : "?";
+         : t==14 ? "VILE" : t==15 ? "BARON" : t==16 ? "SPIDR" : "?";
 }
 
 static void DebugLogTick(void) {
@@ -1561,7 +1590,7 @@ static void KillEnemy(int i) {
     }
     static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH",
                                 "SOLDIER","CACODEMON","CYBER DEMON","REVENANT","LOST SOUL","PAIN ELEMENTAL","TENTACLE FIEND",
-                                "WALKING EYE","BARON OF HELL"};
+                                "WALKING EYE","BARON OF HELL","SPIDER MASTERMIND"};
     int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
@@ -1587,7 +1616,8 @@ static void KillEnemy(int i) {
                        (t == 9) ? "CYBER DEMON" :
                        (t == 13) ? "TENTACLE FIEND" :
                        (t == 14) ? "WALKING EYE" :
-                       (t == 15) ? "BARON OF HELL" : "TARGET";
+                       (t == 15) ? "BARON OF HELL" :
+                       (t == 16) ? "SPIDER MASTERMIND" : "TARGET";
         }
         char dynLine[80];
         snprintf(dynLine, sizeof(dynLine), "FINAL %s - HUNT HIM DOWN!", survName);
@@ -1608,8 +1638,8 @@ static void KillEnemy(int i) {
         if (g_arenaMode) {
             int t = g_arenaType;
             int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon — solo respawn
-            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","WALKING EYES","BARONS OF HELL"};
-            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<16)?t:0]);
+            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","WALKING EYES","BARONS OF HELL","SPIDER MASTERMIND"};
+            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<17)?t:0]);
             Msg(buf);
             for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
                 for (int tries = 0; tries < 120; tries++) {
@@ -1645,10 +1675,16 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
         if (!g_bossInterlude) {
             g_bossInterlude = true;
             if (g_sNextWaveOK) { SetSoundVolume(g_sNextWave, 1.5f); PlaySound(g_sNextWave); }
-            // Wave 2 boss is the cyber demon — heavier, ranged. Other waves
-            // use the regular chef boss (type 3).
-            int bt = (g_wave == 2) ? 9 : 3;
-            const char *bmsg = (bt == 9) ? "-- CYBER DEMON --" : "-- BOSS FIGHT --";
+            // Wave-specific bosses:
+            //   wave 2  -> cyber demon (type 9)
+            //   wave 3  -> spider mastermind (type 16)
+            //   else    -> regular chef boss (type 3)
+            int bt = (g_wave == 2) ? 9
+                   : (g_wave == 3) ? 16
+                   :                 3;
+            const char *bmsg = (bt == 9)  ? "-- CYBER DEMON --"
+                             : (bt == 16) ? "-- SPIDER MASTERMIND --"
+                             :              "-- BOSS FIGHT --";
             Msg(bmsg);
             Enemy *ne = &g_e[g_ec++];
             *ne = (Enemy){0};
@@ -2511,7 +2547,7 @@ static void DrawEnemies(Camera3D cam) {
         // they appear to spin in place. atk/pain/death are real animation
         // sequences and DO cycle on time. Caco (8) and Lost Soul (11) are
         // flying; Pain Elemental (12) is also a floater.
-        if (e->type >= 7 && e->type <= 15) {
+        if (e->type >= 7 && e->type <= 16) {
             PreviewEnemy *pe = (e->type == 7)  ? &g_prevSoldier
                               : (e->type == 8)  ? &g_prevCaco
                               : (e->type == 9)  ? &g_prevCyber
@@ -2520,7 +2556,8 @@ static void DrawEnemies(Camera3D cam) {
                               : (e->type == 12) ? &g_prevPainElem
                               : (e->type == 13) ? &g_prevSkel
                               : (e->type == 14) ? &g_prevArchVile
-                                                : &g_prevBaron;
+                              : (e->type == 15) ? &g_prevBaron
+                                                : &g_prevSpider;
             if (pe->ok) {
                 // Reference (live walking) sprite height per type. Each
                 // frame's actual world height is scaled by tex.height /
@@ -2535,7 +2572,8 @@ static void DrawEnemies(Camera3D cam) {
                                   : (e->type == 12) ? 2.6f
                                   : (e->type == 13) ? 2.2f   // tentacle fiend
                                   : (e->type == 14) ? 2.6f   // walking eye
-                                                    : 2.8f;  // baron of hell
+                                  : (e->type == 15) ? 2.8f   // baron of hell
+                                                    : 4.0f;  // spider mastermind (huge)
                 Texture2D tex = {0};
                 bool isCorpse = e->dying && pe->deathCount > 0;
                 bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
@@ -2881,6 +2919,7 @@ static void UpdBullets(float dt) {
                            : (e->type==11) ? 0.5f   // lost soul — small head
                            : (e->type==12) ? 1.3f   // pain elemental — big floating ball
                            : (e->type==15) ? 1.4f   // baron of hell — center of 2.8m sprite
+                           : (e->type==16) ? 1.3f   // spider mastermind — center of 4m sprite
                            :                 1.0f;
             float _bodyR   = (e->type==3)  ? 1.5f
                            : (e->type==9)  ? 1.3f
@@ -2888,6 +2927,7 @@ static void UpdBullets(float dt) {
                            : (e->type==11) ? 0.45f
                            : (e->type==12) ? 1.10f
                            : (e->type==15) ? 1.00f  // baron
+                           : (e->type==16) ? 1.50f  // spider — wide
                            :                 0.9f;
             float _bodyH   = (e->type==3)  ? 2.3f
                            : (e->type==9)  ? 1.9f
@@ -2895,6 +2935,7 @@ static void UpdBullets(float dt) {
                            : (e->type==11) ? 0.55f
                            : (e->type==12) ? 1.30f
                            : (e->type==15) ? 1.50f  // baron
+                           : (e->type==16) ? 2.00f  // spider — tall
                            :                 1.2f;
             float _bodyWorldY = e->pos.y + _bodyY;
             float _ydist=fabsf(b->pos.y - _bodyWorldY);
@@ -3286,6 +3327,9 @@ static void Shoot(void) {
             } else if (g_e[j].type == 15) {  // BARON OF HELL (sprite ~2.8m tall)
                 headY = 2.50f; headR = 0.40f;
                 bodyY = 1.40f; bodyR = 0.90f;
+            } else if (g_e[j].type == 16) {  // SPIDER MASTERMIND (huge sprite ~4m tall)
+                headY = 2.30f; headR = 0.55f;
+                bodyY = 1.30f; bodyR = 1.50f;
             } else {
                 float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
                 headY = bh + 0.67f; headR = 0.26f;
@@ -3397,6 +3441,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
                          : (g_e[j].type == 8) ? 1.1f
                          : (g_e[j].type == 3) ? 1.4f
                          : (g_e[j].type == 15) ? 1.4f
+                         : (g_e[j].type == 16) ? 1.3f
                          :                      0.95f;
         float dy = (g_e[j].pos.y + coneChestY) - origin.y;
         float dz = g_e[j].pos.z - origin.z;
@@ -3409,6 +3454,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
                     : (g_e[j].type == 9) ? 1.3f
                     : (g_e[j].type == 6) ? 0.85f
                     : (g_e[j].type == 15) ? 1.0f   // baron of hell
+                    : (g_e[j].type == 16) ? 1.5f   // spider mastermind
                     :                      0.55f;
         float d = sqrtf(d2);
         float surf = d - bodyR;
@@ -3444,6 +3490,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
                       : (g_e[bi].type == 8) ? 1.1f
                       : (g_e[bi].type == 3) ? 1.4f
                       : (g_e[bi].type == 15) ? 1.4f
+                      : (g_e[bi].type == 16) ? 1.3f
                       :                       0.95f;
         Vector3 anchor = {g_e[bi].pos.x, g_e[bi].pos.y + biChest, g_e[bi].pos.z};
         pts[np++] = anchor;
@@ -3468,6 +3515,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
                              : (g_e[j].type == 9) ? 1.3f
                              : (g_e[j].type == 6) ? 0.85f
                              : (g_e[j].type == 15) ? 1.0f   // baron
+                             : (g_e[j].type == 16) ? 1.5f   // spider mastermind
                              :                      0.55f;
                 float dRaw = Vector3Distance(anchor, ec);
                 float d = dRaw - jBodyR;
@@ -3481,6 +3529,7 @@ static void FireTeslaShot(Vector3 origin, Vector3 dir, float quadMul) {
                          : (g_e[target].type == 8) ? 1.1f
                          : (g_e[target].type == 3) ? 1.4f
                          : (g_e[target].type == 15) ? 1.4f
+                         : (g_e[target].type == 16) ? 1.3f
                          :                           0.95f;
             anchor = (Vector3){g_e[target].pos.x, g_e[target].pos.y + tChest, g_e[target].pos.z};
             pts[np++] = anchor;
@@ -3965,7 +4014,7 @@ static void InitGame(void) {
         // ARENA TEST: 8 enemies of g_arenaType. Boss arena uses fewer
         // (just 1) since they're tanky. KillEnemy respawns more.
         int t = g_arenaType;
-        if (t < 0) t = 0; if (t > 15) t = 15;
+        if (t < 0) t = 0; if (t > 16) t = 16;
         int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon are solo by default
         for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
             for (int tries = 0; tries < 120; tries++) {
@@ -4930,8 +4979,8 @@ static void StepFrame(void) {
         // to slots 0..9; slots 10/11/12 reachable only via arrows.
         g_pickerT += dt;
         if (IsKeyPressed(KEY_ESCAPE)) g_gs = GS_MENU;
-        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 15) % 16;
-        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 16;
+        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 16) % 17;
+        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 17;
         for (int k = 0; k < 10; k++) {
             // Number keys 1-9 + 0 (for slot 9) so all are reachable
             int key = (k == 9) ? KEY_ZERO : (KEY_ONE + k);
@@ -5300,14 +5349,15 @@ static void StepFrame(void) {
             "[PREVIEW] Pain Elemental - floating mob spawner.",
             "[PREVIEW] Tentacle Fiend - armored cyborg w/ tentacles.",
             "[PREVIEW] Arch-Vile - resurrects nearby corpses.",
-            "[PREVIEW] Baron of Hell - tanky armored bruiser."
+            "[PREVIEW] Baron of Hell - tanky armored bruiser.",
+            "Spider Mastermind - wave 3 boss, chaingun walker."
         };
         static const char *enemyNamesExt[] = {
             "CHEF", "HEAVY CHEF", "FAST CHEF", "BOSS CHEF",
             "SS GUARD", "MUTANT", "MECH",
             "SOLDIER", "CACODEMON", "CYBER DEMON",
             "REVENANT", "LOST SOUL", "PAIN ELEMENTAL", "TENTACLE FIEND",
-            "WALKING EYE", "BARON OF HELL"
+            "WALKING EYE", "BARON OF HELL", "SPIDER MASTERMIND"
         };
 
         // Preview animation: walk frames cycle at ~5 fps. For 8-rotation
@@ -5319,7 +5369,7 @@ static void StepFrame(void) {
         // side, ¾-back, back); 5..7 are slots 3,2,1 mirrored (so a full
         // 360° rotation cycles 0→1→2→3→4→3'→2'→1'→0).
         int t = g_pickerIdx;
-        if (t < 0) t = 0; if (t > 15) t = 15;
+        if (t < 0) t = 0; if (t > 16) t = 16;
         int walkFrame = (int)(g_pickerT * 5.f) % 4;
         int rotIdx    = (int)(g_pickerT * 5.f) % 8;
         static const int   rotSlot[8]  = {0, 1, 2, 3, 4, 3, 2, 1};
@@ -5376,7 +5426,7 @@ static void StepFrame(void) {
         // PreviewEnemy slots 7..12 — DOOM-style + Beautiful-Doom imports.
         // Walk frame count is per-enemy (whatever walk_N.png files exist),
         // so the modulo is dynamic.
-        else if (t >= 7 && t <= 15) {
+        else if (t >= 7 && t <= 16) {
             PreviewEnemy *pe = (t == 7)  ? &g_prevSoldier
                               : (t == 8)  ? &g_prevCaco
                               : (t == 9)  ? &g_prevCyber
@@ -5385,7 +5435,8 @@ static void StepFrame(void) {
                               : (t == 12) ? &g_prevPainElem
                               : (t == 13) ? &g_prevSkel
                               : (t == 14) ? &g_prevArchVile
-                                          : &g_prevBaron;
+                              : (t == 15) ? &g_prevBaron
+                                          : &g_prevSpider;
             if (pe->ok) {
                 int idx = (int)(g_pickerT * 5.f) % pe->walkCount;
                 walkTex = pe->walk[idx];
@@ -5439,10 +5490,10 @@ static void StepFrame(void) {
         // Spacing scales down a bit when the slot count grows past ~13 so
         // the row stays comfortably inside the screen edges.
         // Match the picker's actual slot count — keep this in sync with
-        // ENT type count (currently 16: chefs 0..3, SS/mut/mech 4..6,
+        // ENT type count (currently 17: chefs 0..3, SS/mut/mech 4..6,
         // soldier/caco/cyber 7..9, revenant/lostsoul/painelem 10..12,
-        // tentacle fiend 13, walking eye 14, baron 15).
-        const int slots = 16;
+        // tentacle fiend 13, walking eye 14, baron 15, spider 16).
+        const int slots = 17;
         int spacing = (slots <= 10) ? 22 : (slots <= 13) ? 18 : 16;
         int rowW = slots * spacing;
         for (int i = 0; i < slots; i++) {
@@ -5907,6 +5958,17 @@ int main(int argc, char **argv) {
                 SetTextureFilter(g_teslaPickupTex, TEXTURE_FILTER_POINT);
                 SetTextureWrap  (g_teslaPickupTex, TEXTURE_WRAP_CLAMP);
             }
+            // QUAD damage pickup — 6-frame cycling Icon-of-Sin cube.
+            g_quadTexCount = 0;
+            for (int q = 0; q < QUAD_FRAMES; q++) {
+                snprintf(fp, sizeof(fp), "%spickups/quad/quad_%d.png", appBase, q);
+                g_quadTex[q] = LoadTexture(fp);
+                if (g_quadTex[q].id) {
+                    SetTextureFilter(g_quadTex[q], TEXTURE_FILTER_POINT);
+                    SetTextureWrap  (g_quadTex[q], TEXTURE_WRAP_CLAMP);
+                    g_quadTexCount = q + 1;
+                }
+            }
         }
 
         // Chef walking animation (4 frames from WolfenDoom bosses/AFAB*)
@@ -5933,11 +5995,12 @@ int main(int argc, char **argv) {
         //   10 revenant    11 lostsoul   12 painelem
         {
             char fp[700];
-            const char *folders[9] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem", "skel", "archvile", "baron"};
-            PreviewEnemy *previews[9] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
-                                         &g_prevRevenant, &g_prevLostSoul, &g_prevPainElem,
-                                         &g_prevSkel, &g_prevArchVile, &g_prevBaron};
-            for (int p = 0; p < 9; p++) {
+            const char *folders[10] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem", "skel", "archvile", "baron", "spider"};
+            PreviewEnemy *previews[10] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
+                                          &g_prevRevenant, &g_prevLostSoul, &g_prevPainElem,
+                                          &g_prevSkel, &g_prevArchVile, &g_prevBaron,
+                                          &g_prevSpider};
+            for (int p = 0; p < 10; p++) {
                 PreviewEnemy *pe = previews[p];
                 pe->walkCount = pe->atkCount = pe->painCount = pe->deathCount = 0;
                 pe->ok = false;
