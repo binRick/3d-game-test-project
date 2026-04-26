@@ -418,6 +418,7 @@ static PreviewEnemy g_prevSkel;       // freedoom squid character (type 13)
 static PreviewEnemy g_prevArchVile;   // freedoom arch-vile / Walking Eye (type 14, resurrector)
 static PreviewEnemy g_prevBaron;      // freedoom Baron of Hell (type 15)
 static PreviewEnemy g_prevSpider;     // freedoom Spider Mastermind (type 16, boss)
+static PreviewEnemy g_prevChaingun;   // freedoom chaingun zombie (type 17, hitscan)
 #define DGAME_DEATH_FRAME_TIME 0.16f
 #define DGAME_ATK_FRAME_TIME   0.10f
 
@@ -626,6 +627,10 @@ static bool     g_sSSFireOK = false;
 // shared launcher sample for cyber specifically.
 static Sound    g_sCyberFire;
 static bool     g_sCyberFireOK = false;
+// Chaingun zombie burst (freedoom CPOS, type 17). Plays on each fire
+// tick — short clean MG burst from sounds/chaingun.mp3.
+static Sound    g_sChaingun;
+static bool     g_sChaingunOK = false;
 // Echoey first-blood-of-wave sample. Plays on the FIRST kill of each
 // wave (g_sFirstBlood plays once per RUN; this fires every wave).
 static Sound    g_sFirstBloodWave;
@@ -712,15 +717,16 @@ static bool     g_lastHitHead = false;  // set while processing a headshot shot;
 // (preview/floater), 13 = TENTACLE FIEND (preview/melee — freedoom skel),
 // 14 = WALKING EYE (resurrects nearby corpses; freedoom vile),
 // 15 = BARON OF HELL (heavy armored bruiser, slow + tanky melee),
-// 16 = SPIDER MASTERMIND (boss-tier chaingunner, wave-3 boss).
-static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280, 700, 600, 1500};
-static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f, 7.0f, 4.5f, 4.0f};
-static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18,   25,   30,   35  };
-static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f, 1.7f, 2.5f, 2.0f, 1.5f};
-static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30,   30,   40,   35,   50  };
-static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f, 3.8f, 4.0f, 4.0f, 4.0f};
-static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450,  380,  1000, 1500, 3500};
-const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255},{60,200,180,255},{255,140,40,255},{120,255,80,255},{200,80,40,255}};
+// 16 = SPIDER MASTERMIND (boss-tier chaingunner, wave-3 boss),
+// 17 = CHAINGUN ZOMBIE (freedoom CPOS — rapid hitscan tracer, ranged).
+static const float ET_HP[]    = {65,   145,  42,   800,  80,   90,   260,  120,  220,  1500, 250,  60,   420,  280, 700, 600, 1500, 95};
+static const float ET_SPD[]   = {6.0f, 3.6f, 8.8f, 7.5f, 5.0f, 4.2f, 2.6f, 5.0f, 3.5f, 3.8f, 5.5f, 9.0f, 3.0f, 5.0f, 7.0f, 4.5f, 4.0f, 4.6f};
+static const float ET_DMG[]   = {10,   24,   8,    40,   14,   14,   28,   14,   18,   34,   16,   8,    18,   18,   25,   30,   35,   8  };
+static const float ET_RATE[]  = {1.5f, 2.1f, 1.0f, 1.6f, 1.8f, 1.4f, 2.6f, 1.4f, 2.0f, 2.6f, 1.6f, 0.9f, 2.0f, 1.7f, 2.5f, 2.0f, 1.5f, 0.45f};
+static const float ET_AR[]    = {24,   20,   30,   40,   30,   30,   45,   30,   35,   50,   30,   25,   30,   30,   40,   35,   50,   34  };
+static const float ET_ATK[]   = {3.6f, 3.1f, 4.2f, 1.6f, 4.0f, 12.0f,20.0f,4.0f, 14.0f,14.0f,3.6f, 2.8f, 4.2f, 3.8f, 4.0f, 4.0f, 4.0f, 16.0f};
+static const int   ET_SC[]    = {100,  300,  160,  2500, 220,  240,  500,  200,  500,  3000, 350,  120,  450,  380,  1000, 1500, 3500, 260};
+const Color ET_COL[]   = {{60,160,55,255},{140,55,185,255},{40,110,210,255},{220,60,60,255},{120,40,160,255},{60,180,90,255},{80,90,180,255},{180,140,80,255},{220,30,30,255},{220,180,40,255},{200,200,210,255},{255,200,80,255},{180,80,160,255},{60,200,180,255},{255,140,40,255},{120,255,80,255},{200,80,40,255},{180,180,80,255}};
 static const Color ET_EYE[]   = {{255,30,20,255},{255,150,0,255},{0,230,255,255},{255,255,120,255},{200,80,255,255}};
 
 // weapon tables
@@ -1473,7 +1479,8 @@ static const char *TypeName(int t) {
          : t==4 ? "CULT"  : t==5 ? "MUTNT" : t==6 ? "MECH"
          : t==7 ? "SOLDR" : t==8 ? "CACO"  : t==9 ? "CYBER"
          : t==10 ? "REVN" : t==11 ? "LSOUL" : t==12 ? "PAINE" : t==13 ? "TFIND"
-         : t==14 ? "VILE" : t==15 ? "BARON" : t==16 ? "SPIDR" : "?";
+         : t==14 ? "VILE" : t==15 ? "BARON" : t==16 ? "SPIDR"
+         : t==17 ? "CGUNZ" : "?";
 }
 
 static void DebugLogTick(void) {
@@ -1607,7 +1614,7 @@ static void KillEnemy(int i) {
     }
     static const char *names[]={"CHEF","HEAVY CHEF","FAST CHEF","BOSS","CULTIST","MUTANT","MECH",
                                 "SOLDIER","CACODEMON","CYBER DEMON","REVENANT","LOST SOUL","PAIN ELEMENTAL","TENTACLE FIEND",
-                                "WALKING EYE","BARON OF HELL","SPIDER MASTERMIND"};
+                                "WALKING EYE","BARON OF HELL","SPIDER MASTERMIND","CHAINGUN ZOMBIE"};
     int ti = (e->type >= 0 && e->type < (int)(sizeof(names)/sizeof(names[0]))) ? e->type : 0;
     char buf[80]; snprintf(buf,80,"%s DOWN  +%d",names[ti],e->score*g_wave);
     Msg(buf);
@@ -1634,7 +1641,8 @@ static void KillEnemy(int i) {
                        (t == 13) ? "TENTACLE FIEND" :
                        (t == 14) ? "WALKING EYE" :
                        (t == 15) ? "BARON OF HELL" :
-                       (t == 16) ? "SPIDER MASTERMIND" : "TARGET";
+                       (t == 16) ? "SPIDER MASTERMIND" :
+                       (t == 17) ? "CHAINGUN ZOMBIE" : "TARGET";
         }
         char dynLine[80];
         snprintf(dynLine, sizeof(dynLine), "FINAL %s - HUNT HIM DOWN!", survName);
@@ -1655,8 +1663,8 @@ static void KillEnemy(int i) {
         if (g_arenaMode) {
             int t = g_arenaType;
             int count = (t == 3 || t == 9) ? 1 : 8;  // boss + cyber demon — solo respawn
-            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","WALKING EYES","BARONS OF HELL","SPIDER MASTERMIND"};
-            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<17)?t:0]);
+            static const char *names[] = {"CHEFS","HEAVY CHEFS","FAST CHEFS","BOSS","SS GUARDS","MUTANTS","MECHS","SOLDIERS","CACODEMONS","CYBER DEMON","REVENANTS","LOST SOULS","PAIN ELEMENTALS","TENTACLE FIENDS","WALKING EYES","BARONS OF HELL","SPIDER MASTERMIND","CHAINGUN ZOMBIES"};
+            char buf[64]; snprintf(buf, 64, "%s DOWN - RESPAWN", names[(t>=0&&t<18)?t:0]);
             Msg(buf);
             for (int k = 0; k < count && g_ec < MAX_ENEMIES; k++) {
                 for (int tries = 0; tries < 120; tries++) {
@@ -1755,20 +1763,22 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
                                                 : (rng < 0.82f) ? 5
                                                 : (rng < 0.92f) ? 6
                                                 :                7;   // SOLDIER (no caco/cyber pre-wave 2)
-                else if (g_wave < 3)       type = (rng < 0.34f) ? 0
-                                                : (rng < 0.50f) ? 2
-                                                : (rng < 0.60f) ? 1
-                                                : (rng < 0.72f) ? 5
-                                                : (rng < 0.80f) ? 6
-                                                : (rng < 0.92f) ? 7    // SOLDIER
+                else if (g_wave < 3)       type = (rng < 0.32f) ? 0
+                                                : (rng < 0.46f) ? 2
+                                                : (rng < 0.55f) ? 1
+                                                : (rng < 0.68f) ? 5
+                                                : (rng < 0.76f) ? 6
+                                                : (rng < 0.86f) ? 7    // SOLDIER
+                                                : (rng < 0.94f) ? 17   // CHAINGUN ZOMBIE
                                                 :                8;   // CACO
-                else                       type = (rng < 0.22f) ? 0
-                                                : (rng < 0.40f) ? 2
-                                                : (rng < 0.50f) ? 1
-                                                : (rng < 0.60f) ? 4    // CULTIST
-                                                : (rng < 0.72f) ? 5    // MUTANT
-                                                : (rng < 0.80f) ? 6    // MECH
-                                                : (rng < 0.90f) ? 7    // SOLDIER
+                else                       type = (rng < 0.20f) ? 0
+                                                : (rng < 0.36f) ? 2
+                                                : (rng < 0.46f) ? 1
+                                                : (rng < 0.55f) ? 4    // CULTIST
+                                                : (rng < 0.66f) ? 5    // MUTANT
+                                                : (rng < 0.74f) ? 6    // MECH
+                                                : (rng < 0.82f) ? 7    // SOLDIER
+                                                : (rng < 0.91f) ? 17   // CHAINGUN ZOMBIE
                                                 : (rng < 0.97f) ? 8    // CACO
                                                 :                9;   // CYBER (rare)
                 Enemy *ne=&g_e[g_ec++];
@@ -2081,11 +2091,12 @@ static void UpdEnemies(float dt) {
             // sits between them and the player they fall back to CHASE so the
             // navigator pathfinds them around the corner instead of standing
             // there shooting projectiles into the wall.
-            bool isMutant = (e->type == 5);
-            bool isMech   = (e->type == 6);
-            bool isCaco   = (e->type == 8);
-            bool isCyber  = (e->type == 9);
-            bool isRanged = isMutant || isMech || isCaco || isCyber;
+            bool isMutant   = (e->type == 5);
+            bool isMech     = (e->type == 6);
+            bool isCaco     = (e->type == 8);
+            bool isCyber    = (e->type == 9);
+            bool isChaingun = (e->type == 17);
+            bool isRanged = isMutant || isMech || isCaco || isCyber || isChaingun;
             bool losBlocked = false;
             if (isRanged) {
                 float muzzleY = (isMech || isCyber) ? 2.6f : isCaco ? 0.0f : 1.55f;
@@ -2134,6 +2145,31 @@ static void UpdEnemies(float dt) {
                     SpawnEShot(muzzle, target, e->dmg);
                     PlaySound(g_sMutAttackOK ? g_sMutAttack : g_sPistol);
                     e->cd = e->rate;
+                } else if (isChaingun) {
+                    // Freedoom chaingun zombie — rapid hitscan burst: muzzle
+                    // sparks + 6 yellow tracer dots + instant damage on the
+                    // player + the burst sample. Same visual recipe as
+                    // soldier/cultist; the bigger threat is the 0.45s fire
+                    // rate stacking damage at long range (16 m atkR).
+                    Vector3 muzzle = {e->pos.x, e->pos.y + 1.55f, e->pos.z};
+                    Vector3 tgt    = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
+                    Sparks(muzzle, 6);
+                    for (int t = 1; t <= 6; t++) {
+                        float u = (float)t / 7.f;
+                        Vector3 p = { muzzle.x + (tgt.x - muzzle.x)*u,
+                                      muzzle.y + (tgt.y - muzzle.y)*u,
+                                      muzzle.z + (tgt.z - muzzle.z)*u };
+                        SpawnPart(p, (Vector3){0,0,0},
+                                  (Color){255, 220, 80, 255}, 0.08f, 0.06f, false);
+                    }
+                    if (g_sChaingunOK) PlaySound(g_sChaingun);
+                    else               PlaySound(g_sShotgun);
+                    if (!g_god) g_p.hp -= e->dmg;
+                    g_p.hurtFlash = 0.18f; g_p.shake = fmaxf(g_p.shake, 0.12f);
+                    if (g_sChefHitOK) PlaySound(g_sChefHit);
+                    else              PlaySound(g_sHurt);
+                    e->cd = e->rate;
+                    if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
                 } else {
                     // Cultist (4) AND soldier (7) both fire a hitscan tracer:
                     // muzzle-flash sparks at gun height, yellow tracer dots to
@@ -2568,7 +2604,7 @@ static void DrawEnemies(Camera3D cam) {
         // they appear to spin in place. atk/pain/death are real animation
         // sequences and DO cycle on time. Caco (8) and Lost Soul (11) are
         // flying; Pain Elemental (12) is also a floater.
-        if (e->type >= 7 && e->type <= 16) {
+        if (e->type >= 7 && e->type <= 17) {
             PreviewEnemy *pe = (e->type == 7)  ? &g_prevSoldier
                               : (e->type == 8)  ? &g_prevCaco
                               : (e->type == 9)  ? &g_prevCyber
@@ -2578,7 +2614,8 @@ static void DrawEnemies(Camera3D cam) {
                               : (e->type == 13) ? &g_prevSkel
                               : (e->type == 14) ? &g_prevArchVile
                               : (e->type == 15) ? &g_prevBaron
-                                                : &g_prevSpider;
+                              : (e->type == 16) ? &g_prevSpider
+                                                : &g_prevChaingun;
             if (pe->ok) {
                 // Reference (live walking) sprite height per type. Each
                 // frame's actual world height is scaled by tex.height /
@@ -2594,7 +2631,8 @@ static void DrawEnemies(Camera3D cam) {
                                   : (e->type == 13) ? 2.2f   // tentacle fiend
                                   : (e->type == 14) ? 2.6f   // walking eye
                                   : (e->type == 15) ? 2.8f   // baron of hell
-                                                    : 4.0f;  // spider mastermind (huge)
+                                  : (e->type == 16) ? 4.0f   // spider mastermind (huge)
+                                                    : 2.1f;  // chaingun zombie
                 Texture2D tex = {0};
                 bool isCorpse = e->dying && pe->deathCount > 0;
                 bool inAtkWindup = (e->state == ES_ATTACK) && (e->cd > 0.f) && (e->cd < 0.45f);
@@ -2610,12 +2648,13 @@ static void DrawEnemies(Camera3D cam) {
                     if (ai >= pe->atkCount) ai = pe->atkCount - 1;
                     tex = pe->atk[ai];
                 } else if (e->type == 10 || e->type == 14
-                        || e->type == 15 || e->type == 16) {
+                        || e->type == 15 || e->type == 16
+                        || e->type == 17) {
                     // Revenant (10), Walking Eye (14), Baron (15),
-                    // Spider Mastermind (16) — walk_N is a multi-pose
-                    // front-only animation cycle. Time-cycle so the
-                    // enemy reads as walking; sprite always faces the
-                    // camera.
+                    // Spider Mastermind (16), Chaingun Zombie (17) —
+                    // walk_N is a multi-pose front-only animation
+                    // cycle. Time-cycle so the enemy reads as walking;
+                    // sprite always faces the camera.
                     int af = (int)(e->legT * 0.45f) % pe->walkCount;
                     if (af < 0) af += pe->walkCount;
                     tex = pe->walk[af];
@@ -3360,6 +3399,9 @@ static void Shoot(void) {
             } else if (g_e[j].type == 16) {  // SPIDER MASTERMIND (huge sprite ~4m tall)
                 headY = 2.30f; headR = 0.55f;
                 bodyY = 1.30f; bodyR = 1.50f;
+            } else if (g_e[j].type == 17) {  // CHAINGUN ZOMBIE (human-sized 2.1m)
+                headY = 1.85f; headR = 0.30f;
+                bodyY = 1.00f; bodyR = 0.55f;
             } else {
                 float bh=(g_e[j].type==1)?1.1f:(g_e[j].type==2)?0.72f:0.9f;
                 headY = bh + 0.67f; headR = 0.26f;
@@ -5120,8 +5162,8 @@ static void StepFrame(void) {
         // to slots 0..9; slots 10/11/12 reachable only via arrows.
         g_pickerT += dt;
         if (IsKeyPressed(KEY_ESCAPE)) g_gs = GS_MENU;
-        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 16) % 17;
-        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 17;
+        if (IsKeyPressed(KEY_LEFT)  || IsKeyPressed(KEY_A)) g_pickerIdx = (g_pickerIdx + 17) % 18;
+        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D)) g_pickerIdx = (g_pickerIdx + 1) % 18;
         for (int k = 0; k < 10; k++) {
             // Number keys 1-9 + 0 (for slot 9) so all are reachable
             int key = (k == 9) ? KEY_ZERO : (KEY_ONE + k);
@@ -5493,14 +5535,15 @@ static void StepFrame(void) {
             "[PREVIEW] Tentacle Fiend - armored cyborg w/ tentacles.",
             "[PREVIEW] Arch-Vile - resurrects nearby corpses.",
             "[PREVIEW] Baron of Hell - tanky armored bruiser.",
-            "Spider Mastermind - wave 3 boss, chaingun walker."
+            "Spider Mastermind - wave 3 boss, chaingun walker.",
+            "Chaingun Zombie - rapid hitscan burst, 16m range."
         };
         static const char *enemyNamesExt[] = {
             "CHEF", "HEAVY CHEF", "FAST CHEF", "BOSS CHEF",
             "SS GUARD", "MUTANT", "MECH",
             "SOLDIER", "CACODEMON", "CYBER DEMON",
             "REVENANT", "LOST SOUL", "PAIN ELEMENTAL", "TENTACLE FIEND",
-            "WALKING EYE", "BARON OF HELL", "SPIDER MASTERMIND"
+            "WALKING EYE", "BARON OF HELL", "SPIDER MASTERMIND", "CHAINGUN ZOMBIE"
         };
 
         // Preview animation: walk frames cycle at ~5 fps. For 8-rotation
@@ -5512,7 +5555,7 @@ static void StepFrame(void) {
         // side, ¾-back, back); 5..7 are slots 3,2,1 mirrored (so a full
         // 360° rotation cycles 0→1→2→3→4→3'→2'→1'→0).
         int t = g_pickerIdx;
-        if (t < 0) t = 0; if (t > 16) t = 16;
+        if (t < 0) t = 0; if (t > 17) t = 17;
         int walkFrame = (int)(g_pickerT * 5.f) % 4;
         int rotIdx    = (int)(g_pickerT * 5.f) % 8;
         static const int   rotSlot[8]  = {0, 1, 2, 3, 4, 3, 2, 1};
@@ -5569,7 +5612,7 @@ static void StepFrame(void) {
         // PreviewEnemy slots 7..12 — DOOM-style + Beautiful-Doom imports.
         // Walk frame count is per-enemy (whatever walk_N.png files exist),
         // so the modulo is dynamic.
-        else if (t >= 7 && t <= 16) {
+        else if (t >= 7 && t <= 17) {
             PreviewEnemy *pe = (t == 7)  ? &g_prevSoldier
                               : (t == 8)  ? &g_prevCaco
                               : (t == 9)  ? &g_prevCyber
@@ -5579,7 +5622,8 @@ static void StepFrame(void) {
                               : (t == 13) ? &g_prevSkel
                               : (t == 14) ? &g_prevArchVile
                               : (t == 15) ? &g_prevBaron
-                                          : &g_prevSpider;
+                              : (t == 16) ? &g_prevSpider
+                                          : &g_prevChaingun;
             if (pe->ok) {
                 int idx = (int)(g_pickerT * 5.f) % pe->walkCount;
                 walkTex = pe->walk[idx];
@@ -5633,11 +5677,12 @@ static void StepFrame(void) {
         // Spacing scales down a bit when the slot count grows past ~13 so
         // the row stays comfortably inside the screen edges.
         // Match the picker's actual slot count — keep this in sync with
-        // ENT type count (currently 17: chefs 0..3, SS/mut/mech 4..6,
+        // ENT type count (currently 18: chefs 0..3, SS/mut/mech 4..6,
         // soldier/caco/cyber 7..9, revenant/lostsoul/painelem 10..12,
-        // tentacle fiend 13, walking eye 14, baron 15, spider 16).
-        const int slots = 17;
-        int spacing = (slots <= 10) ? 22 : (slots <= 13) ? 18 : 16;
+        // tentacle fiend 13, walking eye 14, baron 15, spider 16,
+        // chaingun zombie 17).
+        const int slots = 18;
+        int spacing = (slots <= 10) ? 22 : (slots <= 13) ? 18 : (slots <= 16) ? 16 : 14;
         int rowW = slots * spacing;
         for (int i = 0; i < slots; i++) {
             int cx = sw2/2 - rowW/2 + i*spacing + spacing/2;
@@ -5883,6 +5928,10 @@ int main(int argc, char **argv) {
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/cyber-fire.mp3", AppDir());
         g_sCyberFire = LoadSound(fp);
         g_sCyberFireOK = (g_sCyberFire.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/chaingun.mp3", AppDir());
+        g_sChaingun = LoadSound(fp);
+        g_sChaingunOK = (g_sChaingun.frameCount > 0);
 
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/first-blood-wave.mp3", AppDir());
         g_sFirstBloodWave = LoadSound(fp);
@@ -6149,12 +6198,12 @@ int main(int argc, char **argv) {
         //   10 revenant    11 lostsoul   12 painelem
         {
             char fp[700];
-            const char *folders[10] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem", "skel", "archvile", "baron", "spider"};
-            PreviewEnemy *previews[10] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
+            const char *folders[11] = {"soldier", "caco", "cyber", "revenant", "lostsoul", "painelem", "skel", "archvile", "baron", "spider", "chaingun"};
+            PreviewEnemy *previews[11] = {&g_prevSoldier, &g_prevCaco, &g_prevCyber,
                                           &g_prevRevenant, &g_prevLostSoul, &g_prevPainElem,
                                           &g_prevSkel, &g_prevArchVile, &g_prevBaron,
-                                          &g_prevSpider};
-            for (int p = 0; p < 10; p++) {
+                                          &g_prevSpider, &g_prevChaingun};
+            for (int p = 0; p < 11; p++) {
                 PreviewEnemy *pe = previews[p];
                 pe->walkCount = pe->atkCount = pe->painCount = pe->deathCount = 0;
                 pe->ok = false;
@@ -6635,6 +6684,7 @@ int main(int argc, char **argv) {
     if (g_sSoldierMGOK)    UnloadSound(g_sSoldierMG);
     if (g_sSSFireOK)       UnloadSound(g_sSSFire);
     if (g_sCyberFireOK)    UnloadSound(g_sCyberFire);
+    if (g_sChaingunOK)     UnloadSound(g_sChaingun);
     if (g_sIdleSighOK)     UnloadSound(g_sIdleSigh);
     if (g_sFirstBloodWaveOK) UnloadSound(g_sFirstBloodWave);
     if (g_titleMusicOK) {
