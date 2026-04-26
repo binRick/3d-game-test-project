@@ -20,7 +20,6 @@ extern char     g_hypeMsg[80];
 extern float    g_hypeT, g_hypeDur;
 extern Texture2D g_xhair[];
 extern const char * const WPN[];
-extern bool      g_warnMinimap;  // tint rear half of minimap red when enemy is behind
 extern const Color ET_COL[];
 extern const int MAP[ROWS][COLS];
 
@@ -279,12 +278,11 @@ void DrawHUD(void) {
             DrawCircle(px2,py2,4,col);
             DrawCircleLines(px2,py2,(int)(6+3*pulse), Fade(col, 0.85f));
         }
-        // Rear-half tint (g_warnMinimap) — when ANY live enemy sits in
-        // the lower (rear) half of the radar, pulse-tint that half red.
-        // Forward = upper half because the radar rotates so player-yaw
-        // points up (sy2 > 0 → py3 < cy2 = upper). Rear enemies have
-        // sy2 < 0.
-        if (g_warnMinimap) {
+        // Rear-half tint — when ANY live enemy sits in the lower (rear)
+        // half of the radar within 12m, pulse-tint that half red. Forward
+        // = upper half because the radar rotates so player-yaw points up
+        // (sy2 > 0 → py3 < cy2 = upper). Rear enemies have sy2 < 0.
+        {
             bool rearAny = false;
             for (int i = 0; i < g_ec; i++) {
                 Enemy *e = &g_e[i];
