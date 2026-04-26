@@ -4941,6 +4941,11 @@ static void StepFrame(void) {
                 statusCol = (Color){200, 200, 200, 200};
             }
             DrawText(status, sw2/2 - MeasureText(status, 22)/2, sh2/2 + 30, 22, statusCol);
+            if (g_initialsSubmitted) {
+                const char *board = "view leaderboard at  ironfist.ximg.app/scores.html";
+                DrawText(board, sw2/2 - MeasureText(board, 18)/2, sh2/2 + 60, 18,
+                         (Color){180, 220, 255, 230});
+            }
             if (sinf(GetTime()*3.f)>0)
                 DrawText("[ ENTER / SPACE  TO  PLAY  AGAIN ]",
                          sw2/2 - MeasureText("[ ENTER / SPACE  TO  PLAY  AGAIN ]", 20)/2,
