@@ -4244,8 +4244,21 @@ static void ConExecute(const char *line) {
         g_cheated = true;
         int w = atoi(argv[1]);
         if (w < 1) w = 1;
-        g_wave = w;
-        ConPrintf("wave = %d (active on next clear)", w);
+        // Force the new wave to start RIGHT NOW: kill any live enemies so
+        // Alive() returns 0, set g_wave = N-1 and g_bossInterlude = true
+        // so the next UpdEnemies tick takes the "boss just died -> wave++"
+        // branch and spawns wave N's enemies via the normal scaling
+        // (cnt = 10 + g_wave * 4, full random type roll).
+        int killed = 0;
+        for (int i = 0; i < g_ec; i++) {
+            if (g_e[i].active && !g_e[i].dying) {
+                DmgEnemy(i, g_e[i].hp + 1.f);
+                killed++;
+            }
+        }
+        g_wave = w - 1;
+        g_bossInterlude = true;
+        ConPrintf("wave -> %d  (killed %d, spawning new wave)", w, killed);
     } else if (!strcmp(cmd, "pos")) {
         ConPrintf("pos = (%.2f, %.2f, %.2f)  yaw = %.2f rad",
                   (double)g_p.pos.x, (double)g_p.pos.y, (double)g_p.pos.z, (double)g_p.yaw);
