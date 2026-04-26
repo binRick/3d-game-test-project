@@ -218,21 +218,82 @@ world-space sprite that lives at floor height.
 
 ## Weapons (current)
 
-| Key | Name          | Fire rate | Damage | Ammo       | Notes                                   |
-|-----|---------------|-----------|--------|------------|-----------------------------------------|
-| 1   | Shotgun       | 0.59s     | 15×8   | shells(32) | Browning sprite, 8-pellet spread        |
-| 2   | Machine gun   | 0.09s     | 18     | mgAmmo(120)| MP40 sprite with RIFGA flash overlay    |
-| 3   | Launcher      | 0.96s     | 200    | rockets(8) | Panzerschreck sprite (static), rocket splash 200 over 5m |
+| Key | Name          | Fire rate | Damage  | Ammo        | Notes                                   |
+|-----|---------------|-----------|---------|-------------|-----------------------------------------|
+| 1   | Shotgun       | 0.59s     | 15×8    | shells(32)  | Browning sprite, 8-pellet spread        |
+| 2   | Machine gun   | 0.09s     | 18      | mgAmmo(120) | MP40 sprite with RIFGA flash overlay    |
+| 3   | Launcher      | 0.96s     | 200     | rockets(8)  | Panzerschreck sprite (static), rocket splash 200 over 5m |
+| 4   | Tesla cannon  | 0.45s     | 140 +chain | cells(30) | Wide-cone auto-aim, 6m range, 5-hop chain (85/70/58/48/40% falloff). Distance to target measured to enemy SURFACE not centre — `bodyR` per-type subtracted before comparing to range, so wide bosses (1.5m radius) can still be tagged. Pickup spawns near player on first run. |
 
-## Enemies
+The four weapon slots use a shared `WepSprite g_wep[4]` array; adding a new
+weapon is one row in `packs[]` inside `main()`.
 
-Chef (AFAB* billboards). 4-frame walk cycle driven by `legT`, pain frame on
-flash, G→H→I→J death freeze. Corpses stay in scene, drawn with depth mask off
-so they don't clip live enemies. `KillEnemy` sets `dying=true`; `Alive()`/AI/
-bullets/minimap all skip dying enemies.
+## Enemies (13 types, all share state machine PATROL/CHASE/ATTACK/DYING)
 
-3 enemy type values (GRUNT/HEAVY/SPECTER) drive stats (HP, speed, size) but
-visually all share the chef sprite set for now.
+Stat tables are arrays indexed by `e->type` — `ET_HP[]`, `ET_SPD[]`,
+`ET_DMG[]`, `ET_RATE[]`, `ET_AR[]` (alert radius), `ET_ATK[]` (attack
+radius), `ET_SC[]` (score), `ET_COL[]` (minimap colour). All arrays MUST
+have 13 entries; bounds checks on `e->type < ARRAY_COUNT` guard the few
+sites that access them via name lookup tables.
+
+| #  | Type           | Sprite source            | AI / attack                 | Notes |
+|----|----------------|--------------------------|-----------------------------|-------|
+| 0  | Chef           | sprites/monsters/AFAB*   | Melee cleaver               | Wave 1 staple |
+| 1  | Heavy chef     | sprites/monsters/TORM*   | Melee cleaver, slow         | |
+| 2  | Fast chef      | sprites/monsters/SCH2*   | Melee cleaver, fast         | |
+| 3  | Boss chef      | sprites/monsters/BTCN*   | Melee, big hitbox           | Between-wave interlude (except wave 2) |
+| 4  | SS guard       | sprites/monsters/PARA*   | Hitscan tracer + sparks     | 8-rotational, mirror pairs |
+| 5  | Mutant         | sprites/monsters/MTNT*   | Energy ball (SpawnEShot)    | 8-rotational |
+| 6  | Mech           | sprites/monsters/MAVY*   | Heavy rocket (SpawnEShotRocket) | 8-rotational, splash dmg, no death sprite (explodes + removed) |
+| 7  | Soldier        | sprites/monsters/preview/soldier/  | Hitscan tracer (cultist path) | DOOM-style-Game source |
+| 8  | Cacodemon      | sprites/monsters/preview/caco/     | Fireball, **flying y=1.5** | DOOM-style-Game · joins wave 2+ |
+| 9  | Cyber demon    | sprites/monsters/preview/cyber/    | Heavy rocket               | DOOM-style-Game · **wave 2 boss** (replaces type 3) |
+| 10 | Revenant       | sprites/monsters/preview/revenant/ | Melee placeholder          | Beautiful-Doom · arena-only preview, walks via `RSKEa1..h1` time-cycle |
+| 11 | Lost soul      | sprites/monsters/preview/lostsoul/ | Melee placeholder, **flying y=2.2** | Beautiful-Doom · arena-only preview |
+| 12 | Pain elemental | sprites/monsters/preview/painelem/ | Melee placeholder, **floats y=2.0** | Beautiful-Doom · arena-only preview |
+
+### Flying enemy rules (types 8, 11, 12)
+
+- Spawn at fixed `e->pos.y` (1.5 / 2.2 / 2.0) — set in all 4 spawn sites
+  (arena initial, arena respawn, wave 1 init, per-wave loop)
+- Skip platform-y snap in PATROL and CHASE branches of `UpdEnemies`
+- Bypass the ATTACK-y-gate (`fabsf(g_p.pos.y - e->pos.y) <= STEP_H`) so they
+  can engage the player on the floor from above
+- On death (`e->dying`), accelerating gravity decreases `e->pos.y` toward 0
+  in the dying-corpse block of `UpdEnemies`
+- Once landed (`e->pos.y <= 0.05`), the death-frame `spriteH` is multiplied
+  by 0.6 in `DrawEnemies` so the top-down gore sprite collapses to a flat
+  pile instead of standing up vertically with blood floating mid-air
+
+### Hit-volume sites (3 of them — keep in sync)
+
+1. `Shoot()` — per-pellet hitscan (shotgun, MG): per-type `headY/headR/
+   bodyY/bodyR` offsets-from-feet
+2. `UpdBullets()` — enemy-projectile-vs-enemy AND player-rocket-vs-enemy:
+   per-type `_bodyY/_bodyR/_bodyH` offsets-from-feet (single cylinder)
+3. `FireTeslaShot()` — cone target + chain hops: per-type `coneChestY` for
+   the targeting reference, per-type `bodyR` for **surface-distance** test
+   (subtracted from centre distance before comparing to range)
+
+When you add a new enemy type, add entries in ALL THREE sites or rockets/
+hitscan/tesla will pass through.
+
+### Walk-frame rendering for preview enemies (types 7-12)
+
+- `walk_N.png` files in the preview folders are EITHER 8-direction rotation
+  views (single-frame idle/standing) OR animation frames (multiple poses,
+  same view angle) depending on the source.
+- Soldier / caco / cyber: 8 rotation views (DOOM-style-Game).
+  `DrawEnemies` picks the slot from enemy-facing-vs-player angle (Doom
+  octant indexing) — NOT a time cycle, otherwise the enemy appears to spin.
+- Revenant (10): time-cycles 8 RSKE animation frames at front-rotation
+  only. Special-cased in the render branch — always faces camera but looks
+  alive walking.
+- Beautiful-Doom decorate scripts (`third_party/Beautiful-Doom/Z_BDoom/
+  m_*.zc`) document which prefix is which animation: revenant Spawn=REVI,
+  See=RSKE, Pain=REVP, Melee=SSKE, Death1=REVN, Death=REVM, XDeath=REVX,
+  missile tracer=SKEB, tracer death=FBXP. Use the in-game sprite browser
+  (S on main menu) to verify visually.
 
 ## Level
 
@@ -254,6 +315,110 @@ is `WALL_H = 5.1f`.
 
 Music volume is saved to `~/.ironfist3d.cfg` on every change (and reloaded at
 launch). The game is otherwise stateless between runs.
+
+## High-score submission (added v1.3.14)
+
+On death, before the restart prompt, the death screen shows a 3-character
+initials selector. Confirming with ENTER POSTs a JSON payload to
+`https://ironfist.ximg.app/api/scores` with shape:
+
+```json
+{"initials":"AAA","score":N,"kills":N,"wave":N,"weapon":"shotgun|machinegun|launcher|tesla","time":SECONDS,"pickups":N,"shots":N,"damage":N}
+```
+
+The stat globals (`g_statShots`, `g_statDamage`, `g_statPickups`,
+`g_statTime`) are file-scope in game.c, reset in `InitGame`, and
+incremented at:
+- `Shoot()` — one shot per fire (pellet count NOT broken down)
+- `DmgEnemy()` — damage clamped to remaining HP (overkill not counted)
+- `UpdPicks()` — every successful pickup grab
+- `StepFrame()` GS_PLAY branch — accumulates `dt` while not paused
+
+Platform dispatch in `SubmitScore()`:
+- Web (`__EMSCRIPTEN__`): `EM_JS` block calls `fetch()` directly.
+- macOS native (`__APPLE__`): `extern void IronFistPostScoreMacOS(const char*)`
+  is implemented in `src/score_post.m` using `NSURLSession` (fire-and-forget
+  detached task). Linked via `-framework Foundation` in the Makefile.
+- Windows: no-op for now. Could add WinHTTP later.
+
+ESC on the initials screen skips submission. ENTER submits and sets
+`g_initialsSubmitted` so the post-submit overlay can show "SCORE SUBMITTED"
+vs "SCORE NOT SUBMITTED".
+
+Validation lives on the SERVER (rejects implausible scores, see
+`https://ironfist.ximg.app/api/scores` validators). Don't add client-side
+"protection" — it's pointless when the WASM can be modified or the API
+posted to directly with curl.
+
+## Arena picker (A on main menu)
+
+`g_gs == GS_PICK_ENEMY`. 13 slots cycling sprite + attack-frame previews
+with the picker time accumulator `g_pickerT`. Slots 0..6 are full in-game
+enemies; 7..9 are full in-game enemies via DOOM-style-Game; 10..12 are
+preview-only (not in waves). ENTER spawns 8 of the picked type (or 1 for
+boss type 3 / cyber demon type 9). Uses `g_arenaMode` flag in the spawn /
+respawn paths to skip the wave system.
+
+## Sprite browser (debug, S on main menu / F8 anywhere)
+
+`g_sbActive` flag swallows the entire frame in StepFrame and renders a
+single sprite at variable zoom from a hardcoded list of source folders
+(`SB_FOLDERS[]`). 23 folders covering Beautiful-Doom MONSTERS subdirs
+plus DOOM-style-Game npc subdirs. Used to identify which 4-letter prefix
+in a folder maps to which animation role.
+
+Keys: ←/→ file, [ ] folder, - / + zoom, ESC/F8/S exit.
+
+**macOS-only** — paths are absolute `/Users/.../third_party/...` which
+don't resolve in the WASM sandbox or a Windows build. The toggle key, the
+menu hint, and the F8 hook are all gated behind `!PLATFORM_WEB && !_WIN32`.
+
+## Pause (P during gameplay)
+
+`g_paused` flag gates Upd*. Music is paused via `PauseMusicStream`,
+master volume zeroed via `SetMasterVolume(0.f)` so in-flight Sounds also
+silence. Cursor handling is critical on web: `EnableCursor()` on pause to
+release pointer lock, `DisableCursor()` + `SetMousePosition(centre)` +
+drain `GetMouseDelta()` on unpause. Without this drain the resumed camera
+spins wildly because the browser dropped pointer lock during pause and
+accumulated a huge delta.
+
+Pause overlay is two coloured lines: green "PRESS P - RESUME GAME" and
+red "PRESS ESC - EXIT TO MAIN MENU". Single-line versions read as one
+hint and confused users.
+
+## ESC navigation
+
+raylib's default ESC-closes-window is disabled at startup with
+`SetExitKey(KEY_NULL)`. Per-state handlers in `StepFrame` own ESC:
+
+- GS_MENU → `g_quit = true` (main loop exits next iteration)
+- GS_DEAD post-initials → `g_quit = true` (death is a terminal state)
+- GS_DEAD initials phase → skip submission, advance to post-initials
+- GS_PLAY (in-game / paused) → `g_gs = GS_MENU`
+- GS_PICK_ENEMY (arena picker) → `g_gs = GS_MENU`
+- Sprite browser → close + `g_gs = GS_MENU`
+
+Main loop is `while (!WindowShouldClose() && !g_quit) StepFrame();`.
+
+## Third-party submodules (third_party/)
+
+Two are kept (whitelisted in `.gitignore` — everything else under
+`third_party/*` is gitignored):
+
+- `third_party/Beautiful-Doom` — GZDoom mod. Sprite source for the preview
+  enemies (revenant / lost soul / pain elemental). The `Z_BDoom/m_*.zc`
+  ZScript files document which prefix is which animation; read those when
+  porting a new enemy in.
+- `third_party/DOOM-style-Game` — Doom-style-Game project. Sprite source
+  for soldier / cacodemon / cyber demon. Simpler folder layout (`idle/`,
+  `walk/`, `attack/`, `pain/`, `death/` with rotation-numbered PNGs).
+
+After cloning the repo, run `git submodule update --init --recursive` to
+populate them. The game itself doesn't need them at runtime — sprites are
+already copied into `sprites/monsters/preview/` and bundled with the
+build. Submodules are needed only for dev workflows (sprite browser, copy
+new frames in).
 
 ## UI text caveat
 

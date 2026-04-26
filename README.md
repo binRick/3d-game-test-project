@@ -10,18 +10,29 @@ No install, no download. WebGL 2 required.
 
 **A Duke-Nukem-style FPS built from scratch in C with raylib — native on macOS and Windows, WebAssembly in the browser.**
 
-One `src/game.c` file. No engine. No scripting layer. Real OpenGL, real audio, real
-3D collision. You fight an escalating horde of **chefs** through an industrial
-arena with Q3-style stairs, launcher splash damage, and an honest-to-god C&C
-Red Alert soundtrack.
+A `src/game.c` core (plus 3 helper modules and an Objective-C bridge for the
+macOS leaderboard POST). No engine. No scripting layer. Real OpenGL, real
+audio, real 3D collision. You fight an escalating horde of cleaver-swinging
+**chefs** plus 9 other enemy types — Doom-style soldier, cacodemon and cyber
+demon, Beautiful-Doom revenant / lost soul / pain elemental, Wolfenstein SS
+guard, ranged mutant, heavy mech, and a cyber-demon **wave 2 boss** — through
+an industrial arena with textured walls, Q3-style stairs, a tesla cannon
+that chains lightning, friendly-fire splash, and an honest-to-god C&C Red
+Alert soundtrack.
 
 ```
-    ╔══════════════════════════════════════════╗
-    ║  1 - SHOTGUN     2 - MG     3 - LAUNCHER ║
-    ║  WASD move  ·  MOUSE aim  ·  LMB fire    ║
-    ║  SPACE jump · SHIFT sprint · -/+ music   ║
-    ╚══════════════════════════════════════════╝
+    ╔════════════════════════════════════════════════════╗
+    ║  1 - SHOTGUN  2 - MG  3 - LAUNCHER  4 - TESLA      ║
+    ║  WASD move  ·  MOUSE aim  ·  LMB fire              ║
+    ║  SPACE jump · SHIFT sprint · P pause · -/+ music   ║
+    ║  ESC: in-game -> menu   /   menu -> quit           ║
+    ║  A on menu -> ARENA picker (test any enemy solo)   ║
+    ╚════════════════════════════════════════════════════╝
 ```
+
+Web build also posts your run to a public leaderboard at
+[ironfist.ximg.app/scores.html](https://ironfist.ximg.app/scores.html) when
+you die — type 3-character initials, ENTER to submit.
 
 ---
 
@@ -130,11 +141,12 @@ flowchart TB
 
 ## 🔫 Weapons
 
-| Key | Weapon                    | Fire rate | Damage          | Ammo      | Notes |
-|-----|---------------------------|-----------|-----------------|-----------|---|
-| **1** | **Shotgun** (Browning)  | 0.59s     | 15 × 8 pellets  | 32 shells | Distance-scaled: **2.5× at 0m**, 1.0× at 6m, 0.25× floor at 15m+ |
+| Key | Weapon                    | Fire rate | Damage          | Ammo       | Notes |
+|-----|---------------------------|-----------|-----------------|------------|---|
+| **1** | **Shotgun** (Browning)  | 0.59s     | 15 × 8 pellets  | 32 shells  | Distance-scaled: **2.5× at 0m**, 1.0× at 6m, 0.25× floor at 15m+ |
 | **2** | **Machine Gun** (MP40)  | 0.09s     | 18              | 120 rounds | Full-auto · RIFGA muzzle flash overlay |
 | **3** | **Launcher** (Panzerschreck) | 0.96s | 200 direct + 200 splash | 8 rockets | Splash 5m radius · you take 30 self-damage if close |
+| **4** | **Tesla Cannon**        | 0.45s     | 140 + chain     | 30 cells   | Wide auto-aim cone, 6m range, chains across up to 5 nearby enemies with 85/70/58/48/40% falloff. Distance to target measured to enemy *surface* so wide bosses (1.5m+) can be tagged from a sensible distance. Picked up via the TESLA crate near spawn. |
 
 ### Shotgun damage falloff
 
@@ -163,50 +175,60 @@ is one line.
 
 ---
 
-## 🧟 The Chef
+## 🧟 Enemy roster (13 types)
 
-A WolfenDoom boss sprite set (AFAB*) repurposed as the single enemy type,
-billboarded to always face the camera.
+Every enemy uses the same shared AI state machine (`PATROL → CHASE → ATTACK
+→ DYING`) but stats, attack style and sprite set differ. Wave scaling:
++12% HP, +0.18 speed per wave (per-enemy values are wave-1 baselines).
 
 ```mermaid
 stateDiagram-v2
     [*] --> PATROL
-    PATROL --> CHASE: player in alertRange
-    CHASE --> ATTACK: dist < attackRange
-    ATTACK --> CHASE: dist > attackRange * 1.5
+    PATROL --> CHASE: player in alertR
+    CHASE --> ATTACK: dist < atkR (and same y-level for melee)
+    ATTACK --> CHASE: dist > atkR*1.5  OR  LOS blocked  (ranged)
     CHASE --> DYING: hp <= 0
     ATTACK --> DYING: hp <= 0
-    PATROL --> DYING: hp <= 0
-    DYING --> [*]: corpse persists (depth mask off)
-
-    note right of CHASE
-        boids-separation from
-        other chefs — they fan out
-        instead of stacking
-    end note
-
-    note right of DYING
-        AFABG→H→I→J plays once,
-        freezes on J
-    end note
+    DYING --> [*]: corpse persists (depth mask off; flying enemies fall)
 ```
 
-| Sub-type    | HP×wave | Speed | Damage | Attack rate |
-|-------------|---------|-------|--------|-------------|
-| **Chef**    | 65      | 6.0   | 10     | 1.5s        |
-| **Heavy**   | 145     | 3.6   | 24     | 2.1s        |
-| **Fast**    | 42      | 8.8   | 8      | 1.0s        |
+| # | Enemy               | HP   | Speed | Dmg | Rate | Attack             | Notes |
+|---|---------------------|------|-------|-----|------|--------------------|---|
+| 0 | **Chef**            | 65   | 6.0   | 10  | 1.5s | Melee cleaver      | AFAB sprites · wave 1 staple |
+| 1 | **Heavy chef**      | 145  | 3.6   | 24  | 2.1s | Melee cleaver      | TORM sprites · tankier, slower |
+| 2 | **Fast chef**       | 42   | 8.8   | 8   | 1.0s | Melee cleaver      | SCH2 sprites · glass cannon |
+| 3 | **Boss chef**       | 800  | 7.5   | 40  | 1.6s | Melee, big hitbox  | BTCN sprites · between-wave interlude |
+| 4 | **SS guard**        | 80   | 5.0   | 14  | 1.8s | Hitscan tracer     | PARA sprites · 8-rotational |
+| 5 | **Mutant**          | 90   | 4.2   | 14  | 1.4s | Purple energy ball | MTNT sprites · ranged projectile |
+| 6 | **Mech**            | 260  | 2.6   | 28  | 2.6s | Heavy rocket       | MAVY sprites · slow, splash dmg |
+| 7 | **Soldier**         | 120  | 5.0   | 14  | 1.4s | Hitscan tracer     | DOOM-style-Game shotgunner |
+| 8 | **Cacodemon**       | 220  | 3.5   | 18  | 2.0s | Fireball, *flying* | DOOM-style-Game · joins wave 2+ |
+| 9 | **Cyber demon**     | 1500 | 3.8   | 34  | 2.6s | Twin rockets       | DOOM-style-Game · **wave 2 boss** (replaces chef boss) |
+| 10 | **Revenant**       | 250  | 5.5   | 16  | 1.6s | Melee placeholder  | Beautiful-Doom · arena-only preview |
+| 11 | **Lost soul**      | 60   | 9.0   | 8   | 0.9s | Charge-melee, *flying* | Beautiful-Doom · arena-only preview |
+| 12 | **Pain elemental** | 420  | 3.0   | 18  | 2.0s | Melee placeholder, *floats* | Beautiful-Doom · arena-only preview |
 
-All three share the chef sprite; stats diverge. Wave scaling: +12% HP, +0.18
-speed per wave.
+Types 10/11/12 are **preview-only** — sprites loaded, arena spawn works,
+but they currently use chef-style melee placeholder AI; full Doom-style
+behaviours (homing missiles, kamikaze charge, lost-soul spawning) are
+deferred until they're greenlit for waves.
 
-### Sprite animation frames
+### Flying enemy handling
 
-| State       | Sprites            |
-|-------------|--------------------|
-| Walk        | AFABA / B / C / D  |
-| Pain (hit)  | AFABF              |
-| Death       | AFABG → H → I → J (freezes on J) |
+Cacodemon (8), lost soul (11) and pain elemental (12) spawn at a constant
+`e->pos.y` (caco 1.5m, lost soul 2.2m, pain elem 2.0m), bypass the
+platform-y snap, and on death **fall** to the floor with accelerating
+gravity. Once landed, the corpse sprite collapses to 60% height so the
+top-down gore texture reads as a flat pile rather than a vertical
+billboard with blood floating mid-air.
+
+### Hit volumes
+
+Every enemy has per-type head + body sphere sizes for hitscan (shotgun /
+MG) and a per-type cylinder for projectiles (rockets, mutant ball, cyber
+rocket, caco fireball). Rockets-pass-straight-through-cyber bugs are
+caused by mismatched values here — see `UpdBullets` and `Shoot()` in
+`src/game.c`.
 
 ### Separation behaviour
 
@@ -381,25 +403,103 @@ flowchart TD
 
 ---
 
+## 🎮 Other things you'll find
+
+### Arena picker (A on main menu)
+
+13 enemy slots. Arrow keys cycle through cycling sprite + attack-frame
+previews; ENTER spawns 8 of that type (or 1 for boss/cyber demon) into the
+arena map. Handy for testing AI / hit volumes / animations. Press ESC to
+return to the menu.
+
+### Pause (P during gameplay)
+
+Stops every Upd*, mutes music + master volume so in-flight one-shots
+silence too, releases pointer lock so the cursor's free, and on resume
+re-engages pointer lock + drains accumulated mouse delta (otherwise the
+camera spins on unpause). Two-line overlay separates the keys: green
+"PRESS P - RESUME GAME" / red "PRESS ESC - EXIT TO MAIN MENU".
+
+### High-score leaderboard (web build)
+
+On death you get a 3-character initials selector. Keys: ←/→ pick slot,
+↑/↓ cycle A-Z 0-9, type directly to set + auto-advance, BACKSPACE step
+back, ENTER submits, ESC skips. The score POSTs to
+`https://ironfist.ximg.app/api/scores` along with kills, wave, weapon
+last equipped, time played, pickups, shots, and damage dealt — viewable
+at [/scores.html](https://ironfist.ximg.app/scores.html). Web uses
+`EM_JS` fetch, native macOS uses `NSURLSession` via `src/score_post.m`,
+Windows currently no-ops. Server-side validation rejects implausible
+runs.
+
+### Sprite browser (S on main menu, macOS dev only)
+
+Press **S** on the main menu (or F8 anywhere) to flip through every PNG
+in 23 curated source folders (Beautiful-Doom MONSTERS + DOOM-style-Game
+npc). Shows filename + sprite + folder counters. Used to figure out which
+4-letter prefix in a Beautiful-Doom enemy folder maps to which animation
+role — REVI is "pain", REVP is "run", RSKE is "walk", REVN is "death", etc.
+Keys: ←/→ file, [ ] folder, - / + zoom, ESC exit. macOS-only because it
+reads absolute paths to `third_party/`; gated behind `!PLATFORM_WEB &&
+!_WIN32`.
+
+### ESC navigation
+
+Consistent across every screen:
+- **Main menu** ESC → quit
+- **Death screen** ESC → quit (post-initials)
+- **In-game / paused / picker / sprite browser** ESC → main menu
+
+Implemented by disabling raylib's default exit-on-ESC (`SetExitKey(KEY_NULL)`)
+and routing every ESC keypress through per-state handlers in `StepFrame`.
+
+---
+
 ## 📁 Repo layout
 
 ```
-src/game.c                ← all the code
-Makefile                  ← macOS .app + Windows single-file .exe targets
-run.sh                    ← brew-installs deps → make -B → open app
+src/
+  game.c                  ← main code (~5000 lines)
+  hud.c / .h              ← Doom mugshot HUD + status bar
+  effects.c / .h          ← particle pool: blood, sparks, decals
+  level.c / .h            ← MAP grid + Platform[] + collision predicates
+  common.h                ← shared types (Player / Enemy / Pickup / Part / Platform)
+  score_post.m            ← macOS NSURLSession bridge for high-score POST
+Makefile                  ← macOS .app + Windows single-file .exe + emcc web targets
+run.sh                    ← brew-installs deps → make -B → exec the binary in foreground
 gen_icon.py               ← procedural iron-fist .icns
 pack_bundle.py            ← flattens sprites/ + sounds/ into dist-win/bundle.dat
                             (embedded into the Windows exe via windres RCDATA)
-CLAUDE.md                 ← conventions / asset rules for future dev
+web/shell.html            ← emscripten click-to-start gate for autoplay + pointer lock
+CLAUDE.md                 ← conventions / asset rules / debug-log format for future dev
+
 sprites/
-  browning/ luger/ mp40/ panzerschreck/   weapon viewmodels
-  monsters/                               chef frames
-  pickups/                                health, ammo
-  crosshairs/                             per-weapon crosshair overrides
+  browning/ mp40/ panzerschreck/  weapon viewmodels (luger archived)
+  monsters/                       AFAB/TORM/SCH2 chefs, BTCN boss, MTNT mutant,
+                                  MAVY mech, PARA SS guard
+  monsters/preview/               soldier/caco/cyber + revenant/lostsoul/painelem
+                                  (walk_N / atk_N / pain_N / death_N each)
+  textures/                       sky.png + wall1..wall5.png (connected-component
+                                  flood-fill picks one texture per wall block)
+  blood/                          YBL7A..S animated splat decal
+  pickups/                        health, ammo, power-ups, tesla pickup
+  crosshairs/                     per-weapon overrides
+
 sounds/
-  hell-march.mp3                          looping BG music
-  shotgun-kill / mg-sound / launcher-shot / rocket-hit / chef-die*     weapon + chef vocals
+  hell-march.mp3                  looping BG music
+  shotgun-kill / mg-sound / launcher-shot / rocket-hit / chef-die*  weapon + chef vocals
   first-blood / headshot / fatality / holy-shit / next-wave / distant-enemy  announcers
+  tesla-* / mech-* / mut-* / chef-hit                              new-weapon + new-enemy
+
+third_party/                      git submodules (gitignored except the two below)
+  Beautiful-Doom/                 GZDoom mod — MONSTERS sprite source for revenant/
+                                  lostsoul/painelem, plus the m_*.zc actor scripts
+                                  that decode which prefix is which animation
+  DOOM-style-Game/                Doom-style-Game project — MONSTERS sprite source
+                                  for soldier/caco/cyber
+
+docs/screenshot-1.png             gameplay screenshots
+docs/screenshot-2.png
 ```
 
 ---
