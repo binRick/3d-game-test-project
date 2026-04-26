@@ -592,6 +592,10 @@ static bool     g_sChefHitOK = false;
 static Sound    g_sLowHealth;
 static bool     g_sLowHealthOK = false;
 static bool     g_lowHealthFired = false;
+// Soldier (enemy type 7) — heavy MG fire sample (sounds/soldier-mg.mp3),
+// played on each hitscan tick instead of the shared shotgun blast.
+static Sound    g_sSoldierMG;
+static bool     g_sSoldierMGOK = false;
 static Sound    g_sMechHit;     // mech rocket splash on player (sounds/player-ough.mp3)
 static bool     g_sMechHitOK = false;
 static Sound    g_sNextWave;   // stinger when next wave starts
@@ -1990,7 +1994,10 @@ static void UpdEnemies(float dt) {
                             SpawnPart(p, (Vector3){0,0,0},
                                       (Color){255, 220, 80, 255}, 0.08f, 0.06f, false);
                         }
-                        PlaySound(g_sShotgun);
+                        // Soldier (type 7) gets a dedicated heavy-MG sample;
+                        // cultist (type 4) keeps the shotgun blast.
+                        if (e->type == 7 && g_sSoldierMGOK) PlaySound(g_sSoldierMG);
+                        else                                PlaySound(g_sShotgun);
                     }
                     if (!g_god) g_p.hp-=e->dmg;
                     g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
@@ -5193,6 +5200,10 @@ int main(int argc, char **argv) {
         g_sLowHealth = LoadSound(fp);
         g_sLowHealthOK = (g_sLowHealth.frameCount > 0);
 
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/soldier-mg.mp3", AppDir());
+        g_sSoldierMG = LoadSound(fp);
+        g_sSoldierMGOK = (g_sSoldierMG.frameCount > 0);
+
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ough.mp3", AppDir());
         g_sMechHit = LoadSound(fp);
         g_sMechHitOK = (g_sMechHit.frameCount > 0);
@@ -5895,6 +5906,7 @@ int main(int argc, char **argv) {
     if (g_sMutAttackOK)    UnloadSound(g_sMutAttack);
     if (g_sChefHitOK)      UnloadSound(g_sChefHit);
     if (g_sLowHealthOK)    UnloadSound(g_sLowHealth);
+    if (g_sSoldierMGOK)    UnloadSound(g_sSoldierMG);
     if (g_sMechHitOK)      UnloadSound(g_sMechHit);
     if (g_sMGOK)           UnloadSound(g_sMG);
     if (g_sNextWaveOK)     UnloadSound(g_sNextWave);
