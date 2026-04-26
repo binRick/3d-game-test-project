@@ -586,6 +586,12 @@ static Sound    g_sMutAttack;   // mutant energy-ball fire (sounds/mutant-attack
 static bool     g_sMutAttackOK = false;
 static Sound    g_sChefHit;     // chef melee inflicts damage on player (sounds/player-ouch.mp3)
 static bool     g_sChefHitOK = false;
+// Critical-health stinger — plays once when the player crosses below 10%
+// HP. Re-arms once HP climbs back to 20% so it can fire again next time
+// the player gets low (hysteresis avoids rapid re-fire if HP wobbles).
+static Sound    g_sLowHealth;
+static bool     g_sLowHealthOK = false;
+static bool     g_lowHealthFired = false;
 static Sound    g_sMechHit;     // mech rocket splash on player (sounds/player-ough.mp3)
 static bool     g_sMechHitOK = false;
 static Sound    g_sNextWave;   // stinger when next wave starts
@@ -3781,6 +3787,7 @@ static void InitGame(void) {
     g_initialsDone = false;
     g_initialsSubmitted = false;
     g_lastRank = 0;
+    g_lowHealthFired = false;  // re-arm critical-health stinger for new run
     // Cheat flags reset per run — a fresh game can earn a leaderboard entry
     // again. g_god turns OFF too so previously-toggled invulnerability
     // doesn't leak across restarts.
@@ -4561,6 +4568,22 @@ static void StepFrame(void) {
         // particles / pickups still tick — game world keeps running behind
         // the console, Quake-style.
         if (!g_conOpen) UpdPlayer(dt,&g_cam);
+        // Critical-health stinger — fires once when HP crosses below 10%,
+        // re-arms once HP climbs back to 20%. Skip while dead so the
+        // sample doesn't fire on the death frame itself (the death scream
+        // already plays).
+        if (!g_p.dead && g_p.maxHp > 0.f) {
+            float frac = g_p.hp / g_p.maxHp;
+            if (frac < 0.10f && !g_lowHealthFired) {
+                if (g_sLowHealthOK) {
+                    SetSoundVolume(g_sLowHealth, 1.5f);
+                    PlaySound(g_sLowHealth);
+                }
+                g_lowHealthFired = true;
+            } else if (frac >= 0.20f) {
+                g_lowHealthFired = false;
+            }
+        }
         UpdEnemies(dt);
         UpdBullets(dt);
         UpdParts(dt);
@@ -5165,6 +5188,10 @@ int main(int argc, char **argv) {
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ouch.mp3", AppDir());
         g_sChefHit = LoadSound(fp);
         g_sChefHitOK = (g_sChefHit.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/low-health.mp3", AppDir());
+        g_sLowHealth = LoadSound(fp);
+        g_sLowHealthOK = (g_sLowHealth.frameCount > 0);
 
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ough.mp3", AppDir());
         g_sMechHit = LoadSound(fp);
@@ -5867,6 +5894,7 @@ int main(int argc, char **argv) {
     if (g_sMechRocketOK)   UnloadSound(g_sMechRocket);
     if (g_sMutAttackOK)    UnloadSound(g_sMutAttack);
     if (g_sChefHitOK)      UnloadSound(g_sChefHit);
+    if (g_sLowHealthOK)    UnloadSound(g_sLowHealth);
     if (g_sMechHitOK)      UnloadSound(g_sMechHit);
     if (g_sMGOK)           UnloadSound(g_sMG);
     if (g_sNextWaveOK)     UnloadSound(g_sNextWave);
