@@ -133,6 +133,7 @@ WEBLDFLAGS = -s USE_GLFW=3 \
              -s INITIAL_MEMORY=128MB \
              -s STACK_SIZE=1MB \
              -s ASYNCIFY \
+             -s "EXPORTED_FUNCTIONS=['_main','_IronFistRankReceived']" \
              --preload-file sprites \
              --preload-file sounds \
              --shell-file $(WEBSHELL)

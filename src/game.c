@@ -531,6 +531,12 @@ static int       g_statShots    = 0;
 static float     g_statDamage   = 0.f;
 static int       g_statPickups  = 0;
 static float     g_statTime     = 0.f;
+// Rank returned by the leaderboard POST response. 0 = unknown / not yet
+// arrived; >0 = the rank from the server. Set asynchronously by the
+// EM_JS fetch().then() chain on web and by the NSURLSession completion
+// handler on native macOS, both of which call IronFistRankReceived
+// below. Reset in InitGame.
+static int       g_lastRank     = 0;
 // Three-character initials entry on the death screen. Letters A-Z and
 // digits 0-9; arrows cycle the highlighted slot, letter/digit keys type
 // directly. ENTER submits, ESC skips submission.
@@ -3762,6 +3768,7 @@ static void InitGame(void) {
     g_initialsPos = 0;
     g_initialsDone = false;
     g_initialsSubmitted = false;
+    g_lastRank = 0;
     // Cheat flags reset per run — a fresh game can earn a leaderboard entry
     // again. g_god turns OFF too so previously-toggled invulnerability
     // doesn't leak across restarts.
@@ -3903,16 +3910,42 @@ static Camera3D g_cam;
 // Web build: emscripten-side fetch via EM_JS (no curl, no native lib).
 // macOS native: NSURLSession via the Objective-C bridge in score_post.m.
 // Windows: no-op for now (could add WinHTTP later if it matters).
+//
+// Both backends call back into IronFistRankReceived() once the server's
+// {"rank": N, ...} response is parsed, so the death screen can show
+// "PLACED #N" next to the SUBMITTED status. Asynchronous — the rank
+// arrives a frame or two after the POST and the death screen updates
+// when it does.
 #ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+EMSCRIPTEN_KEEPALIVE
+void IronFistRankReceived(int rank) {
+    if (rank > 0) g_lastRank = rank;
+}
 EM_JS(void, IronFistPostScoreWeb, (const char *json), {
     fetch('https://ironfist.ximg.app/api/scores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: UTF8ToString(json)
-    });
+    })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+        if (j && typeof j.rank === 'number') {
+            // Module._IronFistRankReceived is the WASM-exported symbol
+            // emscripten generates from the EMSCRIPTEN_KEEPALIVE function
+            // above. The leading underscore is the C-symbol mangling.
+            Module._IronFistRankReceived(j.rank);
+        }
+    })
+    .catch(()=>{});
 });
 #elif defined(__APPLE__)
 extern void IronFistPostScoreMacOS(const char *json);  // src/score_post.m
+// Called from score_post.m's NSURLSession completion handler once the
+// JSON response arrives (see corresponding extern declaration there).
+void IronFistRankReceived(int rank) {
+    if (rank > 0) g_lastRank = rank;
+}
 #endif
 
 static const char *ScoreWeaponName(int w) {
@@ -4942,8 +4975,17 @@ static void StepFrame(void) {
             }
             DrawText(status, sw2/2 - MeasureText(status, 22)/2, sh2/2 + 30, 22, statusCol);
             if (g_initialsSubmitted) {
+                // Rank arrives a frame or two after the POST — show a
+                // placeholder while we wait, then the actual rank when
+                // the server response lands.
+                char rankStr[32];
+                if (g_lastRank > 0) snprintf(rankStr, sizeof(rankStr), "PLACED #%d", g_lastRank);
+                else                snprintf(rankStr, sizeof(rankStr), "...");
+                Color rankCol = (g_lastRank > 0) ? (Color){255, 220, 80, 255}
+                                                 : (Color){160, 160, 160, 200};
+                DrawText(rankStr, sw2/2 - MeasureText(rankStr, 32)/2, sh2/2 + 60, 32, rankCol);
                 const char *board = "view leaderboard at  ironfist.ximg.app/scores.html";
-                DrawText(board, sw2/2 - MeasureText(board, 18)/2, sh2/2 + 60, 18,
+                DrawText(board, sw2/2 - MeasureText(board, 18)/2, sh2/2 + 100, 18,
                          (Color){180, 220, 255, 230});
             }
             if (sinf(GetTime()*3.f)>0)
