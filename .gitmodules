@@ -4,6 +4,3 @@
 [submodule "third_party/DOOM-style-Game"]
 	path = third_party/DOOM-style-Game
 	url = https://github.com/StanislavPetrovV/DOOM-style-Game.git
-[submodule "third_party/bstone"]
-	path = third_party/bstone
-	url = https://github.com/bibendovsky/bstone.git
