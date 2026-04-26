@@ -20,6 +20,7 @@ extern char     g_hypeMsg[80];
 extern float    g_hypeT, g_hypeDur;
 extern Texture2D g_xhair[];
 extern const char * const WPN[];
+extern bool      g_warnMinimap;  // tint rear half of minimap red when enemy is behind
 extern const Color ET_COL[];
 extern const int MAP[ROWS][COLS];
 
@@ -277,6 +278,35 @@ void DrawHUD(void) {
             float pulse = 0.6f + 0.4f*sinf((float)GetTime()*5.f + (float)i);
             DrawCircle(px2,py2,4,col);
             DrawCircleLines(px2,py2,(int)(6+3*pulse), Fade(col, 0.85f));
+        }
+        // Rear-half tint (g_warnMinimap) — when ANY live enemy sits in
+        // the lower (rear) half of the radar, pulse-tint that half red.
+        // Forward = upper half because the radar rotates so player-yaw
+        // points up (sy2 > 0 → py3 < cy2 = upper). Rear enemies have
+        // sy2 < 0.
+        if (g_warnMinimap) {
+            bool rearAny = false;
+            for (int i = 0; i < g_ec; i++) {
+                Enemy *e = &g_e[i];
+                if (!e->active || e->dying) continue;
+                float wx = e->pos.x - pw, wz = e->pos.z - pz;
+                float dlen = sqrtf(wx*wx + wz*wz);
+                if (dlen > 12.f) continue;  // only flag close-range rear
+                float sy2 = wx*sinY + wz*cosY;
+                if (sy2 < 0.f) { rearAny = true; break; }
+            }
+            if (rearAny) {
+                float pulse = 0.5f + 0.5f*sinf((float)GetTime()*6.f);
+                unsigned char a = (unsigned char)(40 + 60*pulse);
+                // Half-disc fill (lower half, y >= cy2). Stamp many short
+                // chord rectangles since raylib doesn't ship a half-disc
+                // primitive — quick + alpha-blends fine.
+                for (int dy = 0; dy < radius; dy++) {
+                    int span = (int)sqrtf((float)(radius*radius - dy*dy));
+                    DrawRectangle(cx2 - span, cy2 + dy, span*2, 1,
+                                  (Color){200, 50, 50, a});
+                }
+            }
         }
         DrawCircle(cx2,cy2,5,WHITE);
         DrawTriangle((Vector2){(float)cx2,(float)(cy2-10)},

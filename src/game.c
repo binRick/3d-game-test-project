@@ -336,6 +336,11 @@ static Model    g_floorModel, g_ceilModel;
 // Forward decl for the high-score POST. Implemented below in score_post.c
 // (web: EM_JS fetch; native: NSURLSession on macOS, no-op on Windows).
 static void SubmitScore(void);
+// Forward decls for the rear-warning helpers — implemented just above
+// the dev console block but called from earlier in the file (enemy fire
+// sites + the rear-stinger / arc indicator blocks).
+static int  FindClosestRearEnemy(float range);
+static void PlayPositionalSound(Sound s, Vector3 pos);
 
 // Forward decl — TriggerMultiKill is defined alongside Shoot() but called
 // from the earlier rocket-splash branches in UpdBullets.
@@ -523,6 +528,15 @@ static bool      g_quit      = false; // set by ESC on the main menu; main loop 
 // alone. See ConExecute below + CLAUDE.md.
 static bool      g_god       = false; // toggled by `god` console cmd
 static bool      g_cheated   = false; // any cheat-class command flips this true
+
+// Rear-warning experiments — independent toggles via the `warn` console
+// command so the player can audition each indicator and pick which one(s)
+// to keep. NONE of these set g_cheated; they're UX prefs, not capability
+// enhancers. Default off so the player opts in.
+static bool      g_warnArc      = false; // red arrow at screen edge for rear enemies
+static bool      g_warnPan      = false; // stereo-pan enemy sounds based on bearing
+static bool      g_warnStinger  = false; // one-shot vocal when an enemy lingers in rear arc
+       bool      g_warnMinimap  = false; // tint the rear half of the minimap red (extern in hud.c)
 
 // High-score submission stats — accumulated through one game session and
 // posted to https://ironfist.ximg.app/api/scores on death (or skip via
@@ -1979,8 +1993,7 @@ static void UpdEnemies(float dt) {
                     Vector3 muzzle = {e->pos.x, e->pos.y + 2.3f, e->pos.z};
                     Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                     SpawnEShotRocket(muzzle, target, e->dmg);
-                    if (g_sMechRocketOK) PlaySound(g_sMechRocket);
-                    else                 PlaySound(g_sRocket);
+                    PlayPositionalSound(g_sMechRocketOK ? g_sMechRocket : g_sRocket, e->pos);
                     e->cd = e->rate;
                 } else if (isCyber) {
                     // Cyber demon: same heavy rocket as mech but bigger damage
@@ -1989,8 +2002,8 @@ static void UpdEnemies(float dt) {
                     Vector3 muzzle = {e->pos.x, e->pos.y + 2.3f, e->pos.z};
                     Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                     SpawnEShotRocket(muzzle, target, e->dmg);
-                    if      (g_sCyberFireOK)       PlaySound(g_sCyberFire);
-                    else if (g_sRocket.frameCount) PlaySound(g_sRocket);
+                    Sound cyS = g_sCyberFireOK ? g_sCyberFire : g_sRocket;
+                    if (cyS.frameCount) PlayPositionalSound(cyS, e->pos);
                     e->cd = e->rate;
                 } else if (isCaco) {
                     // Cacodemon: flying fireball, slower than mutant ball but
@@ -1998,8 +2011,7 @@ static void UpdEnemies(float dt) {
                     Vector3 muzzle = {e->pos.x, e->pos.y + 0.0f, e->pos.z};
                     Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                     SpawnEShot(muzzle, target, e->dmg);
-                    if (g_sMutAttackOK) PlaySound(g_sMutAttack);
-                    else                PlaySound(g_sPistol);
+                    PlayPositionalSound(g_sMutAttackOK ? g_sMutAttack : g_sPistol, e->pos);
                     e->cd = e->rate;
                 } else if (isMutant) {
                     // Ranged mutant: spawn an energy-ball projectile aimed at
@@ -2011,8 +2023,7 @@ static void UpdEnemies(float dt) {
                     Vector3 muzzle = {e->pos.x, e->pos.y + 1.55f, e->pos.z};
                     Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                     SpawnEShot(muzzle, target, e->dmg);
-                    if (g_sMutAttackOK) PlaySound(g_sMutAttack);
-                    else                PlaySound(g_sPistol);
+                    PlayPositionalSound(g_sMutAttackOK ? g_sMutAttack : g_sPistol, e->pos);
                     e->cd = e->rate;
                 } else {
                     // Cultist (4) AND soldier (7) both fire a hitscan tracer:
@@ -2033,13 +2044,14 @@ static void UpdEnemies(float dt) {
                             SpawnPart(p, (Vector3){0,0,0},
                                       (Color){255, 220, 80, 255}, 0.08f, 0.06f, false);
                         }
-                        // Per-type fire sample dispatch:
-                        //   type 7 (soldier) -> heavy MG
-                        //   type 4 (SS guard / cultist) -> G36
-                        //   else -> generic shotgun blast
-                        if      (e->type == 7 && g_sSoldierMGOK) PlaySound(g_sSoldierMG);
-                        else if (e->type == 4 && g_sSSFireOK)    PlaySound(g_sSSFire);
-                        else                                     PlaySound(g_sShotgun);
+                        // Per-type fire sample dispatch (soldier MG / SS G36
+                        // / shotgun fallback). Routed through
+                        // PlayPositionalSound so g_warnPan can stereo-pan
+                        // the sound based on enemy bearing.
+                        Sound fireS = (e->type == 7 && g_sSoldierMGOK) ? g_sSoldierMG
+                                    : (e->type == 4 && g_sSSFireOK)    ? g_sSSFire
+                                    :                                    g_sShotgun;
+                        PlayPositionalSound(fireS, e->pos);
                     }
                     if (!g_god) g_p.hp-=e->dmg;
                     g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
@@ -4179,6 +4191,49 @@ static void SBStep(void) {
     EndDrawing();
 }
 
+// Find the closest live enemy in the player's rear 180° arc within `range`
+// metres. Returns the enemy index or -1 if none. Used by the rear-warning
+// arc / stinger / minimap-tint indicators.
+static int FindClosestRearEnemy(float range) {
+    float syw = sinf(g_p.yaw + 3.14159f), cyw = cosf(g_p.yaw + 3.14159f);
+    float fx = syw, fz = cyw;
+    int best = -1;
+    float bestD = range;
+    for (int i = 0; i < g_ec; i++) {
+        Enemy *e = &g_e[i];
+        if (!e->active || e->dying) continue;
+        float dx = e->pos.x - g_p.pos.x;
+        float dz = e->pos.z - g_p.pos.z;
+        float d = sqrtf(dx*dx + dz*dz);
+        if (d < 0.01f || d > range) continue;
+        float fdot = (dx*fx + dz*fz) / d;
+        if (fdot > -0.1f) continue;     // dot < -0.1 ~= behind 96°+ arc
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+// PlaySound wrapper that pans by enemy bearing relative to the player when
+// g_warnPan is on. raylib pan: 0 = full right, 1 = full left, 0.5 = centre.
+static void PlayPositionalSound(Sound s, Vector3 pos) {
+    if (g_warnPan) {
+        float dx = pos.x - g_p.pos.x;
+        float dz = pos.z - g_p.pos.z;
+        float len = sqrtf(dx*dx + dz*dz);
+        if (len > 0.001f) { dx /= len; dz /= len; }
+        float syw = sinf(g_p.yaw + 3.14159f), cyw = cosf(g_p.yaw + 3.14159f);
+        // Player's RIGHT axis in xz: perpendicular to forward (sy, cy)
+        float rx = cyw, rz = -syw;
+        float dot = dx*rx + dz*rz;          // [-1,1], +1 = directly right
+        float pan = 0.5f - 0.5f * dot;      // raylib: 0=R, 1=L
+        if (pan < 0.f) pan = 0.f; if (pan > 1.f) pan = 1.f;
+        SetSoundPan(s, pan);
+    } else {
+        SetSoundPan(s, 0.5f);  // centre — undoes any previous pan
+    }
+    PlaySound(s);
+}
+
 // ── DEV CONSOLE ( ` toggles ) ───────────────────────────────────────────────
 // Quake-style drop-down debug console. Backtick (or shift+~) toggles. While
 // open, the player input (movement, mouse-look, fire) freezes but enemies +
@@ -4308,6 +4363,7 @@ static void ConExecute(const char *line) {
         ConPrintf("  tp X Z          teleport to world X,Z (y auto-snaps to floor)");
         ConPrintf("  clear           empty the scrollback");
         ConPrintf("  quit / exit     exit the game");
+        ConPrintf("  warn [target]   toggle rear-enemy warning indicators");
     } else if (!strcmp(cmd, "give")) {
         if (argc < 2) { ConPrintf("usage: give <kind> [N]"); return; }
         g_cheated = true;  // any `give` is a cheat
@@ -4377,6 +4433,29 @@ static void ConExecute(const char *line) {
         ConPrintf("tp -> (%.2f, %.2f, %.2f)", (double)g_p.pos.x, (double)g_p.pos.y, (double)g_p.pos.z);
     } else if (!strcmp(cmd, "clear")) {
         ConClearScrollback();
+    } else if (!strcmp(cmd, "warn")) {
+        // Toggle the rear-enemy warning indicators independently. Pure UX,
+        // not a cheat — does NOT set g_cheated.
+        if (argc < 2) {
+            ConPrintf("rear-warning toggles:");
+            ConPrintf("  arc     %s   (red arrow at screen edge)",
+                      g_warnArc ? "ON " : "off");
+            ConPrintf("  pan     %s   (stereo-pan enemy sounds)",
+                      g_warnPan ? "ON " : "off");
+            ConPrintf("  stinger %s   (vocal when enemy lingers behind)",
+                      g_warnStinger ? "ON " : "off");
+            ConPrintf("  minimap %s   (red tint on rear minimap half)",
+                      g_warnMinimap ? "ON " : "off");
+            ConPrintf("usage: warn <arc|pan|stinger|minimap|all|off>");
+            return;
+        }
+        if      (!strcmp(argv[1], "arc"))     { g_warnArc     = !g_warnArc;     ConPrintf("arc indicator %s",     g_warnArc?"ON":"OFF"); }
+        else if (!strcmp(argv[1], "pan"))     { g_warnPan     = !g_warnPan;     ConPrintf("audio panning %s",     g_warnPan?"ON":"OFF"); }
+        else if (!strcmp(argv[1], "stinger")) { g_warnStinger = !g_warnStinger; ConPrintf("rear stinger %s",      g_warnStinger?"ON":"OFF"); }
+        else if (!strcmp(argv[1], "minimap")) { g_warnMinimap = !g_warnMinimap; ConPrintf("minimap rear-tint %s", g_warnMinimap?"ON":"OFF"); }
+        else if (!strcmp(argv[1], "all"))     { g_warnArc = g_warnPan = g_warnStinger = g_warnMinimap = true;  ConPrintf("all rear warnings ON"); }
+        else if (!strcmp(argv[1], "off"))     { g_warnArc = g_warnPan = g_warnStinger = g_warnMinimap = false; ConPrintf("all rear warnings OFF"); }
+        else ConPrintf("unknown warn target: %s", argv[1]);
     } else if (!strcmp(cmd, "quit") || !strcmp(cmd, "exit")) {
         g_quit = true;
     } else {
@@ -4735,6 +4814,30 @@ static void StepFrame(void) {
                 }
             }
             g_hadVisibleEnemy = anyVisible;
+            // Rear-warning stinger (g_warnStinger) — vocal sample fires
+            // once when an enemy stays in the player's rear arc within
+            // 6m for >1.5s. Re-arms when the arc clears. The stinger
+            // sample reuses the alien-scream alert (slot 3 in the
+            // existing alert pool) since it's already loaded and reads
+            // appropriately as "behind you".
+            {
+                static float s_rearTimer = 0.f;
+                static bool  s_rearFired = false;
+                int rear = g_warnStinger ? FindClosestRearEnemy(6.f) : -1;
+                if (rear >= 0) {
+                    s_rearTimer += dt;
+                    if (s_rearTimer > 1.5f && !s_rearFired) {
+                        if (g_sEnemyAlertCount > 3 && g_sEnemyAlertOK[3]) {
+                            SetSoundVolume(g_sEnemyAlert[3], 1.6f);
+                            PlaySound(g_sEnemyAlert[3]);
+                        }
+                        s_rearFired = true;
+                    }
+                } else {
+                    s_rearTimer = 0.f;
+                    s_rearFired = false;
+                }
+            }
             // Idle-sigh stinger — when no enemy is visible for >5s the
             // player gets a "deep breath" sample once. Re-arms when an
             // enemy becomes visible again (which would also trigger the
@@ -4875,6 +4978,34 @@ static void StepFrame(void) {
         EndMode3D();
         DrawSpriteWeapon();
         DrawHUD();
+        // Rear-warning arc indicator (g_warnArc) — red arrow at the bottom
+        // of the screen pointing toward the closest rear enemy within 12m,
+        // alpha scaled by proximity. Draws on top of the HUD; under any
+        // pause / death overlays.
+        if (g_warnArc) {
+            int rear = FindClosestRearEnemy(12.f);
+            if (rear >= 0) {
+                Enemy *e = &g_e[rear];
+                float dx = e->pos.x - g_p.pos.x;
+                float dz = e->pos.z - g_p.pos.z;
+                float d = sqrtf(dx*dx + dz*dz);
+                float syw = sinf(g_p.yaw + 3.14159f), cyw = cosf(g_p.yaw + 3.14159f);
+                float rx = cyw, rz = -syw;
+                float rdot = (dx*rx + dz*rz) / d;  // [-1,1] right-component
+                int sw3 = GetScreenWidth(), sh3 = GetScreenHeight();
+                int ax = sw3/2 + (int)(rdot * sw3 / 3);
+                int ay = sh3 - 70;
+                unsigned char alpha = (unsigned char)(120 + 110 * (1.f - d/12.f));
+                Color arrowCol = {220, 60, 60, alpha};
+                DrawTriangle(
+                    (Vector2){(float)ax, (float)(ay + 22)},
+                    (Vector2){(float)(ax - 16), (float)(ay - 12)},
+                    (Vector2){(float)(ax + 16), (float)(ay - 12)},
+                    arrowCol);
+                DrawText("BEHIND", ax - MeasureText("BEHIND", 16)/2,
+                         ay - 32, 16, arrowCol);
+            }
+        }
         if (g_paused) {
             int sw3 = GetScreenWidth(), sh3 = GetScreenHeight();
             DrawRectangle(0, 0, sw3, sh3, (Color){0, 0, 0, 140});
