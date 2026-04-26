@@ -4517,7 +4517,17 @@ static void StepFrame(void) {
                 if (g_titleMusicOK) PlayMusicStream(g_titleMusic);
             } else if (!toMenu && fromMenu) {
                 if (g_titleMusicOK) StopMusicStream(g_titleMusic);
-                if (g_musicOK)      PlayMusicStream(g_musicTracks[g_musicIdx]);
+                if (g_musicOK) {
+                    // Randomise which track plays first this game so the
+                    // order isn't always hell-march -> funeral-march. Pick
+                    // a uniformly random LOADED track.
+                    int cand[MUSIC_TRACK_COUNT]; int nc = 0;
+                    for (int t = 0; t < MUSIC_TRACK_COUNT; t++)
+                        if (g_musicTracksOK[t]) cand[nc++] = t;
+                    if (nc > 0) g_musicIdx = cand[rand() % nc];
+                    SetMusicVolume(g_musicTracks[g_musicIdx], g_musicVol);
+                    PlayMusicStream(g_musicTracks[g_musicIdx]);
+                }
             }
             s_prevGs = g_gs;
         }
@@ -4529,11 +4539,15 @@ static void StepFrame(void) {
         // Track alternation: when the current track plays out (and we're
         // not paused), advance to the next loaded track in the playlist.
         if (!g_paused && !IsMusicStreamPlaying(g_musicTracks[g_musicIdx])) {
-            int next = (g_musicIdx + 1) % MUSIC_TRACK_COUNT;
-            for (int tries = 0; tries < MUSIC_TRACK_COUNT; tries++) {
-                if (g_musicTracksOK[next]) break;
-                next = (next + 1) % MUSIC_TRACK_COUNT;
-            }
+            // Pick a uniformly random LOADED track that isn't the current
+            // one — proper shuffle behaviour. With 2 loaded tracks this
+            // collapses to "always switch", with 3+ it actually shuffles.
+            int cand[MUSIC_TRACK_COUNT]; int nc = 0;
+            for (int t = 0; t < MUSIC_TRACK_COUNT; t++)
+                if (g_musicTracksOK[t] && t != g_musicIdx) cand[nc++] = t;
+            int next;
+            if (nc > 0) next = cand[rand() % nc];
+            else        next = g_musicIdx;  // only one track loaded — replay it
             if (g_musicTracksOK[next]) {
                 StopMusicStream(g_musicTracks[g_musicIdx]);
                 g_musicIdx = next;
