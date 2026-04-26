@@ -2642,7 +2642,7 @@ static void DrawEnemies(Camera3D cam) {
                 // sprites with transparent bottom-padding leave the
                 // visible feet hovering above y=0. Pull down so legs
                 // plant on the floor.
-                float feetBias = (e->type == 16) ? 0.40f : 0.0f;  // spider mastermind
+                float feetBias = (e->type == 16) ? 1.00f : 0.0f;  // spider mastermind
                 Vector3 pos = {e->pos.x, e->pos.y + spriteH * 0.5f - feetBias, e->pos.z};
                 if (tex.id) {
                     float aspect = (float)tex.width / (float)tex.height;
