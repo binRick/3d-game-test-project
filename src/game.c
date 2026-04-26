@@ -8,6 +8,7 @@
 #include "level.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdarg.h>  // va_list / vsnprintf — used by the dev console (ConPrintf)
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #endif
@@ -509,6 +510,19 @@ static int       g_pickerIdx = 0;     // current selection on the GS_PICK_ENEMY 
 static float     g_pickerT   = 0.f;   // time accumulator for preview anim
 static bool      g_paused    = false; // P toggles in-game pause; freezes Upd* calls
 static bool      g_quit      = false; // set by ESC on the main menu; main loop exits next iteration
+
+// Cheat / godmode state shared between the dev console (sets) and several
+// damage application sites (read). Hoisted up here so they're visible
+// before the first use in UpdEnemies / UpdBullets etc.
+//
+// IMPORTANT — any console command that ENHANCES PLAYER CAPABILITY (extra
+// ammo / health / score-affecting state, godmode, kill-all, teleport,
+// wave skip, etc.) MUST set g_cheated. The death-screen leaderboard entry
+// is suppressed when set so cheated runs can't pollute the scoreboard.
+// Pure-info / no-effect commands (help, pos, clear, quit) leave it
+// alone. See ConExecute below + CLAUDE.md.
+static bool      g_god       = false; // toggled by `god` console cmd
+static bool      g_cheated   = false; // any cheat-class command flips this true
 
 // High-score submission stats — accumulated through one game session and
 // posted to https://ironfist.ximg.app/api/scores on death (or skip via
@@ -1954,7 +1968,8 @@ static void UpdEnemies(float dt) {
                         }
                         PlaySound(g_sShotgun);
                     }
-                    g_p.hp-=e->dmg; g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
+                    if (!g_god) g_p.hp-=e->dmg;
+                    g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
                     if (g_sChefHitOK) PlaySound(g_sChefHit);
                     else              PlaySound(g_sHurt);
                     e->cd=e->rate;
@@ -2653,7 +2668,7 @@ static void DetonateBarrel(int idx) {
     // rocket-on-wall. Walking up to a barrel and shooting it should hurt.
     float pd = Vector3Distance(p, g_p.pos);
     if (pd < 5.f) {
-        g_p.hp -= 30.f * (1.f - pd/5.f);
+        if (!g_god) g_p.hp -= 30.f * (1.f - pd/5.f);
         g_p.hurtFlash = 0.3f;
         if (g_p.hp <= 0) { g_p.dead = true; g_gs = GS_DEAD; }
     }
@@ -2706,7 +2721,7 @@ static void UpdBullets(float dt) {
                         DetonateBarrel(bk);
                 TriggerMultiKill();
                 float pd=Vector3Distance(b->pos,g_p.pos);
-                if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
+                if (pd<5.f){if(!g_god)g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
             } else Sparks(prev,22);
             b->active=false; continue;
         }
@@ -2753,7 +2768,7 @@ static void UpdBullets(float dt) {
                             DetonateBarrel(bk);
                     TriggerMultiKill();
                     float pd=Vector3Distance(b->pos,g_p.pos);
-                    if (pd<5.f){g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
+                    if (pd<5.f){if(!g_god)g_p.hp-=30.f*(1.f-pd/5.f);g_p.hurtFlash=0.3f;if(g_p.hp<=0){g_p.dead=true;g_gs=GS_DEAD;}}
                 } else { Blood(b->pos, e->type==3 ? 40 : 6); DmgEnemy(j,b->dmg); }
                 b->active=false; break;
             }
@@ -2973,7 +2988,7 @@ static void UpdEShots(float dt) {
                     float pdist = sqrtf(dx*dx + dy*dy + dz*dz);
                     if (pdist < 3.5f) {
                         float fall = 1.f - pdist / 3.5f;
-                        g_p.hp -= s->dmg * fall;
+                        if (!g_god) g_p.hp -= s->dmg * fall;
                         g_p.hurtFlash = 0.3f;
                         g_p.shake = fmaxf(g_p.shake, 0.18f);
                         if (g_sMechHitOK) PlaySound(g_sMechHit);
@@ -2994,7 +3009,7 @@ static void UpdEShots(float dt) {
                     }
                 }
             } else if (playerHit) {
-                g_p.hp -= s->dmg;
+                if (!g_god) g_p.hp -= s->dmg;
                 g_p.hurtFlash = 0.22f;
                 g_p.shake = fmaxf(g_p.shake, 0.13f);
                 PlaySound(g_sHurt);
@@ -3747,6 +3762,11 @@ static void InitGame(void) {
     g_initialsPos = 0;
     g_initialsDone = false;
     g_initialsSubmitted = false;
+    // Cheat flags reset per run — a fresh game can earn a leaderboard entry
+    // again. g_god turns OFF too so previously-toggled invulnerability
+    // doesn't leak across restarts.
+    g_cheated = false;
+    g_god = false;
     // Preserve initials across runs so a recurring player doesn't have to
     // retype "AAA" every time. Defaults to "AAA" on first run.
     // Preserve facing direction across runs — without this, every restart
@@ -4055,6 +4075,263 @@ static void SBStep(void) {
     EndDrawing();
 }
 
+// ── DEV CONSOLE ( ` toggles ) ───────────────────────────────────────────────
+// Quake-style drop-down debug console. Backtick (or shift+~) toggles. While
+// open, the player input (movement, mouse-look, fire) freezes but enemies +
+// bullets + particles keep ticking behind the panel. Commands run against
+// the live game state — give ammo, toggle god mode, kill all live enemies,
+// teleport, advance wave, etc. Type `help` for the list.
+//
+// Active in GS_PLAY only — opening it from the menu / picker / death screen
+// has nowhere useful to act, so the toggle is gated to in-play state.
+#define CON_INPUT_MAX  256
+#define CON_HIST_LINES 96
+#define CON_CMD_HIST   16
+
+static bool   g_conOpen      = false;
+static char   g_conInput[CON_INPUT_MAX] = {0};
+static int    g_conInputLen  = 0;
+static char   g_conLines[CON_HIST_LINES][CON_INPUT_MAX] = {{0}};
+static int    g_conLineCount = 0;     // how many slots are populated (caps at HIST_LINES)
+static int    g_conLineHead  = 0;     // next slot to overwrite (ring buffer)
+static char   g_conCmdHist[CON_CMD_HIST][CON_INPUT_MAX] = {{0}};
+static int    g_conCmdCount  = 0;
+static int    g_conCmdHead   = 0;
+static int    g_conCmdNav    = -1;    // -1 = current input; else steps back from head
+
+// g_god and g_cheated declared at the top of the file alongside g_paused
+// so the damage-application sites in UpdEnemies / UpdBullets can see them
+// without forward decls.
+
+static void ConPrintLine(const char *s) {
+    strncpy(g_conLines[g_conLineHead], s, CON_INPUT_MAX-1);
+    g_conLines[g_conLineHead][CON_INPUT_MAX-1] = 0;
+    g_conLineHead = (g_conLineHead + 1) % CON_HIST_LINES;
+    if (g_conLineCount < CON_HIST_LINES) g_conLineCount++;
+}
+
+static void ConPrintf(const char *fmt, ...) {
+    char buf[CON_INPUT_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    ConPrintLine(buf);
+}
+
+static void ConClearScrollback(void) {
+    memset(g_conLines, 0, sizeof(g_conLines));
+    g_conLineCount = 0;
+    g_conLineHead  = 0;
+}
+
+static void ConOpenPanel(void) {
+    g_conOpen = true;
+    g_conCmdNav = -1;
+    EnableCursor();  // free OS cursor while typing — same trick as pause
+}
+
+static void ConClosePanel(void) {
+    g_conOpen = false;
+    g_conInputLen = 0;
+    g_conInput[0] = 0;
+    g_conCmdNav = -1;
+    if (g_gs == GS_PLAY) {
+        DisableCursor();
+        SetMousePosition(GetScreenWidth()/2, GetScreenHeight()/2);
+        (void)GetMouseDelta();  // drain accumulated delta so camera doesn't snap
+    }
+}
+
+static void ConPushCmd(const char *line) {
+    strncpy(g_conCmdHist[g_conCmdHead], line, CON_INPUT_MAX-1);
+    g_conCmdHist[g_conCmdHead][CON_INPUT_MAX-1] = 0;
+    g_conCmdHead = (g_conCmdHead + 1) % CON_CMD_HIST;
+    if (g_conCmdCount < CON_CMD_HIST) g_conCmdCount++;
+}
+
+static void ConRecallCmd(void) {
+    if (g_conCmdNav < 0 || g_conCmdCount == 0) {
+        g_conInput[0] = 0; g_conInputLen = 0; return;
+    }
+    int idx = (g_conCmdHead - 1 - g_conCmdNav + CON_CMD_HIST) % CON_CMD_HIST;
+    strncpy(g_conInput, g_conCmdHist[idx], CON_INPUT_MAX-1);
+    g_conInput[CON_INPUT_MAX-1] = 0;
+    g_conInputLen = (int)strlen(g_conInput);
+}
+
+// ── command dispatch ────────────────────────────────────────────────────────
+// Tokenise a line in-place by terminating tokens with NULs and stashing
+// pointers in argv[]. Returns argc.
+static int ConTokenise(char *line, char *argv[], int maxArgs) {
+    int argc = 0;
+    char *p = line;
+    while (*p && argc < maxArgs) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        argv[argc++] = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (*p) { *p = 0; p++; }
+    }
+    return argc;
+}
+
+// Alive() and DmgEnemy() are defined elsewhere in game.c; both are non-
+// static at file scope, so no forward decl is needed here.
+
+static void ConExecute(const char *line) {
+    char buf[CON_INPUT_MAX];
+    strncpy(buf, line, sizeof(buf)-1);
+    buf[sizeof(buf)-1] = 0;
+    char *argv[8] = {0};
+    int argc = ConTokenise(buf, argv, 8);
+    if (argc == 0) return;
+    const char *cmd = argv[0];
+
+    if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) {
+        ConPrintf("commands:");
+        ConPrintf("  give all|health|shells|rockets|bullets|cells|mg|tesla [N]");
+        ConPrintf("  god             toggle invulnerability");
+        ConPrintf("  kill            damage all live enemies to 0 HP");
+        ConPrintf("  wave N          set wave counter (next wave kicks in on clear)");
+        ConPrintf("  pos             print player x,y,z + yaw");
+        ConPrintf("  tp X Z          teleport to world X,Z (y auto-snaps to floor)");
+        ConPrintf("  clear           empty the scrollback");
+        ConPrintf("  quit / exit     exit the game");
+    } else if (!strcmp(cmd, "give")) {
+        if (argc < 2) { ConPrintf("usage: give <kind> [N]"); return; }
+        g_cheated = true;  // any `give` is a cheat
+        int n = (argc >= 3) ? atoi(argv[2]) : 0;
+        if (!strcmp(argv[1], "all")) {
+            g_p.hp = g_p.maxHp;
+            g_p.shells  = 99;
+            g_p.rockets = 30;
+            g_p.bullets = 200;
+            g_p.mgAmmo  = 300;
+            g_p.cells   = 99;
+            g_p.hasTesla = true;
+            ConPrintf("filled all ammo + tesla unlocked");
+        } else if (!strcmp(argv[1], "health"))  { g_p.hp = fminf(g_p.maxHp, g_p.hp + (n>0?n:35));    ConPrintf("hp = %.0f / %.0f", (double)g_p.hp, (double)g_p.maxHp); }
+        else if   (!strcmp(argv[1], "shells"))  { g_p.shells  = (int)fminf(99,  g_p.shells  + (n>0?n:32));  ConPrintf("shells = %d",  g_p.shells); }
+        else if   (!strcmp(argv[1], "rockets")) { g_p.rockets = (int)fminf(30,  g_p.rockets + (n>0?n:8));   ConPrintf("rockets = %d", g_p.rockets); }
+        else if   (!strcmp(argv[1], "bullets")) { g_p.bullets = (int)fminf(200, g_p.bullets + (n>0?n:50));  ConPrintf("bullets = %d", g_p.bullets); }
+        else if   (!strcmp(argv[1], "mg"))      { g_p.mgAmmo  = (int)fminf(300, g_p.mgAmmo  + (n>0?n:120)); ConPrintf("mg = %d",      g_p.mgAmmo); }
+        else if   (!strcmp(argv[1], "cells"))   { g_p.cells   = (int)fminf(99,  g_p.cells   + (n>0?n:30));  ConPrintf("cells = %d",   g_p.cells); }
+        else if   (!strcmp(argv[1], "tesla"))   { g_p.hasTesla = true; g_p.cells = (int)fminf(99, g_p.cells + 30); ConPrintf("tesla cannon unlocked"); }
+        else      { ConPrintf("unknown give: %s", argv[1]); }
+    } else if (!strcmp(cmd, "god")) {
+        g_god = !g_god;
+        if (g_god) g_cheated = true;  // toggling god ON poisons this run
+        ConPrintf("god mode %s", g_god ? "ON" : "OFF");
+    } else if (!strcmp(cmd, "kill")) {
+        g_cheated = true;
+        int n = 0;
+        for (int i = 0; i < g_ec; i++) {
+            if (g_e[i].active && !g_e[i].dying) {
+                DmgEnemy(i, g_e[i].hp + 1.f);
+                n++;
+            }
+        }
+        ConPrintf("killed %d enemies", n);
+    } else if (!strcmp(cmd, "wave")) {
+        if (argc < 2) { ConPrintf("usage: wave N"); return; }
+        g_cheated = true;
+        int w = atoi(argv[1]);
+        if (w < 1) w = 1;
+        g_wave = w;
+        ConPrintf("wave = %d (active on next clear)", w);
+    } else if (!strcmp(cmd, "pos")) {
+        ConPrintf("pos = (%.2f, %.2f, %.2f)  yaw = %.2f rad",
+                  (double)g_p.pos.x, (double)g_p.pos.y, (double)g_p.pos.z, (double)g_p.yaw);
+    } else if (!strcmp(cmd, "tp")) {
+        if (argc < 3) { ConPrintf("usage: tp X Z"); return; }
+        g_cheated = true;
+        float x = (float)atof(argv[1]);
+        float z = (float)atof(argv[2]);
+        g_p.pos.x = x;
+        g_p.pos.z = z;
+        g_p.pos.y = PlatGroundAt(x, z, 100.f);
+        ConPrintf("tp -> (%.2f, %.2f, %.2f)", (double)g_p.pos.x, (double)g_p.pos.y, (double)g_p.pos.z);
+    } else if (!strcmp(cmd, "clear")) {
+        ConClearScrollback();
+    } else if (!strcmp(cmd, "quit") || !strcmp(cmd, "exit")) {
+        g_quit = true;
+    } else {
+        ConPrintf("unknown command: %s  (try 'help')", cmd);
+    }
+}
+
+static void ConHandleInput(void) {
+    // Printable chars typed via GetCharPressed (handles shift, layout, etc.)
+    int c;
+    while ((c = GetCharPressed()) > 0) {
+        if (c < 32 || c >= 127) continue;
+        if (c == '`' || c == '~') continue;  // those toggle the panel
+        if (g_conInputLen < CON_INPUT_MAX-1) {
+            g_conInput[g_conInputLen++] = (char)c;
+            g_conInput[g_conInputLen] = 0;
+        }
+    }
+    if (IsKeyPressed(KEY_BACKSPACE) && g_conInputLen > 0) {
+        g_conInput[--g_conInputLen] = 0;
+    }
+    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+        if (g_conInputLen > 0) {
+            ConPrintf("> %s", g_conInput);
+            ConPushCmd(g_conInput);
+            ConExecute(g_conInput);
+        }
+        g_conInput[0] = 0;
+        g_conInputLen = 0;
+        g_conCmdNav = -1;
+    }
+    if (IsKeyPressed(KEY_UP)) {
+        if (g_conCmdNav + 1 < g_conCmdCount) {
+            g_conCmdNav++;
+            ConRecallCmd();
+        }
+    }
+    if (IsKeyPressed(KEY_DOWN)) {
+        if (g_conCmdNav > 0) {
+            g_conCmdNav--;
+            ConRecallCmd();
+        } else if (g_conCmdNav == 0) {
+            g_conCmdNav = -1;
+            g_conInput[0] = 0;
+            g_conInputLen = 0;
+        }
+    }
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        ConClosePanel();
+    }
+}
+
+static void ConDraw(void) {
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    int panelH = sh / 2;
+    DrawRectangle(0, 0, sw, panelH, (Color){10, 10, 20, 220});
+    DrawRectangle(0, panelH, sw, 2, (Color){80, 200, 120, 200});
+    // Scrollback above the prompt, bottom-up.
+    const int lineH = 18;
+    int y = panelH - 30 - lineH;
+    int idx = g_conLineHead;
+    int n   = g_conLineCount;
+    while (n > 0 && y >= 4) {
+        idx = (idx - 1 + CON_HIST_LINES) % CON_HIST_LINES;
+        DrawText(g_conLines[idx], 12, y, 16, (Color){200, 220, 230, 255});
+        y -= lineH;
+        n--;
+    }
+    // Prompt at the bottom of the panel.
+    char prompt[CON_INPUT_MAX + 4];
+    snprintf(prompt, sizeof(prompt), "> %s", g_conInput);
+    DrawText(prompt, 12, panelH - 26, 18, (Color){240, 240, 120, 255});
+    if (((int)(GetTime() * 2.f)) & 1) {
+        int textW = MeasureText(prompt, 18);
+        DrawRectangle(12 + textW + 2, panelH - 26, 8, 18, (Color){240, 240, 120, 200});
+    }
+}
+
 static void StepFrame(void) {
     float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
     DebugLogTick();
@@ -4065,6 +4342,18 @@ static void StepFrame(void) {
     if (IsKeyPressed(KEY_F8) && !g_sbActive) { SBOpen(); }
     if (g_sbActive) { SBStep(); return; }
 #endif
+    // Backtick (or shift+~) toggles the dev console — only meaningful in
+    // GS_PLAY where there's live game state to act on. ConHandleInput()
+    // captures keys ENTER/UP/DOWN/BACKSPACE/ESC and printable chars while
+    // open; the GS_PLAY input + tick blocks below check g_conOpen and gate
+    // accordingly so the player freezes but enemies/bullets keep moving.
+    if (g_gs == GS_PLAY) {
+        if (IsKeyPressed(KEY_GRAVE)) {
+            if (g_conOpen) ConClosePanel();
+            else           ConOpenPanel();
+        }
+        if (g_conOpen) ConHandleInput();
+    }
     // Alt+Enter — fullscreen toggle. Borderless-windowed flavour: no
     // resolution change, no swoop animation, instant. Skipped on web — the
     // browser shell owns canvas sizing and the Fullscreen API needs its own
@@ -4132,11 +4421,13 @@ static void StepFrame(void) {
     } else if (g_gs==GS_PLAY) {
         // Time-played stat — accumulate while actually in-play (not paused).
         if (!g_paused) g_statTime += dt;
-        if (IsKeyPressed(KEY_ESCAPE)){g_gs=GS_MENU;}
+        // While the dev console is open, swallow all gameplay-key handling
+        // so ESC/P/etc don't double-fire alongside the console's own input.
+        if (!g_conOpen && IsKeyPressed(KEY_ESCAPE)){g_gs=GS_MENU;}
         // P toggles a hard pause — Upd* calls and the visibility-stinger
         // logic are gated below so enemies freeze, projectiles hang, and
         // sound timers don't tick. Music keeps playing for ambience.
-        if (IsKeyPressed(KEY_P)) {
+        if (!g_conOpen && IsKeyPressed(KEY_P)) {
             g_paused = !g_paused;
             // Mute the streaming music while paused — raylib's pause/resume
             // properly halts the decoder so the buffer doesn't drift.
@@ -4167,7 +4458,11 @@ static void StepFrame(void) {
             }
         }
         if (!g_paused) {
-        UpdPlayer(dt,&g_cam);
+        // Player input + physics frozen while the console panel is open
+        // (so typing W/A/S/D doesn't move the player). Enemies / bullets /
+        // particles / pickups still tick — game world keeps running behind
+        // the console, Quake-style.
+        if (!g_conOpen) UpdPlayer(dt,&g_cam);
         UpdEnemies(dt);
         UpdBullets(dt);
         UpdParts(dt);
@@ -4232,6 +4527,13 @@ static void StepFrame(void) {
         }
         }  // end if (!g_paused) — pause gate from above
     } else if (g_gs==GS_DEAD) {
+        // If the player used any cheat-class console command this run
+        // (god / give / kill / wave / tp), suppress the leaderboard entry
+        // entirely — jump straight to the post-initials restart prompt.
+        if (g_cheated && !g_initialsDone) {
+            g_initialsDone = true;
+            g_initialsSubmitted = false;
+        }
         if (!g_initialsDone) {
             // Initials entry. Up/down cycle the highlighted slot through
             // A-Z then 0-9; left/right move between slots; letter and
@@ -4592,9 +4894,18 @@ static void StepFrame(void) {
             const char *h2 = "ENTER submit    ESC skip";
             DrawText(h2, sw2/2 - MeasureText(h2, 18)/2, by + cellH + 40, 18, (Color){180,255,180,240});
         } else {
-            const char *status = g_initialsSubmitted ? "SCORE SUBMITTED" : "SCORE NOT SUBMITTED";
-            Color statusCol = g_initialsSubmitted ? (Color){80,255,120,255}
-                                                   : (Color){200,200,200,200};
+            const char *status;
+            Color statusCol;
+            if (g_cheated) {
+                status = "CHEATS USED  -  NO LEADERBOARD ENTRY";
+                statusCol = (Color){255, 100, 100, 255};
+            } else if (g_initialsSubmitted) {
+                status = "SCORE SUBMITTED";
+                statusCol = (Color){80, 255, 120, 255};
+            } else {
+                status = "SCORE NOT SUBMITTED";
+                statusCol = (Color){200, 200, 200, 200};
+            }
             DrawText(status, sw2/2 - MeasureText(status, 22)/2, sh2/2 + 30, 22, statusCol);
             if (sinf(GetTime()*3.f)>0)
                 DrawText("[ ENTER / SPACE  TO  PLAY  AGAIN ]",
@@ -4603,6 +4914,19 @@ static void StepFrame(void) {
         }
     }
     if (g_gs==GS_PLAY) DrawFPS(GetScreenWidth()-90, 10);
+    // God-mode + cheat overlay strip — corner indicator while cheats are
+    // active so the player always knows their run won't earn a leaderboard
+    // entry. Drawn over the HUD; under the console panel.
+    if (g_gs == GS_PLAY && (g_god || g_cheated)) {
+        char ind[64];
+        snprintf(ind, sizeof(ind), "%s%s%s",
+                 g_god ? "GOD" : "",
+                 (g_god && g_cheated) ? " | " : "",
+                 (!g_god && g_cheated) ? "CHEAT" : (g_god && g_cheated) ? "CHEAT" : "");
+        DrawText(ind, 10, GetScreenHeight() - 26, 18, (Color){255, 100, 100, 230});
+    }
+    // Dev console panel goes ON TOP of the HUD so it's always readable.
+    if (g_conOpen) ConDraw();
     EndDrawing();
 }
 

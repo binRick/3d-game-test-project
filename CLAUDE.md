@@ -350,6 +350,57 @@ Validation lives on the SERVER (rejects implausible scores, see
 "protection" — it's pointless when the WASM can be modified or the API
 posted to directly with curl.
 
+## Dev console (` toggles, GS_PLAY only)
+
+Quake-style drop-down debug console. Backtick toggles open/closed in
+GS_PLAY (gated to that state — opening it elsewhere has nothing useful
+to act on). While open, `UpdPlayer` is skipped so the player freezes
+in place and the OS cursor is released; enemies / bullets / particles
+keep ticking behind the panel.
+
+State globals (file-scope in game.c, prefix `g_con*`): input buffer,
+ring-buffer scrollback (96 lines), command history (16 entries for
+UP/DOWN recall), and an `g_cheated` flag.
+
+Built-in commands (see `ConExecute` in game.c):
+
+| Command          | Effect                                          | Sets g_cheated? |
+|------------------|-------------------------------------------------|-----------------|
+| `help` / `?`     | List commands                                   | no              |
+| `give <kind> [N]`| all/health/shells/rockets/bullets/cells/mg/tesla| **yes**         |
+| `god`            | Toggle invulnerability (gates 5 damage sites)   | yes (when ON)   |
+| `kill`           | Kill all live enemies                           | **yes**         |
+| `wave N`         | Set the wave counter                            | **yes**         |
+| `tp X Z`         | Teleport to world (X, Z); y auto-snaps to floor | **yes**         |
+| `pos`            | Print player x,y,z + yaw                        | no              |
+| `clear`          | Empty the scrollback                            | no              |
+| `quit` / `exit`  | Exit the app                                    | no              |
+
+### IMPORTANT — cheat flag rule
+
+**Any new console command that enhances player capability — extra ammo,
+health, score-affecting state, godmode, kill-all, teleport, wave skip,
+etc. — MUST set `g_cheated = true`.** When this flag is set, the death
+screen suppresses the leaderboard initials prompt entirely and shows a
+red "CHEATS USED - NO LEADERBOARD ENTRY" status instead. Cheated runs
+must never be allowed to pollute the public scoreboard at
+ironfist.ximg.app/scores.html.
+
+The flag resets on every `InitGame()` call so a fresh run can earn a
+real entry again. `g_god` also resets to false on InitGame so a
+previously-toggled god mode doesn't leak across restarts.
+
+Pure-info / no-effect commands (`help`, `pos`, `clear`, `quit`) leave
+the flag alone. When in doubt, mark the command as cheaty — false
+positives are harmless (player can just play another run); false
+negatives let cheated scores onto the leaderboard.
+
+God mode is enforced by gating 5 player-damage sites with `if (!g_god)`:
+chef-melee in UpdEnemies, rocket self-splash in Explode, barrel self-
+damage in UpdBullets (×2), and enemy-projectile player-hit in
+UpdBullets. New damage paths added in the future need a matching gate
+or god mode will leak through them.
+
 ## Arena picker (A on main menu)
 
 `g_gs == GS_PICK_ENEMY`. 13 slots cycling sprite + attack-frame previews
