@@ -387,6 +387,11 @@ static Texture2D g_teslaPickupTex;
 #define QUAD_FRAMES 6
 static Texture2D g_quadTex[QUAD_FRAMES];
 static int       g_quadTexCount = 0;
+// SPEED boost pickup (Pickup.type==6) — 4-frame freedoom Computer Map
+// (pmapa0..pmapd0). Same cycling-on-the-ground treatment as QUAD.
+#define SPEED_FRAMES 4
+static Texture2D g_speedTex[SPEED_FRAMES];
+static int       g_speedTexCount = 0;
 
 // DOOM-style-Game enemies — sprite container for soldier (type 7),
 // cacodemon (type 8), cyber demon (type 9). Same struct backs the arena
@@ -1385,12 +1390,24 @@ static void DrawPicks(Camera3D cam) {
             continue;
         }
         if (pk->type == 6) {
-            // SPEED boost — pulsing sphere + halo (unchanged).
-            float pulse = 0.85f + 0.25f*sinf(t*4.f + (float)i);
+            // SPEED boost — freedoom Computer Map cycling at 5 fps so it
+            // reads as a glowing tablet rotating on the ground. Same
+            // bob + double-ring halo treatment as QUAD; cyan halo to
+            // contrast the magenta QUAD.
             Color c = tc[pk->type];
-            DrawSphere(pk->pos, 0.34f * pulse, c);
-            DrawCircle3D(pk->pos, 0.65f, (Vector3){1,0,0}, 90.f + t*40.f, Fade(c, 0.55f));
-            DrawCircle3D(pk->pos, 0.55f, (Vector3){0,0,1}, 90.f - t*60.f, Fade(c, 0.45f));
+            Vector3 mapPos = pk->pos;
+            mapPos.y += sinf(t * 2.5f + (float)i) * 0.08f;
+            DrawCircle3D(mapPos, 0.65f, (Vector3){1,0,0}, 90.f + t*40.f, Fade(c, 0.55f));
+            DrawCircle3D(mapPos, 0.55f, (Vector3){0,0,1}, 90.f - t*60.f, Fade(c, 0.45f));
+            if (g_speedTexCount > 0) {
+                int frame = (int)(t * 5.f) % g_speedTexCount;
+                if (frame < 0) frame += g_speedTexCount;
+                DrawBillboard(cam, g_speedTex[frame], mapPos, 0.7f, WHITE);
+            } else {
+                // Fall back to the prior pulsing sphere if sprites missing.
+                float pulse = 0.85f + 0.25f*sinf(t*4.f + (float)i);
+                DrawSphere(mapPos, 0.34f * pulse, c);
+            }
             continue;
         }
         Texture2D tex = {0};
@@ -6093,6 +6110,17 @@ int main(int argc, char **argv) {
                     SetTextureFilter(g_quadTex[q], TEXTURE_FILTER_POINT);
                     SetTextureWrap  (g_quadTex[q], TEXTURE_WRAP_CLAMP);
                     g_quadTexCount = q + 1;
+                }
+            }
+            // SPEED boost pickup — 4-frame cycling Computer Map (pmap*).
+            g_speedTexCount = 0;
+            for (int q = 0; q < SPEED_FRAMES; q++) {
+                snprintf(fp, sizeof(fp), "%spickups/speed/speed_%d.png", appBase, q);
+                g_speedTex[q] = LoadTexture(fp);
+                if (g_speedTex[q].id) {
+                    SetTextureFilter(g_speedTex[q], TEXTURE_FILTER_POINT);
+                    SetTextureWrap  (g_speedTex[q], TEXTURE_WRAP_CLAMP);
+                    g_speedTexCount = q + 1;
                 }
             }
         }
