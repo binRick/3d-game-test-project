@@ -4502,60 +4502,26 @@ static void StepFrame(void) {
         ToggleBorderlessWindowed();
     }
 #endif
-    // ── Music ──────────────────────────────────────────────────────────────
-    // Three phases:
-    //   1. GS_MENU            — title track loops manually (re-seeked + re-
-    //                            played each time it finishes)
-    //   2. In-game, intro     — title track plays through once and the
-    //                            in-game playlist hasn't started yet. Title
-    //                            carries over from menu into the start of
-    //                            gameplay; playlist kicks in when title ends.
-    //   3. In-game, playlist  — random shuffle of g_musicTracks[], picking
-    //                            random next != current on track end.
-    // s_introDone tracks whether we've crossed the intro->playlist boundary
-    // for the current game session; resets on menu re-entry.
+    // ── Music: title track on menu, alternating in-game playlist otherwise ──
+    // State-transition handler swaps which stream is active when entering /
+    // leaving GS_MENU. Both streams are kept loaded so the swap is just a
+    // Stop + Play call, no disk hit.
     {
         static GameState s_prevGs = GS_MENU;
         static bool s_initialized = false;
-        static bool s_introDone   = false;
         if (!s_initialized) { s_prevGs = g_gs; s_initialized = true; }
         if (g_gs != s_prevGs) {
             bool toMenu   = (g_gs == GS_MENU);
             bool fromMenu = (s_prevGs == GS_MENU);
             if (toMenu && !fromMenu) {
-                // Returning to menu — stop in-game playlist; restart title
-                // from the beginning so it sounds fresh on the menu again.
-                if (g_musicOK) StopMusicStream(g_musicTracks[g_musicIdx]);
-                if (g_titleMusicOK) {
-                    SeekMusicStream(g_titleMusic, 0.f);
-                    PlayMusicStream(g_titleMusic);
-                }
-                s_introDone = false;
-            }
-            // Leaving menu (fromMenu && !toMenu): deliberately do NOTHING.
-            // Title music keeps playing into the start of the game; the
-            // intro-phase branch below detects when it ends and starts
-            // the playlist with a random pick.
-            s_prevGs = g_gs;
-        }
-
-        if (g_gs == GS_MENU) {
-            // Phase 1 — menu. Manually loop the title track.
-            if (g_titleMusicOK) {
-                UpdateMusicStream(g_titleMusic);
-                if (!IsMusicStreamPlaying(g_titleMusic)) {
-                    SeekMusicStream(g_titleMusic, 0.f);
-                    PlayMusicStream(g_titleMusic);
-                }
-            }
-        } else if (g_titleMusicOK && !s_introDone) {
-            // Phase 2 — intro. Title finishes its playthrough across the
-            // menu->game transition; when it ends we kick off the
-            // in-game playlist.
-            UpdateMusicStream(g_titleMusic);
-            if (!g_paused && !IsMusicStreamPlaying(g_titleMusic)) {
-                s_introDone = true;
+                if (g_musicOK)      StopMusicStream(g_musicTracks[g_musicIdx]);
+                if (g_titleMusicOK) PlayMusicStream(g_titleMusic);
+            } else if (!toMenu && fromMenu) {
+                if (g_titleMusicOK) StopMusicStream(g_titleMusic);
                 if (g_musicOK) {
+                    // Randomise which track plays first this game so the
+                    // order isn't always hell-march -> funeral-march. Pick
+                    // a uniformly random LOADED track.
                     int cand[MUSIC_TRACK_COUNT]; int nc = 0;
                     for (int t = 0; t < MUSIC_TRACK_COUNT; t++)
                         if (g_musicTracksOK[t]) cand[nc++] = t;
@@ -4564,20 +4530,30 @@ static void StepFrame(void) {
                     PlayMusicStream(g_musicTracks[g_musicIdx]);
                 }
             }
-        } else if (g_musicOK) {
-            // Phase 3 — playlist. Random shuffle, no immediate repeats.
-            UpdateMusicStream(g_musicTracks[g_musicIdx]);
-            if (!g_paused && !IsMusicStreamPlaying(g_musicTracks[g_musicIdx])) {
-                int cand[MUSIC_TRACK_COUNT]; int nc = 0;
-                for (int t = 0; t < MUSIC_TRACK_COUNT; t++)
-                    if (g_musicTracksOK[t] && t != g_musicIdx) cand[nc++] = t;
-                int next = (nc > 0) ? cand[rand() % nc] : g_musicIdx;
-                if (g_musicTracksOK[next]) {
-                    StopMusicStream(g_musicTracks[g_musicIdx]);
-                    g_musicIdx = next;
-                    SetMusicVolume(g_musicTracks[g_musicIdx], g_musicVol);
-                    PlayMusicStream(g_musicTracks[g_musicIdx]);
-                }
+            s_prevGs = g_gs;
+        }
+    }
+    if (g_gs == GS_MENU && g_titleMusicOK) {
+        UpdateMusicStream(g_titleMusic);
+    } else if (g_musicOK) {
+        UpdateMusicStream(g_musicTracks[g_musicIdx]);
+        // Track alternation: when the current track plays out (and we're
+        // not paused), advance to the next loaded track in the playlist.
+        if (!g_paused && !IsMusicStreamPlaying(g_musicTracks[g_musicIdx])) {
+            // Pick a uniformly random LOADED track that isn't the current
+            // one — proper shuffle behaviour. With 2 loaded tracks this
+            // collapses to "always switch", with 3+ it actually shuffles.
+            int cand[MUSIC_TRACK_COUNT]; int nc = 0;
+            for (int t = 0; t < MUSIC_TRACK_COUNT; t++)
+                if (g_musicTracksOK[t] && t != g_musicIdx) cand[nc++] = t;
+            int next;
+            if (nc > 0) next = cand[rand() % nc];
+            else        next = g_musicIdx;  // only one track loaded — replay it
+            if (g_musicTracksOK[next]) {
+                StopMusicStream(g_musicTracks[g_musicIdx]);
+                g_musicIdx = next;
+                SetMusicVolume(g_musicTracks[g_musicIdx], g_musicVol);
+                PlayMusicStream(g_musicTracks[g_musicIdx]);
             }
         }
     }
@@ -5440,16 +5416,12 @@ int main(int argc, char **argv) {
         for (int t = 0; t < MUSIC_TRACK_COUNT; t++) {
             if (g_musicTracksOK[t]) { g_musicIdx = t; break; }
         }
-        // Title music — atmospheric intro track. looping=false so it ends
-        // naturally after one playthrough; the per-frame block manually
-        // restarts it while we're sitting on the menu (so the menu loops
-        // it forever) but lets it finish during gameplay so the playlist
-        // can kick in once the intro completes.
+        // Title music — looping atmospheric track for the menu.
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/title-music.mp3", AppDir());
         g_titleMusic = LoadMusicStream(fp);
         g_titleMusicOK = (g_titleMusic.frameCount > 0);
         if (g_titleMusicOK) {
-            g_titleMusic.looping = false;
+            g_titleMusic.looping = true;
             SetMusicVolume(g_titleMusic, g_musicVol);
         }
         // Game launches in GS_MENU — start title music if available, else
