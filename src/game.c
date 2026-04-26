@@ -596,6 +596,27 @@ static bool     g_lowHealthFired = false;
 // played on each hitscan tick instead of the shared shotgun blast.
 static Sound    g_sSoldierMG;
 static bool     g_sSoldierMGOK = false;
+// SS guard / cultist (enemy type 4) — G36 fire sample (sounds/ss-fire.mp3),
+// played on each hitscan tick. Replaces the generic shotgun blast.
+static Sound    g_sSSFire;
+static bool     g_sSSFireOK = false;
+// Cyber demon (enemy type 9) — distant gun-fire sample
+// (sounds/cyber-fire.mp3) played when launching a rocket. Replaces the
+// shared launcher sample for cyber specifically.
+static Sound    g_sCyberFire;
+static bool     g_sCyberFireOK = false;
+// Echoey first-blood-of-wave sample. Plays on the FIRST kill of each
+// wave (g_sFirstBlood plays once per RUN; this fires every wave).
+static Sound    g_sFirstBloodWave;
+static bool     g_sFirstBloodWaveOK = false;
+static bool     g_firstKillThisWave = false;
+// Idle-sigh sample played when the player has been wandering with no
+// enemy visible for more than a few seconds (g_quietTime > 5s).
+// One-shot per quiet stretch — re-arms when an enemy becomes visible.
+static Sound    g_sIdleSigh;
+static bool     g_sIdleSighOK = false;
+static float    g_quietTime = 0.f;
+static bool     g_quietSighFired = false;
 static Sound    g_sMechHit;     // mech rocket splash on player (sounds/player-ough.mp3)
 static bool     g_sMechHitOK = false;
 static Sound    g_sNextWave;   // stinger when next wave starts
@@ -608,15 +629,21 @@ static int      g_killsThisShot = 0;  // incremented by KillEnemy, reset around 
 // block below swaps to the next when the current one ends. g_musicOK is
 // true when ANY track loaded — existing pause/volume/update guards still
 // short-circuit correctly when the user has no audio assets at all.
+//
+// Title music is a SEPARATE looping stream that plays on the GS_MENU
+// state. The state-transition handler in StepFrame swaps between the
+// title track and the in-game playlist on entering / leaving GS_MENU.
 #define MUSIC_TRACK_COUNT 2
 static Music    g_musicTracks[MUSIC_TRACK_COUNT];
 static bool     g_musicTracksOK[MUSIC_TRACK_COUNT] = {false};
 static int      g_musicIdx = 0;
-static bool     g_musicOK = false;        // true if any track loaded
+static bool     g_musicOK = false;        // true if any in-game track loaded
 static const char *g_musicFiles[MUSIC_TRACK_COUNT] = {
     "sounds/hell-march.mp3",
     "sounds/funeral-queen-mary.mp3",
 };
+static Music    g_titleMusic;
+static bool     g_titleMusicOK = false;
 static float    g_musicVol = 0.36f;  // adjustable via - / + (persisted to disk)
 #define VOL_CONFIG_FILE ".ironfist3d.cfg"
 
@@ -1490,6 +1517,15 @@ static void KillEnemy(int i) {
         SetSoundVolume(g_sFirstBlood, 1.5f);
         PlaySound(g_sFirstBlood);
     }
+    // Echoey first-blood-of-wave stinger — distinct from the per-run
+    // first-blood above. Fires on the first kill of EACH wave; resets
+    // when the wave advances (in InitGame for wave 1 and in the post-
+    // boss "next wave" branch for waves 2+).
+    if (!g_firstKillThisWave && g_sFirstBloodWaveOK && !g_bossInterlude) {
+        SetSoundVolume(g_sFirstBloodWave, 1.5f);
+        PlaySound(g_sFirstBloodWave);
+        g_firstKillThisWave = true;
+    }
     // "One left" stinger — fires the frame the kill takes Alive() from 2 to 1,
     // i.e. one chef remains in this wave. Boss phase always has Alive()==1
     // throughout, so gate on !g_bossInterlude to avoid firing on boss spawn or
@@ -1618,6 +1654,7 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
         // Boss just died — bump wave and kick off the next chef round
         g_bossInterlude = false;
         g_wave++;
+        g_firstKillThisWave = false;  // re-arm wave first-blood stinger
         if (g_sNextWaveOK) {
             SetSoundVolume(g_sNextWave, 1.5f);
             PlaySound(g_sNextWave);
@@ -1951,7 +1988,8 @@ static void UpdEnemies(float dt) {
                     Vector3 muzzle = {e->pos.x, e->pos.y + 2.3f, e->pos.z};
                     Vector3 target = {g_p.pos.x, g_p.pos.y + EYE_H - 0.4f, g_p.pos.z};
                     SpawnEShotRocket(muzzle, target, e->dmg);
-                    if (g_sRocket.frameCount) PlaySound(g_sRocket);
+                    if      (g_sCyberFireOK)       PlaySound(g_sCyberFire);
+                    else if (g_sRocket.frameCount) PlaySound(g_sRocket);
                     e->cd = e->rate;
                 } else if (isCaco) {
                     // Cacodemon: flying fireball, slower than mutant ball but
@@ -1994,10 +2032,13 @@ static void UpdEnemies(float dt) {
                             SpawnPart(p, (Vector3){0,0,0},
                                       (Color){255, 220, 80, 255}, 0.08f, 0.06f, false);
                         }
-                        // Soldier (type 7) gets a dedicated heavy-MG sample;
-                        // cultist (type 4) keeps the shotgun blast.
-                        if (e->type == 7 && g_sSoldierMGOK) PlaySound(g_sSoldierMG);
-                        else                                PlaySound(g_sShotgun);
+                        // Per-type fire sample dispatch:
+                        //   type 7 (soldier) -> heavy MG
+                        //   type 4 (SS guard / cultist) -> G36
+                        //   else -> generic shotgun blast
+                        if      (e->type == 7 && g_sSoldierMGOK) PlaySound(g_sSoldierMG);
+                        else if (e->type == 4 && g_sSSFireOK)    PlaySound(g_sSSFire);
+                        else                                     PlaySound(g_sShotgun);
                     }
                     if (!g_god) g_p.hp-=e->dmg;
                     g_p.hurtFlash=0.22f; g_p.shake=fmaxf(g_p.shake,0.16f);
@@ -3795,6 +3836,9 @@ static void InitGame(void) {
     g_initialsSubmitted = false;
     g_lastRank = 0;
     g_lowHealthFired = false;  // re-arm critical-health stinger for new run
+    g_firstKillThisWave = false;
+    g_quietTime = 0.f;
+    g_quietSighFired = false;
     // Cheat flags reset per run — a fresh game can earn a leaderboard entry
     // again. g_god turns OFF too so previously-toggled invulnerability
     // doesn't leak across restarts.
@@ -4457,14 +4501,35 @@ static void StepFrame(void) {
         ToggleBorderlessWindowed();
     }
 #endif
-    if (g_musicOK) {
-        UpdateMusicStream(g_musicTracks[g_musicIdx]);   // feed the streaming decoder
-        // Track alternation: when the current track has played out (and we're
-        // not just paused), advance to the next loaded track. Tracks have
-        // looping=false so IsMusicStreamPlaying flips false at the end.
+    // ── Music: title track on menu, alternating in-game playlist otherwise ──
+    // State-transition handler swaps which stream is active when entering /
+    // leaving GS_MENU. Both streams are kept loaded so the swap is just a
+    // Stop + Play call, no disk hit.
+    {
+        static GameState s_prevGs = GS_MENU;
+        static bool s_initialized = false;
+        if (!s_initialized) { s_prevGs = g_gs; s_initialized = true; }
+        if (g_gs != s_prevGs) {
+            bool toMenu   = (g_gs == GS_MENU);
+            bool fromMenu = (s_prevGs == GS_MENU);
+            if (toMenu && !fromMenu) {
+                if (g_musicOK)      StopMusicStream(g_musicTracks[g_musicIdx]);
+                if (g_titleMusicOK) PlayMusicStream(g_titleMusic);
+            } else if (!toMenu && fromMenu) {
+                if (g_titleMusicOK) StopMusicStream(g_titleMusic);
+                if (g_musicOK)      PlayMusicStream(g_musicTracks[g_musicIdx]);
+            }
+            s_prevGs = g_gs;
+        }
+    }
+    if (g_gs == GS_MENU && g_titleMusicOK) {
+        UpdateMusicStream(g_titleMusic);
+    } else if (g_musicOK) {
+        UpdateMusicStream(g_musicTracks[g_musicIdx]);
+        // Track alternation: when the current track plays out (and we're
+        // not paused), advance to the next loaded track in the playlist.
         if (!g_paused && !IsMusicStreamPlaying(g_musicTracks[g_musicIdx])) {
             int next = (g_musicIdx + 1) % MUSIC_TRACK_COUNT;
-            // Skip past tracks that failed to load
             for (int tries = 0; tries < MUSIC_TRACK_COUNT; tries++) {
                 if (g_musicTracksOK[next]) break;
                 next = (next + 1) % MUSIC_TRACK_COUNT;
@@ -4476,8 +4541,10 @@ static void StepFrame(void) {
                 PlayMusicStream(g_musicTracks[g_musicIdx]);
             }
         }
-        // Music volume: - / + (and numpad equivalents) — apply to ALL tracks
-        // so the next-up track plays at the same level when we switch.
+    }
+    // Music volume: - / + applies to title + every in-game track so the
+    // active stream and any future swap come in at the same level.
+    if (g_musicOK || g_titleMusicOK) {
         bool vDown = IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT);
         bool vUp   = IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD);
         if (vDown) g_musicVol = fmaxf(0.f,  g_musicVol - 0.1f);
@@ -4485,7 +4552,8 @@ static void StepFrame(void) {
         if (vDown || vUp) {
             for (int i = 0; i < MUSIC_TRACK_COUNT; i++)
                 if (g_musicTracksOK[i]) SetMusicVolume(g_musicTracks[i], g_musicVol);
-            SaveMusicVol();  // persist to disk
+            if (g_titleMusicOK) SetMusicVolume(g_titleMusic, g_musicVol);
+            SaveMusicVol();
             char buf[48]; snprintf(buf, 48, "MUSIC VOL %d%%", (int)(g_musicVol * 100.f + 0.5f));
             Msg(buf);
         }
@@ -4652,6 +4720,23 @@ static void StepFrame(void) {
                 }
             }
             g_hadVisibleEnemy = anyVisible;
+            // Idle-sigh stinger — when no enemy is visible for >5s the
+            // player gets a "deep breath" sample once. Re-arms when an
+            // enemy becomes visible again (which would also trigger the
+            // alert stinger above on the same frame).
+            if (anyVisible) {
+                g_quietTime = 0.f;
+                g_quietSighFired = false;
+            } else {
+                g_quietTime += dt;
+                if (g_quietTime > 5.f && !g_quietSighFired) {
+                    if (g_sIdleSighOK) {
+                        SetSoundVolume(g_sIdleSigh, 1.2f);
+                        PlaySound(g_sIdleSigh);
+                    }
+                    g_quietSighFired = true;
+                }
+            }
         }
         }  // end if (!g_paused) — pause gate from above
     } else if (g_gs==GS_DEAD) {
@@ -5204,6 +5289,22 @@ int main(int argc, char **argv) {
         g_sSoldierMG = LoadSound(fp);
         g_sSoldierMGOK = (g_sSoldierMG.frameCount > 0);
 
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/ss-fire.mp3", AppDir());
+        g_sSSFire = LoadSound(fp);
+        g_sSSFireOK = (g_sSSFire.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/cyber-fire.mp3", AppDir());
+        g_sCyberFire = LoadSound(fp);
+        g_sCyberFireOK = (g_sCyberFire.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/first-blood-wave.mp3", AppDir());
+        g_sFirstBloodWave = LoadSound(fp);
+        g_sFirstBloodWaveOK = (g_sFirstBloodWave.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/idle-sigh.mp3", AppDir());
+        g_sIdleSigh = LoadSound(fp);
+        g_sIdleSighOK = (g_sIdleSigh.frameCount > 0);
+
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ough.mp3", AppDir());
         g_sMechHit = LoadSound(fp);
         g_sMechHitOK = (g_sMechHit.frameCount > 0);
@@ -5278,6 +5379,12 @@ int main(int argc, char **argv) {
         // then Funeral March of Queen Mary, then back). Both tracks load
         // at startup so swapping between them at end-of-track is just a
         // PlayMusicStream call, no disk hit mid-game.
+        //
+        // Title music is a separate looping stream that plays only on
+        // GS_MENU; the state-transition handler in StepFrame swaps which
+        // stream is active. We only PLAY the title track here at startup
+        // since the game launches in GS_MENU; the in-game playlist starts
+        // when the player kicks off a run.
         LoadMusicVol();  // restore user's last-saved volume from ~/.ironfist3d.cfg
         g_musicOK = false;
         for (int t = 0; t < MUSIC_TRACK_COUNT; t++) {
@@ -5285,19 +5392,27 @@ int main(int argc, char **argv) {
             g_musicTracks[t] = LoadMusicStream(fp);
             g_musicTracksOK[t] = (g_musicTracks[t].frameCount > 0);
             if (g_musicTracksOK[t]) {
-                // looping=false so the per-frame block can detect end-of-
-                // track and advance to the next entry in the playlist.
                 g_musicTracks[t].looping = false;
                 SetMusicVolume(g_musicTracks[t], g_musicVol);
                 g_musicOK = true;
             }
         }
-        // Start on whichever track is loaded first.
         g_musicIdx = 0;
         for (int t = 0; t < MUSIC_TRACK_COUNT; t++) {
             if (g_musicTracksOK[t]) { g_musicIdx = t; break; }
         }
-        if (g_musicOK) PlayMusicStream(g_musicTracks[g_musicIdx]);
+        // Title music — looping atmospheric track for the menu.
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/title-music.mp3", AppDir());
+        g_titleMusic = LoadMusicStream(fp);
+        g_titleMusicOK = (g_titleMusic.frameCount > 0);
+        if (g_titleMusicOK) {
+            g_titleMusic.looping = true;
+            SetMusicVolume(g_titleMusic, g_musicVol);
+        }
+        // Game launches in GS_MENU — start title music if available, else
+        // fall back to the in-game playlist so something is always playing.
+        if (g_titleMusicOK)      PlayMusicStream(g_titleMusic);
+        else if (g_musicOK)      PlayMusicStream(g_musicTracks[g_musicIdx]);
     }
     srand((unsigned)time(NULL));
 
@@ -5907,6 +6022,14 @@ int main(int argc, char **argv) {
     if (g_sChefHitOK)      UnloadSound(g_sChefHit);
     if (g_sLowHealthOK)    UnloadSound(g_sLowHealth);
     if (g_sSoldierMGOK)    UnloadSound(g_sSoldierMG);
+    if (g_sSSFireOK)       UnloadSound(g_sSSFire);
+    if (g_sCyberFireOK)    UnloadSound(g_sCyberFire);
+    if (g_sIdleSighOK)     UnloadSound(g_sIdleSigh);
+    if (g_sFirstBloodWaveOK) UnloadSound(g_sFirstBloodWave);
+    if (g_titleMusicOK) {
+        StopMusicStream(g_titleMusic);
+        UnloadMusicStream(g_titleMusic);
+    }
     if (g_sMechHitOK)      UnloadSound(g_sMechHit);
     if (g_sMGOK)           UnloadSound(g_sMG);
     if (g_sNextWaveOK)     UnloadSound(g_sNextWave);
