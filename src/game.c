@@ -1310,7 +1310,11 @@ static void UpdPicks(void) {
             else                                         PlaySound(g_sPickup);
             g_msgT=1.8f;
             switch (pk->type) {
-                case 0: g_p.hp     =fminf(g_p.maxHp,g_p.hp+35);         snprintf(g_msg,80,"+35 HEALTH");  break;
+                case 0: g_p.hp     =fminf(g_p.maxHp,g_p.hp+35);         snprintf(g_msg,80,"+35 HEALTH");
+#ifdef IRONFIST_V2
+                        { extern float g_v2HealFlash; g_v2HealFlash = 0.45f; }
+#endif
+                        break;
                 case 1: g_p.shells =(int)fminf(99, g_p.shells +16);     snprintf(g_msg,80,"+16 SHELLS");  break;
                 case 2: g_p.rockets=(int)fminf(30, g_p.rockets+ 5);     snprintf(g_msg,80,"+5 ROCKETS");  break;
                 case 3: g_p.bullets=(int)fminf(200,g_p.bullets+24);     snprintf(g_msg,80,"+24 BULLETS"); break;
@@ -1611,6 +1615,13 @@ static void KillEnemy(int i) {
     // so chains don't stack into a long pause; resets to 40ms on each death.
     extern float g_v2HitStop;
     if (g_v2HitStop < 0.04f) g_v2HitStop = 0.04f;
+    // Combo chain: each kill within 1.5s of the previous extends the
+    // window and increments the chain count. Drawn in HUD as "x2", "x3"...
+    extern int   g_v2ComboCount;
+    extern float g_v2ComboT;
+    if (g_v2ComboT > 0.f) g_v2ComboCount += 1;
+    else                  g_v2ComboCount = 1;
+    g_v2ComboT = 1.5f;
 #endif
     if (e->type == 6) {
         // Mech has no death sprite in the WolfenDoom source — it explodes
@@ -1836,6 +1847,27 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             float ang = (float)rand()/RAND_MAX * 6.28f;
             ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
             ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
+#ifdef IRONFIST_V2
+            // Boss-spawn dramatic intro: hard camera shake, ground-shake
+            // dust ring at the spawn point, and a 90ms hit-stop so the
+            // entrance reads as cinematic. The boss is hunting you the
+            // moment time resumes.
+            g_p.shake = fmaxf(g_p.shake, 1.2f);
+            extern float g_v2HitStop;
+            if (g_v2HitStop < 0.09f) g_v2HitStop = 0.09f;
+            Vector3 bsp = {bx, ne->pos.y + 0.1f, bz};
+            for (int j = 0; j < 32; j++) {
+                float a2 = (float)j / 32.f * 6.2832f + (float)rand()/RAND_MAX * 0.2f;
+                float spd = 5.f + (float)rand()/RAND_MAX * 4.f;
+                Vector3 vv = { cosf(a2)*spd, 0.5f + (float)rand()/RAND_MAX*1.5f, sinf(a2)*spd };
+                SpawnPart(bsp, vv, (Color){180, 165, 150, 220},
+                          0.7f + (float)rand()/RAND_MAX * 0.5f,
+                          0.10f + (float)rand()/RAND_MAX * 0.06f, false);
+            }
+            // Big bright flash at the spawn for one frame
+            SpawnPart(bsp, (Vector3){0, 1.0f, 0}, (Color){255, 200, 100, 255},
+                      0.18f, 0.55f, false);
+#endif
             return;
         }
         // Boss just died — bump wave and kick off the next chef round
@@ -1848,6 +1880,10 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
         }
         char wbuf[64]; snprintf(wbuf,64,"-- WAVE %d INCOMING --",g_wave);
         Msg(wbuf);
+#ifdef IRONFIST_V2
+        // Wave-start punch: hard shake so wave transitions don't slip past.
+        g_p.shake = fmaxf(g_p.shake, 0.55f);
+#endif
         // Refresh one of each power-up at a random open cell so a long run
         // always has a quad or speed to chase.
         SpawnPowerupRandom(5);
@@ -1917,6 +1953,14 @@ static void DmgEnemy(int i, float d) {
     g_statDamage += (d > e->hp) ? e->hp : d;
 #ifdef IRONFIST_V2
     e->hp-=d; e->flashT=0.22f; e->state=ES_CHASE;
+    extern float g_v2HitMarker;
+    g_v2HitMarker = 0.10f;  // crosshair pulse on hit confirm
+    // Boss-hit weight: every landing shot on a boss tier (chef boss,
+    // cyber demon, spider mastermind) adds a tiny camera kick so they
+    // feel thumpy to shoot.
+    if (e->type == 3 || e->type == 9 || e->type == 16) {
+        g_p.shake = fmaxf(g_p.shake, 0.10f);
+    }
 #else
     e->hp-=d; e->flashT=0.12f; e->state=ES_CHASE;
 #endif
@@ -3151,6 +3195,8 @@ static void DrawBullets(void) {
         Vector3 tail  = Vector3Subtract(b->pos, Vector3Scale(dir, tailLen));
         Color   core  = b->rocket ? (Color){255,170, 60,255}
                                   : (Color){255,240,140,255};
+        // Quad damage tints non-rocket tracers magenta to match the buff
+        if (g_p.quadT > 0.f && !b->rocket) core = (Color){240, 90, 255, 255};
         BeginBlendMode(BLEND_ADDITIVE);
         DrawCylinderEx(tail, b->pos, 0.0f, b->rocket?0.16f:0.05f, 6, core);
         DrawSphere(b->pos, b->rocket?0.20f:0.08f, core);
@@ -4128,6 +4174,15 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     }
     if (g_p.switchAnim>0)g_p.switchAnim=fmaxf(0,g_p.switchAnim-dt*5.f);
     if (g_p.shake>0)     g_p.shake=fmaxf(0,g_p.shake-dt*4.f);
+#ifdef IRONFIST_V2
+    // Critical HP shake — at very low HP (<15%), apply a small constant
+    // floor shake so the camera trembles even when not being hit. Scales
+    // up linearly as HP drops further.
+    if (g_p.hp > 0.f && g_p.hp < g_p.maxHp * 0.15f) {
+        float danger = 1.f - (g_p.hp / (g_p.maxHp * 0.15f));
+        g_p.shake = fmaxf(g_p.shake, danger * 0.10f);
+    }
+#endif
     if (g_msgT>0)        g_msgT-=dt;
     if (g_hypeT>0)       g_hypeT-=dt;
     if (g_p.quadT>0)     g_p.quadT  = fmaxf(0.f, g_p.quadT  - dt);
@@ -4136,6 +4191,26 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (g_p.hasteT <= 0.f) g_p.hastePeak = 0.f;
     bool moving=(mlen>0)&&g_p.onGround;
     if (moving) g_p.bobT+=dt*(sprint?10.f:7.f);
+#ifdef IRONFIST_V2
+    // Footstep dust — fire 2 small dust particles each time bobT crosses
+    // a footfall (sin going negative -> positive). No-op when stationary
+    // or airborne. Subtle puffs at the feet that fade in <0.4s.
+    {
+        static float v2_prevSinBob = 0.f;
+        float curSin = sinf(g_p.bobT);
+        if (moving && v2_prevSinBob < 0.f && curSin >= 0.f) {
+            Vector3 fp = {g_p.pos.x, g_p.pos.y + 0.05f, g_p.pos.z};
+            for (int j = 0; j < 2; j++) {
+                float ang = (float)rand()/RAND_MAX * 6.2832f;
+                float spd = 0.5f + (float)rand()/RAND_MAX * 0.8f;
+                Vector3 vv = { cosf(ang)*spd, 0.2f + (float)rand()/RAND_MAX*0.3f, sinf(ang)*spd };
+                SpawnPart(fp, vv, (Color){170,160,150,150},
+                          0.30f + (float)rand()/RAND_MAX*0.15f, 0.04f, false);
+            }
+        }
+        v2_prevSinBob = curSin;
+    }
+#endif
 
     // fade muzzle flash light
     if (g_lights[MUZZLE_LIGHT].enabled) {
@@ -5204,7 +5279,12 @@ static void ConDraw(void) {
 #ifdef IRONFIST_V2
 // Brief world-freeze applied on enemy death. Set in KillEnemy, decremented
 // in StepFrame using *real* frame time so the freeze actually ends.
-float g_v2HitStop = 0.f;
+float g_v2HitStop   = 0.f;
+float g_v2HitMarker = 0.f;   // crosshair "+" pulse on bullet hit confirm
+float g_v2HealFlash = 0.f;   // green edge flash when picking up health
+int   g_v2ComboCount = 0;    // chain kill counter
+float g_v2ComboT     = 0.f;  // remaining time on chain — kills within window stack
+float g_v2FootT      = 0.f;  // accumulator that drives footstep dust cadence
 #endif
 
 static void StepFrame(void) {
@@ -5217,6 +5297,15 @@ static void StepFrame(void) {
     if (g_v2HitStop > 0.f) {
         g_v2HitStop -= dt;
         if (g_v2HitStop > 0.f) dt = 0.f;
+    }
+    // Decay the rest of the v2 transient effects on real frame time so they
+    // tick during hit-stop too. Combo timer expires the chain when it hits 0.
+    float realDt = GetFrameTime(); if (realDt > 0.05f) realDt = 0.05f;
+    if (g_v2HitMarker > 0.f) g_v2HitMarker -= realDt;
+    if (g_v2HealFlash > 0.f) g_v2HealFlash -= realDt;
+    if (g_v2ComboT    > 0.f) {
+        g_v2ComboT -= realDt;
+        if (g_v2ComboT <= 0.f) g_v2ComboCount = 0;
     }
 #endif
     DebugLogTick();

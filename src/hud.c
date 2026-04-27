@@ -131,10 +131,55 @@ void DrawHUD(void) {
         DrawRectangleGradientH(0, 0,           hband, sh,  edge,  clear);
         DrawRectangleGradientH(sw - hband, 0,  hband, sh,  clear, edge);
     }
+    // Heal flash: brief green edge tint when picking up a health pickup,
+    // so the heal moment registers as visually distinct from the pickup
+    // grab burst (which uses pickup colour, red for health).
+    {
+        extern float g_v2HealFlash;
+        if (g_v2HealFlash > 0.f) {
+            float t = g_v2HealFlash / 0.45f; if (t > 1.f) t = 1.f;
+            unsigned char a = (unsigned char)(140 * t);
+            Color edge  = {60, 220, 90, a};
+            Color clear = {60, 220, 90, 0};
+            int vband = sh / 5;
+            int hband = sw / 7;
+            DrawRectangleGradientV(0, 0,           sw, vband, edge,  clear);
+            DrawRectangleGradientV(0, sh - vband,  sw, vband, clear, edge);
+            DrawRectangleGradientH(0, 0,           hband, sh,  edge,  clear);
+            DrawRectangleGradientH(sw - hband, 0,  hband, sh,  clear, edge);
+        }
+    }
+    // Death fade — dim the world with a dark red overlay while dead so the
+    // GAME OVER screen feels weightier than a clean swap.
+    if (g_p.dead) {
+        DrawRectangle(0, 0, sw, sh, (Color){40, 0, 0, 140});
+    }
     // Muzzle screen-flash: brief warm yellow edge tint while kickAnim is
     // active (set by Shoot() to 0.18 and decaying). Strongest at top
     // (where the gun barrel is) and weaker around the other edges, so
     // each shot reads as a punch on screen, not just a viewmodel kick.
+    // Combo chain counter: floating "x2"/"x3"/etc when killing in quick
+    // succession. Stays on screen as long as the combo window is open
+    // (see g_v2ComboT decay in StepFrame).
+    {
+        extern int   g_v2ComboCount;
+        extern float g_v2ComboT;
+        if (g_v2ComboCount >= 2 && g_v2ComboT > 0.f) {
+            char buf[16]; snprintf(buf, sizeof(buf), "x%d", g_v2ComboCount);
+            int fsize = 64 + (g_v2ComboCount > 6 ? 6 : g_v2ComboCount) * 4;
+            int tw = MeasureText(buf, fsize);
+            // Position upper-right of crosshair so it doesn't block aim
+            int tx = sw - tw - 60;
+            int ty = sh / 3;
+            unsigned char alpha = (unsigned char)(255 * (g_v2ComboT > 0.5f ? 1.f : g_v2ComboT * 2.f));
+            Color tcol = (g_v2ComboCount >= 5) ? (Color){255, 80, 60, alpha}
+                       : (g_v2ComboCount >= 3) ? (Color){255, 200, 80, alpha}
+                       :                          (Color){240, 240, 240, alpha};
+            // Drop shadow + main text
+            DrawText(buf, tx + 3, ty + 3, fsize, (Color){0, 0, 0, alpha});
+            DrawText(buf, tx,     ty,     fsize, tcol);
+        }
+    }
     if (g_p.kickAnim > 0.f) {
         float k = g_p.kickAnim / 0.18f; if (k > 1.f) k = 1.f;
         unsigned char aTop  = (unsigned char)(140 * k);
@@ -179,11 +224,28 @@ void DrawHUD(void) {
     } else if (wpn>=0 && wpn<4 && g_xhair[wpn].id) {
         Texture2D xh = g_xhair[wpn];
         float xsc = 1.2f;
+#ifdef IRONFIST_V2
+        // Crosshair tinted by current weapon, plus a brief size-flare
+        // pulse on hit confirm (g_v2HitMarker).
+        Color xCol = (wpn == 0) ? (Color){255, 220, 130, 255}   // shotgun warm
+                   : (wpn == 1) ? (Color){180, 220, 255, 255}   // MG cool
+                   :              WHITE;
+        extern float g_v2HitMarker;
+        if (g_v2HitMarker > 0.f) {
+            xsc *= 1.f + (g_v2HitMarker / 0.10f) * 0.45f;
+            xCol = (Color){255, 80, 80, 255};  // red tint while hit-flaring
+        }
+#endif
         float xw = xh.width*xsc, xh2 = xh.height*xsc;
         DrawTexturePro(xh,
             (Rectangle){0,0,(float)xh.width,(float)xh.height},
             (Rectangle){cx-xw/2, cy-xh2/2, xw, xh2},
-            (Vector2){0,0}, 0.f, WHITE);
+            (Vector2){0,0}, 0.f,
+#ifdef IRONFIST_V2
+            xCol);
+#else
+            WHITE);
+#endif
     } else {
         DrawRectangle(cx-14,cy-1,10,2,WHITE); DrawRectangle(cx+4,cy-1,10,2,WHITE);
         DrawRectangle(cx-1,cy-14,2,10,WHITE); DrawRectangle(cx-1,cy+4,2,10,WHITE);
