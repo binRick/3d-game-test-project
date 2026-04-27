@@ -4004,11 +4004,33 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (IsKeyPressed(KEY_SPACE)&&g_p.onGround){g_p.velY=JUMP;g_p.onGround=false;}
     g_p.velY+=GRAV*dt; g_p.pos.y+=g_p.velY*dt;
     float ground = PlatGroundAt(g_p.pos.x, g_p.pos.z, g_p.pos.y);
+#ifdef IRONFIST_V2
+    bool _v2WasAir = !g_p.onGround;
+    float _v2VelY  = g_p.velY;
+#endif
     if (g_p.pos.y <= ground) {
         g_p.pos.y = ground; g_p.velY = 0; g_p.onGround = true;
     } else {
         g_p.onGround = false;
     }
+#ifdef IRONFIST_V2
+    // Landing kick: airborne -> grounded with significant downward velocity
+    // pulses shake proportional to fall speed. Tiny dust burst at the feet
+    // sells the impact when landing from a real height.
+    if (g_p.onGround && _v2WasAir && _v2VelY < -3.f) {
+        float strength = fminf(fabsf(_v2VelY) / 14.f, 1.f);
+        g_p.shake = fmaxf(g_p.shake, strength * 0.4f);
+        Vector3 fp = {g_p.pos.x, g_p.pos.y + 0.05f, g_p.pos.z};
+        int n = 4 + (int)(strength * 6.f);
+        for (int i = 0; i < n; i++) {
+            float ang = (float)rand()/RAND_MAX * 6.2832f;
+            float spd = 1.5f + (float)rand()/RAND_MAX * 2.5f;
+            Vector3 v = { cosf(ang)*spd, 0.6f + (float)rand()/RAND_MAX * 0.8f, sinf(ang)*spd };
+            SpawnPart(fp, v, (Color){170, 160, 150, 200},
+                      0.35f + (float)rand()/RAND_MAX * 0.25f, 0.07f, false);
+        }
+    }
+#endif
 
     // weapon switch
     if (IsKeyPressed(KEY_ONE)  &&g_p.weapon!=0){g_p.weapon=0;g_p.switchAnim=0.3f;}
