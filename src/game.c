@@ -3034,7 +3034,23 @@ static void UpdBullets(float dt) {
 static void DrawBullets(void) {
     for (int i=0;i<MAX_BULLETS;i++) {
         Bullet *b=&g_b[i]; if (!b->active) continue;
+#ifdef IRONFIST_V2
+        // Glowing tracer streak: tapered cone from a tail point to the
+        // bullet head, drawn additive so it reads as light. Rockets get a
+        // shorter, fatter, more orange streak; bullets get a thin yellow line.
+        float vlen = Vector3Length(b->vel);
+        Vector3 dir = (vlen > 0.001f) ? Vector3Scale(b->vel, 1.0f/vlen) : (Vector3){0,0,1};
+        float tailLen = b->rocket ? 1.4f : 2.8f;
+        Vector3 tail  = Vector3Subtract(b->pos, Vector3Scale(dir, tailLen));
+        Color   core  = b->rocket ? (Color){255,170, 60,255}
+                                  : (Color){255,240,140,255};
+        BeginBlendMode(BLEND_ADDITIVE);
+        DrawCylinderEx(tail, b->pos, 0.0f, b->rocket?0.16f:0.05f, 6, core);
+        DrawSphere(b->pos, b->rocket?0.20f:0.08f, core);
+        EndBlendMode();
+#else
         DrawSphere(b->pos,b->rocket?0.14f:0.05f,b->rocket?ORANGE:YELLOW);
+#endif
         if (b->rocket) SpawnPart(b->pos,(Vector3){((float)rand()/RAND_MAX-.5f)*.4f,0,((float)rand()/RAND_MAX-.5f)*.4f},(Color){255,120,0,200},0.22f,0.08f,false);
     }
 }
