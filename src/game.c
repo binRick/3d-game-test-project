@@ -1454,6 +1454,23 @@ static void DrawPicks(Camera3D cam) {
         else if (pk->type == 7 && g_teslaPickupTex.id) { tex = g_teslaPickupTex; drawSz = teslaSz; }
 
         if (tex.id) {
+#ifdef IRONFIST_V2
+            // v2 pickup polish: pulsing additive halo at ground level under
+            // plain ammo/health pickups so they read as loot rather than
+            // background geometry. Powerups (5,6,7) and Tesla already do
+            // their own ring/halo treatments, so we skip them here.
+            if (pk->type < 5) {
+                Color halo = tc[pk->type];
+                float halog = 0.6f + 0.3f * sinf(t * 3.f + (float)i);
+                Vector3 hpos = {pk->pos.x, pk->pos.y - 0.32f, pk->pos.z};
+                BeginBlendMode(BLEND_ADDITIVE);
+                DrawCircle3D(hpos, 0.55f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.55f));
+                DrawCircle3D(hpos, 0.40f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.40f));
+                // Subtle core glow behind the sprite
+                DrawSphere(pk->pos, 0.10f * halog, Fade(halo, 0.55f));
+                EndBlendMode();
+            }
+#endif
             DrawBillboard(cam, tex, pk->pos, drawSz, WHITE);
             // Tesla pickup advertises itself as a special weapon find: two
             // pulsing rings (one above, one below) plus a glowing core sphere
