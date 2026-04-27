@@ -1785,6 +1785,9 @@ static void KillEnemy(int i) {
     // get hard shake, longer hit-stop, a chained explosion ring, and a brief
     // gold full-screen flash so the wave-ending kill is unmistakably climactic.
     if (e->type == 3 || e->type == 9 || e->type == 16) {
+        // Cut the boss-spawn swell — it shouldn't be audibly hanging while
+        // the death flourish plays.
+        if (g_sBossPhaseOK) StopSound(g_sBossPhase);
         if (g_v2HitStop < 0.18f) g_v2HitStop = 0.18f;
         g_p.shake = fmaxf(g_p.shake, 1.4f);
         g_v2PowerFlash = 0.55f;
