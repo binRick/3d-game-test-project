@@ -609,7 +609,7 @@ static bool     g_sMGPickupOK = false;
 static Sound    g_sOneLeft;            // plays when only one chef remains in the wave
 static bool     g_sOneLeftOK = false;
 // Additional chef death variants; g_sDie is variant 0, g_sDieAlt[i] are variants 1..N
-#define CHEF_DIE_ALT_COUNT 3
+#define CHEF_DIE_ALT_COUNT 5
 static Sound    g_sDieAlt[CHEF_DIE_ALT_COUNT];
 static bool     g_sDieAltOK[CHEF_DIE_ALT_COUNT] = {0};
 static Sound    g_sHeadshot;      // UT announcer headshot sfx
@@ -640,6 +640,19 @@ static Sound    g_sMutAttack;   // mutant energy-ball fire (sounds/mutant-attack
 static bool     g_sMutAttackOK = false;
 static Sound    g_sChefHit;     // chef melee inflicts damage on player (sounds/player-ouch.mp3)
 static bool     g_sChefHitOK = false;
+// chef-attack: zing/reveal cue when a chef-tier enemy enters ATTACK state
+// (a melee windup, before the actual hit).
+static Sound    g_sChefAtk;
+static bool     g_sChefAtkOK = false;
+// powerup-grab: retro-arcade fanfare on QUAD pickup; speedup: distinct
+// retro fanfare on SPEED pickup; wave-advance: cartoon win-jingle layered
+// onto the existing g_sNextWave on wave advance.
+static Sound    g_sQuadGrab;     bool g_sQuadGrabOK     = false;
+static Sound    g_sSpeedGrab;    bool g_sSpeedGrabOK    = false;
+static Sound    g_sWaveAdvance;  bool g_sWaveAdvanceOK  = false;
+static Sound    g_sQuadEnded;    bool g_sQuadEndedOK    = false;
+static Sound    g_sPause;        bool g_sPauseOK        = false;
+static Sound    g_sBossPhase;    bool g_sBossPhaseOK    = false;
 // Critical-health stinger — plays once when the player crosses below 10%
 // HP. Re-arms once HP climbs back to 20% so it can fire again next time
 // the player gets low (hysteresis avoids rapid re-fire if HP wobbles).
@@ -703,6 +716,12 @@ static const char *g_musicFiles[MUSIC_TRACK_COUNT] = {
 };
 static Music    g_titleMusic;
 static bool     g_titleMusicOK = false;
+// Looping running-footstep loop. Volume crossfades up while the player is
+// moving on the ground and back down when stopped, so the loop never
+// abruptly clicks in/out.
+static Music    g_runSound;
+static bool     g_runSoundOK = false;
+static float    g_runSoundVol = 0.f;  // current eased volume
 static float    g_musicVol = 0.36f;  // adjustable via - / + (persisted to disk)
 #define VOL_CONFIG_FILE ".ironfist3d.cfg"
 
@@ -1388,6 +1407,7 @@ static void UpdPicks(void) {
                         g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
                         g_v2PowerFlash = 0.40f;
                         g_v2PowerFlashR = 0.86f; g_v2PowerFlashG = 0.20f; g_v2PowerFlashB = 0.86f;
+                        if (g_sQuadGrabOK) PlaySound(g_sQuadGrab);
                         break;
                 case 6: g_p.hasteT = fminf(60.f, g_p.hasteT + 20.f);
                         if (g_p.hasteT > g_p.hastePeak) g_p.hastePeak = g_p.hasteT;
@@ -1395,6 +1415,7 @@ static void UpdPicks(void) {
                         g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
                         g_v2PowerFlash = 0.40f;
                         g_v2PowerFlashR = 0.16f; g_v2PowerFlashG = 0.86f; g_v2PowerFlashB = 1.00f;
+                        if (g_sSpeedGrabOK) PlaySound(g_sSpeedGrab);
                         break;
                 case 7: g_p.cells = (int)fminf(99, g_p.cells + 30);
                         if (!g_p.hasTesla) {
@@ -2014,6 +2035,10 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             extern float g_v2SlowMo;
             if (g_v2HitStop < 0.09f) g_v2HitStop = 0.09f;
             if (g_v2SlowMo  < 0.50f) g_v2SlowMo  = 0.50f;  // half a sec of cinematic slow-mo
+            if (g_sBossPhaseOK) {
+                SetSoundVolume(g_sBossPhase, 1.4f);
+                PlaySound(g_sBossPhase);
+            }
             Vector3 bsp = {bx, ne->pos.y + 0.1f, bz};
             for (int j = 0; j < 32; j++) {
                 float a2 = (float)j / 32.f * 6.2832f + (float)rand()/RAND_MAX * 0.2f;
@@ -2036,6 +2061,8 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             SetSoundVolume(g_sNextWave, 1.5f);
             PlaySound(g_sNextWave);
         }
+        // Wave-advance fanfare layered on top of the existing stinger.
+        if (g_sWaveAdvanceOK) PlaySound(g_sWaveAdvance);
         char wbuf[64]; snprintf(wbuf,64,"-- WAVE %d INCOMING --",g_wave);
         Msg(wbuf);
         // Wave-start punch: hard shake + gold celebration ring spawning
@@ -2437,7 +2464,15 @@ static void UpdEnemies(float dt) {
             // Ranged enemies (mutant/mech/caco/cyber) can shoot up at any height.
             else if (e->type == 5 || e->type == 6 || e->type == 8 || e->type == 9 ||
                      e->type == 11 || e->type == 12 ||
-                     fabsf(g_p.pos.y - e->pos.y) <= STEP_H + 0.1f) e->state=ES_ATTACK;
+                     fabsf(g_p.pos.y - e->pos.y) <= STEP_H + 0.1f) {
+                // Chef-attack windup zing: fire on the CHASE→ATTACK
+                // transition for chef-tier melee enemies (types 0/1/2).
+                if (e->state != ES_ATTACK && g_sChefAtkOK &&
+                    (e->type == 0 || e->type == 1 || e->type == 2)) {
+                    PlaySound(g_sChefAtk);
+                }
+                e->state = ES_ATTACK;
+            }
         } else {
             // Same y-reachability check — if the player has jumped or climbed
             // onto a different level, break out of ATTACK and go back to CHASE
@@ -4459,7 +4494,10 @@ g_v2WeapSwitchFlash = 0.20f;
         // edge halo + bullet tint are about to disappear.
         static float v2_prevQuad  = 0.f;
         static float v2_prevHaste = 0.f;
-        if (v2_prevQuad  > 0.f && g_p.quadT  <= 0.f) Msg("QUAD ENDED");
+        if (v2_prevQuad  > 0.f && g_p.quadT  <= 0.f) {
+            Msg("QUAD ENDED");
+            if (g_sQuadEndedOK) PlaySound(g_sQuadEnded);
+        }
         if (v2_prevHaste > 0.f && g_p.hasteT <= 0.f) Msg("SPEED ENDED");
         v2_prevQuad  = g_p.quadT;
         v2_prevHaste = g_p.hasteT;
@@ -4470,6 +4508,15 @@ g_v2WeapSwitchFlash = 0.20f;
     if (g_p.hasteT <= 0.f) g_p.hastePeak = 0.f;
     bool moving=(mlen>0)&&g_p.onGround;
     if (moving) g_p.bobT+=dt*(sprint?10.f:7.f);
+    // Crossfade the running-footstep loop. Pause the gameplay state too —
+    // GS_PLAY only — so it doesn't bleed onto menus / death screen.
+    if (g_runSoundOK) {
+        float target = 0.f;
+        if (moving && g_gs == GS_PLAY) target = sprint ? 0.95f : 0.65f;
+        // Ease toward target at ~6/sec so transitions are smooth, not clicky.
+        g_runSoundVol += (target - g_runSoundVol) * fminf(dt * 6.f, 1.f);
+        SetMusicVolume(g_runSound, g_runSoundVol * g_musicVol * 1.3f);
+    }
     // Footstep dust — fire 2 small dust particles each time bobT crosses
     // a footfall (sin going negative -> positive). Sprint footsteps are
     // bigger and faster (sells the speed). No-op when stationary or
@@ -5666,6 +5713,7 @@ static void StepFrame(void) {
             s_prevGs = g_gs;
         }
     }
+    if (g_runSoundOK) UpdateMusicStream(g_runSound);
     if (g_gs == GS_MENU && g_titleMusicOK) {
         UpdateMusicStream(g_titleMusic);
     } else if (g_musicOK) {
@@ -5776,6 +5824,10 @@ static void StepFrame(void) {
         // sound timers don't tick. Music keeps playing for ambience.
         if (!g_conOpen && IsKeyPressed(KEY_P)) {
             g_paused = !g_paused;
+            // Pause/unpause UI cue. Played BEFORE the master-volume mute on
+            // the way IN so it gets at least one audio cycle of output, and
+            // AFTER the master-volume restore on the way OUT so it's audible.
+            if (g_paused && g_sPauseOK) PlaySound(g_sPause);
             // Mute the streaming music while paused — raylib's pause/resume
             // properly halts the decoder so the buffer doesn't drift.
             if (g_musicOK) {
@@ -5786,6 +5838,7 @@ static void StepFrame(void) {
             // this, in-flight SFX (chef-die, mech-rocket, tesla buzz, etc.)
             // keep audibly playing through the pause overlay.
             SetMasterVolume(g_paused ? 0.f : 1.f);
+            if (!g_paused && g_sPauseOK) PlaySound(g_sPause);
             // Cursor / pointer-lock handling. On web the browser can drop
             // pointer lock for many reasons during pause (ESC keypress,
             // alt-tab, idle timeout, click outside the canvas). If we don't
@@ -6522,6 +6575,34 @@ int main(int argc, char **argv) {
         g_sLowHealth = LoadSound(fp);
         g_sLowHealthOK = (g_sLowHealth.frameCount > 0);
 
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/chef-attack.mp3", AppDir());
+        g_sChefAtk = LoadSound(fp);
+        g_sChefAtkOK = (g_sChefAtk.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/powerup-grab.mp3", AppDir());
+        g_sQuadGrab = LoadSound(fp);
+        g_sQuadGrabOK = (g_sQuadGrab.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/speedup.mp3", AppDir());
+        g_sSpeedGrab = LoadSound(fp);
+        g_sSpeedGrabOK = (g_sSpeedGrab.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/wave-advance.mp3", AppDir());
+        g_sWaveAdvance = LoadSound(fp);
+        g_sWaveAdvanceOK = (g_sWaveAdvance.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/quad-ended.mp3", AppDir());
+        g_sQuadEnded = LoadSound(fp);
+        g_sQuadEndedOK = (g_sQuadEnded.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/pause.mp3", AppDir());
+        g_sPause = LoadSound(fp);
+        g_sPauseOK = (g_sPause.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/boss-phase.mp3", AppDir());
+        g_sBossPhase = LoadSound(fp);
+        g_sBossPhaseOK = (g_sBossPhase.frameCount > 0);
+
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/soldier-mg.mp3", AppDir());
         g_sSoldierMG = LoadSound(fp);
         g_sSoldierMGOK = (g_sSoldierMG.frameCount > 0);
@@ -6649,6 +6730,16 @@ int main(int argc, char **argv) {
         if (g_titleMusicOK) {
             g_titleMusic.looping = true;
             SetMusicVolume(g_titleMusic, g_musicVol);
+        }
+        // Running footstep loop — quiet by default, crossfaded up while the
+        // player is moving on the ground.
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/running.mp3", AppDir());
+        g_runSound = LoadMusicStream(fp);
+        g_runSoundOK = (g_runSound.frameCount > 0);
+        if (g_runSoundOK) {
+            g_runSound.looping = true;
+            SetMusicVolume(g_runSound, 0.f);
+            PlayMusicStream(g_runSound);
         }
         // Game launches in GS_MENU — start title music if available, else
         // fall back to the in-game playlist so something is always playing.
