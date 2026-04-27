@@ -289,19 +289,40 @@ void DrawHUD(void) {
     Color hcol=hp>0.5f?(Color){50,220,50,255}:hp>0.25f?(Color){220,180,0,255}:(Color){220,30,30,255};
     DrawText("HP",20,sh-56,12,(Color){180,180,180,255});
     DrawRectangle(20,sh-40,200,18,(Color){30,0,0,200});
+#ifdef IRONFIST_V2
+    // Damage-delay ghost bar — yellow outline-bar lerps from previous HP
+    // to current HP at a fixed rate. Gives an immediate visual readout of
+    // "how much damage just happened" before the green bar finishes
+    // snapping down.
+    static float v2_ghostHp = 1.f;
+    if (v2_ghostHp > hp) v2_ghostHp = fmaxf(hp, v2_ghostHp - GetFrameTime() * 0.6f);
+    else                 v2_ghostHp = hp;
+    if (v2_ghostHp > hp) {
+        DrawRectangle(21, sh-39, (int)(198 * v2_ghostHp), 16, (Color){220, 200, 80, 220});
+    }
+#endif
     DrawRectangle(21,sh-39,(int)(198*hp),16,hcol);
     DrawRectangle(20,sh-40,200,18,(Color){80,80,80,80});
     char hpBuf[16]; snprintf(hpBuf,16,"%d",(int)g_p.hp);
 #ifdef IRONFIST_V2
-    // HP number flashes to white-red on each damage hit so the running
-    // total registers visually as you take fire.
+    // HP number flashes to white-red on damage and to white-green on heal,
+    // so the running total registers visually on every change.
     Color hpDispCol = hcol;
+    extern float g_v2HealFlash;
     if (g_p.hurtFlash > 0.f) {
         float ht = g_p.hurtFlash / 0.30f; if (ht > 1.f) ht = 1.f;
         hpDispCol = (Color){
             (unsigned char)(hcol.r + (unsigned char)((255 - hcol.r) * ht)),
             (unsigned char)((float)hcol.g * (1.f - ht * 0.6f)),
             (unsigned char)((float)hcol.b * (1.f - ht * 0.6f)),
+            255
+        };
+    } else if (g_v2HealFlash > 0.f) {
+        float ht = g_v2HealFlash / 0.45f; if (ht > 1.f) ht = 1.f;
+        hpDispCol = (Color){
+            (unsigned char)(80 + (255 - 80) * (1.f - ht)),
+            255,
+            (unsigned char)(80 + (255 - 80) * (1.f - ht)),
             255
         };
     }

@@ -100,6 +100,27 @@ static const char *AppDir(void) {
     return GetApplicationDirectory();
 }
 
+#ifdef IRONFIST_V2
+// v2 transient game-feel state. All decremented in StepFrame on real
+// frame time so they keep ticking through hit-stop / slow-mo. Defined
+// here (rather than further down with v1 globals) so KillEnemy / DmgEnemy
+// can reach them without forward-extern boilerplate.
+float g_v2HitStop    = 0.f;
+float g_v2HitMarker  = 0.f;   // crosshair pulse on bullet-hit confirm
+float g_v2HealFlash  = 0.f;   // green edge flash when picking up health
+int   g_v2ComboCount = 0;     // chain kill counter
+float g_v2ComboT     = 0.f;   // remaining time on chain
+float g_v2FootT      = 0.f;   // (reserved for footstep cadence)
+float g_v2SlowMo     = 0.f;   // remaining time on multi-kill slow motion
+
+// Floating score popups — small "+25" text rises briefly above each kill
+// before fading. Pool of fixed slots; if full, the longest-lived expiring
+// slot gets overwritten so popup density tracks recent activity.
+typedef struct { Vector3 pos; float life; int amount; bool active; } V2ScorePop;
+#define V2_POP_MAX 32
+V2ScorePop g_v2_pops[V2_POP_MAX];
+#endif
+
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 #define SW          1280
 #define SH          720
@@ -1168,6 +1189,18 @@ static void Explode(Vector3 p) {
     g_p.shake = fmaxf(g_p.shake, 0.95f);
     g_lights[MUZZLE_LIGHT] = (LightDef){p, {1.0f, 0.55f, 0.12f}, 22.f, 1};
     ShaderSetLight(MUZZLE_LIGHT);
+    // Ground scorch — spawn a handful of slow tiny dark particles right
+    // at floor level. They settle as stuck decals (handled by UpdParts'
+    // floor-contact logic) so a dark scorch ring lingers for ~10s after
+    // the blast.
+    Vector3 ground = {p.x, 0.05f, p.z};
+    for (int i = 0; i < 9; i++) {
+        float ang = (float)rand()/RAND_MAX * 6.2832f;
+        float r   = 0.6f + (float)rand()/RAND_MAX * 1.6f;
+        Vector3 spawn = { ground.x + cosf(ang)*r, ground.y, ground.z + sinf(ang)*r };
+        SpawnPart(spawn, (Vector3){0, 0.01f, 0}, (Color){25, 18, 18, 200},
+                  0.6f, 0.05f + (float)rand()/RAND_MAX*0.04f, false);
+    }
 #endif
 }
 
@@ -1508,6 +1541,17 @@ static void DrawPicks(Camera3D cam) {
                     float prox = 1.f - (pdist / 5.f);
                     halog *= 1.f + prox * 0.7f;
                 }
+                // "Needed" boost — pickups the player is actually low on
+                // pulse 2x faster + brighter so they read as priority loot
+                // when scanning the room.
+                bool needed = (pk->type == 0 && g_p.hp     < g_p.maxHp * 0.5f) ||
+                              (pk->type == 1 && g_p.shells < 12)              ||
+                              (pk->type == 2 && g_p.rockets < 3)              ||
+                              (pk->type == 3 && g_p.bullets < 30)             ||
+                              (pk->type == 4 && g_p.mgAmmo < 40);
+                if (needed) {
+                    halog *= 1.3f + 0.25f * sinf(t * 6.5f);
+                }
                 Vector3 hpos = {pk->pos.x, pk->pos.y - 0.32f, pk->pos.z};
                 DrawCircle3D(hpos, 0.55f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.55f));
                 DrawCircle3D(hpos, 0.40f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.40f));
@@ -1634,6 +1678,39 @@ static void KillEnemy(int i) {
     if (g_v2ComboT > 0.f) g_v2ComboCount += 1;
     else                  g_v2ComboCount = 1;
     g_v2ComboT = 1.5f;
+    // Spawn a score popup at the kill point. Replaces the longest-lived
+    // expiring slot if the pool is full, so popup density tracks recent
+    // activity rather than starving entirely.
+    {
+        int slot = -1; float worst = -1.f;
+        for (int sp = 0; sp < V2_POP_MAX; sp++) {
+            if (!g_v2_pops[sp].active) { slot = sp; break; }
+            if (g_v2_pops[sp].life > worst) { worst = g_v2_pops[sp].life; slot = sp; }
+        }
+        if (slot >= 0) {
+            g_v2_pops[slot] = (V2ScorePop){
+                .pos = (Vector3){e->pos.x, e->pos.y + 1.6f, e->pos.z},
+                .life = 1.0f,
+                .amount = e->score,
+                .active = true,
+            };
+        }
+    }
+    // Boss death super-flourish — chef boss / cyber demon / spider mastermind
+    // get hard shake, longer hit-stop, and a chained explosion ring so the
+    // wave-ending kill is unmistakably climactic.
+    if (e->type == 3 || e->type == 9 || e->type == 16) {
+        if (g_v2HitStop < 0.18f) g_v2HitStop = 0.18f;
+        g_p.shake = fmaxf(g_p.shake, 1.4f);
+        Vector3 bp = {e->pos.x, e->pos.y + 1.2f, e->pos.z};
+        Explode(bp);
+        for (int j = 0; j < 8; j++) {
+            float ang = (float)j / 8.f * 6.2832f;
+            float r = 1.5f;
+            Vector3 ep = { bp.x + cosf(ang)*r, bp.y, bp.z + sinf(ang)*r };
+            Explode(ep);
+        }
+    }
 #endif
     if (e->type == 6) {
         // Mech has no death sprite in the WolfenDoom source — it explodes
@@ -3239,6 +3316,11 @@ static void TriggerMultiKill(void) {
         strncpy(g_hypeMsg, "MONSTER KILL!!", 79); g_hypeMsg[79] = 0;
         g_hypeDur = 3.0f;
         g_hypeT   = g_hypeDur;
+#ifdef IRONFIST_V2
+        // 0.4s of 0.4x time so the world crawls while the announcer crows.
+        extern float g_v2SlowMo;
+        g_v2SlowMo = 0.4f;
+#endif
     } else if (g_killsThisShot >= 2 && g_sMultiOK) {
         SetSoundVolume(g_sMulti, 8.0f);
         PlaySound(g_sMulti);
@@ -3499,10 +3581,16 @@ static void Shoot(void) {
     if (g_needMouseRelease) return;  // swallow held click from menu/death screen
     if (g_p.shootCD>0) return;
     int w=g_p.weapon;
-    if (w==0&&g_p.shells<=0){PlaySound(g_sEmpty);return;}
-    if (w==1&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);return;}
-    if (w==2&&g_p.rockets<=0){PlaySound(g_sEmpty);return;}
-    if (w==3&&g_p.cells<=0){PlaySound(g_sEmpty);return;}
+#ifdef IRONFIST_V2
+#define V2_DRYFIRE_KICK() do { g_p.shake = fmaxf(g_p.shake, 0.08f); g_p.kickAnim = fmaxf(g_p.kickAnim, 0.05f); } while (0)
+#else
+#define V2_DRYFIRE_KICK() do {} while (0)
+#endif
+    if (w==0&&g_p.shells<=0){PlaySound(g_sEmpty);V2_DRYFIRE_KICK();return;}
+    if (w==1&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);V2_DRYFIRE_KICK();return;}
+    if (w==2&&g_p.rockets<=0){PlaySound(g_sEmpty);V2_DRYFIRE_KICK();return;}
+    if (w==3&&g_p.cells<=0){PlaySound(g_sEmpty);V2_DRYFIRE_KICK();return;}
+#undef V2_DRYFIRE_KICK
     // High-score stat: count one shot per actual fire (shotgun pellets and
     // tesla chain bolts are still one user-perceived "shot").
     g_statShots++;
@@ -4205,6 +4293,19 @@ static void UpdPlayer(float dt, Camera3D *cam) {
 #endif
     if (g_msgT>0)        g_msgT-=dt;
     if (g_hypeT>0)       g_hypeT-=dt;
+#ifdef IRONFIST_V2
+    {
+        // Power-down notifications: fire Msg() on the frame the buff
+        // transitions from active to expired so the player knows the
+        // edge halo + bullet tint are about to disappear.
+        static float v2_prevQuad  = 0.f;
+        static float v2_prevHaste = 0.f;
+        if (v2_prevQuad  > 0.f && g_p.quadT  <= 0.f) Msg("QUAD ENDED");
+        if (v2_prevHaste > 0.f && g_p.hasteT <= 0.f) Msg("SPEED ENDED");
+        v2_prevQuad  = g_p.quadT;
+        v2_prevHaste = g_p.hasteT;
+    }
+#endif
     if (g_p.quadT>0)     g_p.quadT  = fmaxf(0.f, g_p.quadT  - dt);
     if (g_p.hasteT>0)    g_p.hasteT = fmaxf(0.f, g_p.hasteT - dt);
     if (g_p.quadT  <= 0.f) g_p.quadPeak  = 0.f;  // reset so next pickup starts full
@@ -4213,19 +4314,23 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (moving) g_p.bobT+=dt*(sprint?10.f:7.f);
 #ifdef IRONFIST_V2
     // Footstep dust — fire 2 small dust particles each time bobT crosses
-    // a footfall (sin going negative -> positive). No-op when stationary
-    // or airborne. Subtle puffs at the feet that fade in <0.4s.
+    // a footfall (sin going negative -> positive). Sprint footsteps are
+    // bigger and faster (sells the speed). No-op when stationary or
+    // airborne.
     {
         static float v2_prevSinBob = 0.f;
         float curSin = sinf(g_p.bobT);
         if (moving && v2_prevSinBob < 0.f && curSin >= 0.f) {
             Vector3 fp = {g_p.pos.x, g_p.pos.y + 0.05f, g_p.pos.z};
-            for (int j = 0; j < 2; j++) {
+            float dustSize = sprint ? 0.07f : 0.04f;
+            int   dustN    = sprint ? 4 : 2;
+            float dustSpd  = sprint ? 1.4f : 0.8f;
+            for (int j = 0; j < dustN; j++) {
                 float ang = (float)rand()/RAND_MAX * 6.2832f;
-                float spd = 0.5f + (float)rand()/RAND_MAX * 0.8f;
-                Vector3 vv = { cosf(ang)*spd, 0.2f + (float)rand()/RAND_MAX*0.3f, sinf(ang)*spd };
+                float spd = 0.5f + (float)rand()/RAND_MAX * dustSpd;
+                Vector3 vv = { cosf(ang)*spd, 0.2f + (float)rand()/RAND_MAX*0.4f, sinf(ang)*spd };
                 SpawnPart(fp, vv, (Color){170,160,150,150},
-                          0.30f + (float)rand()/RAND_MAX*0.15f, 0.04f, false);
+                          0.30f + (float)rand()/RAND_MAX*0.15f, dustSize, false);
             }
         }
         v2_prevSinBob = curSin;
@@ -5309,16 +5414,7 @@ static void ConDraw(void) {
     }
 }
 
-#ifdef IRONFIST_V2
-// Brief world-freeze applied on enemy death. Set in KillEnemy, decremented
-// in StepFrame using *real* frame time so the freeze actually ends.
-float g_v2HitStop   = 0.f;
-float g_v2HitMarker = 0.f;   // crosshair "+" pulse on bullet hit confirm
-float g_v2HealFlash = 0.f;   // green edge flash when picking up health
-int   g_v2ComboCount = 0;    // chain kill counter
-float g_v2ComboT     = 0.f;  // remaining time on chain — kills within window stack
-float g_v2FootT      = 0.f;  // accumulator that drives footstep dust cadence
-#endif
+// (moved up in file — see early v2 forward declarations block)
 
 static void StepFrame(void) {
     float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
@@ -5331,14 +5427,29 @@ static void StepFrame(void) {
         g_v2HitStop -= dt;
         if (g_v2HitStop > 0.f) dt = 0.f;
     }
+    // Multi-kill slow-mo: dt scaled to 0.4x for the duration so the world
+    // moves in honey while the announcer crows. Decremented on real time
+    // below so the slow-mo actually ends.
+    if (g_v2SlowMo > 0.f && dt > 0.f) {
+        dt *= 0.4f;
+    }
     // Decay the rest of the v2 transient effects on real frame time so they
     // tick during hit-stop too. Combo timer expires the chain when it hits 0.
     float realDt = GetFrameTime(); if (realDt > 0.05f) realDt = 0.05f;
     if (g_v2HitMarker > 0.f) g_v2HitMarker -= realDt;
     if (g_v2HealFlash > 0.f) g_v2HealFlash -= realDt;
+    if (g_v2SlowMo    > 0.f) g_v2SlowMo    -= realDt;
     if (g_v2ComboT    > 0.f) {
         g_v2ComboT -= realDt;
         if (g_v2ComboT <= 0.f) g_v2ComboCount = 0;
+    }
+    // Tick floating score popups: drift up + fade. Real-time so they
+    // animate during hit-stop too.
+    for (int sp = 0; sp < V2_POP_MAX; sp++) {
+        if (!g_v2_pops[sp].active) continue;
+        g_v2_pops[sp].life -= realDt;
+        g_v2_pops[sp].pos.y += realDt * 1.2f;
+        if (g_v2_pops[sp].life <= 0.f) g_v2_pops[sp].active = false;
     }
 #endif
     DebugLogTick();
@@ -5766,6 +5877,21 @@ static void StepFrame(void) {
         DrawCeilingLights(g_cam);
         DrawWeapon3D(g_cam);
         EndMode3D();
+#ifdef IRONFIST_V2
+        // Score popups — float over enemies that just died. World-pos -> screen
+        // via GetWorldToScreen, with rise + alpha fade tied to the popup's
+        // remaining life. Rendered after EndMode3D so DrawText hits 2D space.
+        for (int sp = 0; sp < V2_POP_MAX; sp++) {
+            if (!g_v2_pops[sp].active) continue;
+            Vector2 sc = GetWorldToScreen(g_v2_pops[sp].pos, g_cam);
+            char pb[16]; snprintf(pb, sizeof(pb), "+%d", g_v2_pops[sp].amount);
+            float t = g_v2_pops[sp].life;  // starts at 1.0
+            unsigned char a = (unsigned char)(255 * (t > 0.5f ? 1.f : t * 2.f));
+            int fs = 22;
+            DrawText(pb, (int)sc.x - MeasureText(pb, fs)/2 + 2, (int)sc.y + 2, fs, (Color){0,0,0,a});
+            DrawText(pb, (int)sc.x - MeasureText(pb, fs)/2,     (int)sc.y,     fs, (Color){255,230,120,a});
+        }
+#endif
         DrawSpriteWeapon();
         DrawHUD();
         // Rear-warning arc indicator — red arrow at the bottom of the
