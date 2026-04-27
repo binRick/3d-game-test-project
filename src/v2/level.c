@@ -182,9 +182,15 @@ float PlatGroundAtR(float x, float z, float currentY, float rad) {
     return best;
 }
 
+#if defined(__APPLE__)
+  #define LEVEL_RES_PREFIX "../Resources/"
+#else
+  #define LEVEL_RES_PREFIX ""
+#endif
+
 void InitPlatforms(void) {
     char path[1024];
-    snprintf(path, sizeof(path), "%s../Resources/levels/level0.txt",
+    snprintf(path, sizeof(path), "%s" LEVEL_RES_PREFIX "levels/level0.txt",
              GetApplicationDirectory());
     if (LoadLevelFromFile(path)) {
         TraceLog(LOG_INFO, "v2: loaded level from %s", path);

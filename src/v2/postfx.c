@@ -12,8 +12,19 @@ static int             g_tintLoc;
 static int             g_curW, g_curH;
 static bool            g_inited;
 
+// Shader version + precision shim — desktop wants 330 core, web wants
+// GLSL ES 300 with an explicit float precision in the fragment shader.
+#if defined(PLATFORM_WEB)
+  #define PFX_VERSION   "#version 300 es\n"
+  #define PFX_PRECISION "precision mediump float;\n"
+#else
+  #define PFX_VERSION   "#version 330 core\n"
+  #define PFX_PRECISION ""
+#endif
+
 static const char *kPostFxFs =
-    "#version 330 core\n"
+    PFX_VERSION
+    PFX_PRECISION
     "in vec2 fragTexCoord;\n"
     "uniform sampler2D texture0;\n"
     "uniform vec3 tintColor;\n"

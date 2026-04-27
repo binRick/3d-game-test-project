@@ -1,6 +1,11 @@
 CC      = clang
 RDIR    = $(shell brew --prefix raylib)
-CFLAGS  = -O2 -Wall -Wno-unused-result -I$(RDIR)/include
+# IRONFIST_V2 enables the polish + map-engine changes from the v2 branch
+# (postprocess shader, hit-stop, combo counter, footstep dust, edge
+# vignettes, score popups, text-driven map loader, etc.) — it's the
+# default in every target now. The legacy v1 codepath still compiles
+# cleanly without the define for revert capability.
+CFLAGS  = -O2 -Wall -Wno-unused-result -I$(RDIR)/include -DIRONFIST_V2 -Isrc/v2 -Isrc
 # Foundation framework is needed by src/score_post.m (NSURLSession-based
 # high-score POST). Native macOS only — the web build skips score_post.m
 # and uses EM_JS fetch instead; the Windows target currently no-ops the
@@ -15,12 +20,16 @@ BIN     = $(APP)/Contents/MacOS/IronFist3D
 ICNS    = $(APP)/Contents/Resources/icon.icns
 SPRITES = $(APP)/Contents/Resources/sprites
 SOUNDS  = $(APP)/Contents/Resources/sounds
-SRC     = src/game.c src/hud.c src/effects.c src/level.c
+LEVELS  = $(APP)/Contents/Resources/levels
+SRC     = src/game.c src/hud.c src/effects.c src/v2/level.c src/v2/postfx.c
 # Objective-C bridge for macOS-only NSURLSession HTTP POST.
 SRC_M   = src/score_post.m
 
-game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES) $(SOUNDS)
+game: $(BIN) $(ICNS) $(APP)/Contents/Info.plist $(SPRITES) $(SOUNDS) $(LEVELS)
 	@echo "Built $(APP) — run with: open $(APP)"
+
+$(LEVELS): levels | $(APP)/Contents/Resources
+	cp -r levels $(APP)/Contents/Resources/
 
 $(APP)/Contents/MacOS:
 	mkdir -p $(APP)/Contents/MacOS
@@ -68,63 +77,6 @@ $(SOUNDS): sounds | $(APP)/Contents/Resources
 run: game
 	open $(APP)
 
-# ─── v2 macOS build (text-driven map engine) ────────────────────────────────
-# Same game.c, but compiled with -DIRONFIST_V2 and src/v2/level.c instead of
-# src/level.c. The v2 level.c loads the wall grid from
-# Contents/Resources/levels/level0.txt at startup, so the map is now
-# editable in any text editor — no recompile needed for layout changes.
-# Falls back to the v1 hardcoded map if the file is missing or malformed.
-# Output: IronFist3D-v2.app, runs side-by-side with the original.
-APPV2      = IronFist3D-v2.app
-BINV2      = $(APPV2)/Contents/MacOS/IronFist3D-v2
-ICNS_V2    = $(APPV2)/Contents/Resources/icon.icns
-SPRITES_V2 = $(APPV2)/Contents/Resources/sprites
-SOUNDS_V2  = $(APPV2)/Contents/Resources/sounds
-LEVELS_V2  = $(APPV2)/Contents/Resources/levels
-SRC_V2     = src/game.c src/hud.c src/effects.c src/v2/level.c src/v2/postfx.c
-V2CFLAGS   = $(CFLAGS) -DIRONFIST_V2 -Isrc/v2 -Isrc
-
-v2: $(BINV2) $(ICNS_V2) $(APPV2)/Contents/Info.plist $(SPRITES_V2) $(SOUNDS_V2) $(LEVELS_V2)
-	@echo "Built $(APPV2) — run with: open $(APPV2)"
-
-$(APPV2)/Contents/MacOS:
-	mkdir -p $(APPV2)/Contents/MacOS
-
-$(APPV2)/Contents/Resources:
-	mkdir -p $(APPV2)/Contents/Resources
-
-$(BINV2): $(SRC_V2) $(SRC_M) | $(APPV2)/Contents/MacOS
-	$(CC) $(V2CFLAGS) $(SRC_V2) $(SRC_M) $(LDFLAGS) -o $(BINV2)
-
-$(APPV2)/Contents/Info.plist: | $(APPV2)/Contents/MacOS
-	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $@
-	@echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> $@
-	@echo '<plist version="1.0"><dict>' >> $@
-	@echo '  <key>CFBundleName</key><string>Iron Fist 3D v2</string>' >> $@
-	@echo '  <key>CFBundleDisplayName</key><string>Iron Fist 3D v2</string>' >> $@
-	@echo '  <key>CFBundleIdentifier</key><string>com.ironfist.game.v2</string>' >> $@
-	@echo '  <key>CFBundleVersion</key><string>2.0</string>' >> $@
-	@echo '  <key>CFBundleExecutable</key><string>IronFist3D-v2</string>' >> $@
-	@echo '  <key>CFBundleIconFile</key><string>icon</string>' >> $@
-	@echo '  <key>NSHighResolutionCapable</key><true/>' >> $@
-	@echo '  <key>LSMinimumSystemVersion</key><string>11.0</string>' >> $@
-	@echo '</dict></plist>' >> $@
-
-$(ICNS_V2): $(ICNS) | $(APPV2)/Contents/Resources
-	cp $(ICNS) $(ICNS_V2)
-
-$(SPRITES_V2): sprites | $(APPV2)/Contents/Resources
-	cp -r sprites $(APPV2)/Contents/Resources/
-
-$(SOUNDS_V2): sounds | $(APPV2)/Contents/Resources
-	cp -r sounds $(APPV2)/Contents/Resources/
-
-$(LEVELS_V2): levels | $(APPV2)/Contents/Resources
-	cp -r levels $(APPV2)/Contents/Resources/
-
-run-v2: v2
-	open $(APPV2)
-
 # ─── Windows cross-compile (mingw-w64) ──────────────────────────────────────
 # brew install mingw-w64. raylib prebuilt lives at vendor/{include,lib}/.
 # Output: a single self-contained dist-win/IronFist3D.exe with all sprites +
@@ -135,7 +87,7 @@ WINRES  = x86_64-w64-mingw32-windres
 WINDIR  = dist-win
 WINEXE  = $(WINDIR)/IronFist3D.exe
 WINVENDOR = vendor
-WINCFLAGS = -O2 -Wall -Wno-unused-result -I$(WINVENDOR)/include
+WINCFLAGS = -O2 -Wall -Wno-unused-result -I$(WINVENDOR)/include -DIRONFIST_V2 -Isrc/v2 -Isrc
 WINLDFLAGS = -L$(WINVENDOR)/lib -lraylib -lopengl32 -lgdi32 -lwinmm \
              -static-libgcc -static-libstdc++ -Wl,-subsystem,windows
 
@@ -182,7 +134,8 @@ WEBSHELL     = web/shell.html
 # required windowing backend on web.
 WEBCFLAGS = -O2 -Wall -Wno-unused-result \
             -I$(RAYLIB_SRC)/src \
-            -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3
+            -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
+            -DIRONFIST_V2 -Isrc/v2 -Isrc
 WEBLDFLAGS = -s USE_GLFW=3 \
              -s MIN_WEBGL_VERSION=2 -s MAX_WEBGL_VERSION=2 \
              -s FORCE_FILESYSTEM=1 \
@@ -193,6 +146,7 @@ WEBLDFLAGS = -s USE_GLFW=3 \
              -s "EXPORTED_FUNCTIONS=['_main','_IronFistRankReceived']" \
              --preload-file sprites \
              --preload-file sounds \
+             --preload-file levels \
              --shell-file $(WEBSHELL)
 
 web: $(WEBDIR)/index.html
@@ -223,4 +177,4 @@ web-clean:
 	rm -rf $(WEBDIR)
 
 clean:
-	rm -rf $(APP) $(APPV2) $(WINDIR) $(WEBDIR) /tmp/ironfist.png /tmp/ironfist_icon.iconset
+	rm -rf $(APP) IronFist3D-v2.app $(WINDIR) $(WEBDIR) /tmp/ironfist.png /tmp/ironfist_icon.iconset
