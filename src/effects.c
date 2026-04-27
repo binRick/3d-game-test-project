@@ -96,6 +96,24 @@ void Sparks(Vector3 p, int n) {
                   0.4f + (float)rand()/RAND_MAX * 0.3f,
                   0.08f, false);
     }
+#ifdef IRONFIST_V2
+    // v2 flourish: a handful of bright hot-white sparks that fly fast and
+    // brief, plus a quick yellow flash particle right at impact. Reads as
+    // a hotter, more energetic muzzle/projectile-on-stone hit.
+    for (int i = 0; i < n / 2 + 2; i++) {
+        Vector3 v = {
+            ((float)rand()/RAND_MAX - 0.5f) * 16.f,
+            (float)rand()/RAND_MAX * 8.f + 1.f,
+            ((float)rand()/RAND_MAX - 0.5f) * 16.f
+        };
+        SpawnPart(p, v, (Color){255, 250, 200, 255},
+                  0.10f + (float)rand()/RAND_MAX * 0.12f,
+                  0.05f, true);
+    }
+    // Brief stationary impact flash — single bright additive-feeling particle
+    SpawnPart(p, (Vector3){0,0.3f,0}, (Color){255, 230, 130, 255},
+              0.10f, 0.20f, false);
+#endif
 }
 
 // Per-frame particle simulation. For each active particle:
