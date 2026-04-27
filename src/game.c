@@ -1882,7 +1882,11 @@ static void DmgEnemy(int i, float d) {
     // High-score stat: count damage that landed on a live target. Cap at
     // remaining HP so overkill doesn't inflate the number.
     g_statDamage += (d > e->hp) ? e->hp : d;
+#ifdef IRONFIST_V2
+    e->hp-=d; e->flashT=0.22f; e->state=ES_CHASE;
+#else
     e->hp-=d; e->flashT=0.12f; e->state=ES_CHASE;
+#endif
     if (e->hp<=0) KillEnemy(i);
 }
 

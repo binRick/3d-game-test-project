@@ -53,6 +53,23 @@ void Blood(Vector3 p, int n) {
         float life = 0.35f + (float)rand()/RAND_MAX * 0.45f;
         SpawnPart(spawn, v, col, life, size, true);
     }
+#ifdef IRONFIST_V2
+    // v2 hit flourish: a single bright stationary "impact pop" plus a few
+    // hot-yellow spark particles fanning out, so each shot landing on an
+    // enemy reads as a punchy hit, not just a colour swap on the sprite.
+    SpawnPart(p, (Vector3){0, 0.6f, 0}, (Color){255, 100, 90, 255},
+              0.10f, 0.32f, false);
+    for (int i = 0; i < 5; i++) {
+        Vector3 v = {
+            ((float)rand()/RAND_MAX - 0.5f) * 12.f,
+            (float)rand()/RAND_MAX * 5.f + 1.f,
+            ((float)rand()/RAND_MAX - 0.5f) * 12.f
+        };
+        SpawnPart(p, v, (Color){255, 220, 150, 255},
+                  0.10f + (float)rand()/RAND_MAX * 0.10f,
+                  0.06f, true);
+    }
+#endif
 }
 
 // Triple-layer impact effect for bullet-on-wall hits. Three particle types
