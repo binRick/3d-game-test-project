@@ -94,8 +94,8 @@ WINLDFLAGS = -L$(WINVENDOR)/lib -lraylib -lopengl32 -lgdi32 -lwinmm \
 windows: $(WINEXE)
 	@echo "Built $(WINEXE) — single self-contained exe"
 
-$(WINDIR)/bundle.dat: pack_bundle.py sprites sounds | $(WINDIR)
-	python3 pack_bundle.py $@ sprites sounds
+$(WINDIR)/bundle.dat: pack_bundle.py sprites sounds levels | $(WINDIR)
+	python3 pack_bundle.py $@ sprites sounds levels
 
 $(WINDIR)/bundle.rc: | $(WINDIR)
 	@printf 'bundle RCDATA "bundle.dat"\n' > $@
