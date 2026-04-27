@@ -1494,11 +1494,14 @@ static void DrawPicks(Camera3D cam) {
             // background geometry. Powerups (5,6,7) and Tesla already do
             // their own ring/halo treatments, so we skip them here.
             if (pk->type < 5) {
+                // The halo passes intentionally aren't wrapped in additive
+                // blend here — the per-pickup BeginBlendMode/EndBlendMode
+                // pair was forcing a batch flush per pickup, hammering
+                // CPU side draw cost when 20+ pickups were on screen.
+                // Drawing in normal blend with a Fade alpha looks 90% as
+                // good for ~zero cost.
                 Color halo = tc[pk->type];
                 float halog = 0.6f + 0.3f * sinf(t * 3.f + (float)i);
-                // Proximity boost — within 5m the halo brightens and pulses
-                // faster, peaking at 1.7x at point-blank. Reads as "loot
-                // locked on".
                 float dxp = pk->pos.x - g_p.pos.x, dzp = pk->pos.z - g_p.pos.z;
                 float pdist = sqrtf(dxp*dxp + dzp*dzp);
                 if (pdist < 5.f) {
@@ -1506,12 +1509,9 @@ static void DrawPicks(Camera3D cam) {
                     halog *= 1.f + prox * 0.7f;
                 }
                 Vector3 hpos = {pk->pos.x, pk->pos.y - 0.32f, pk->pos.z};
-                BeginBlendMode(BLEND_ADDITIVE);
                 DrawCircle3D(hpos, 0.55f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.55f));
                 DrawCircle3D(hpos, 0.40f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.40f));
-                // Subtle core glow behind the sprite
                 DrawSphere(pk->pos, 0.10f * halog, Fade(halo, 0.55f));
-                EndBlendMode();
             }
 #endif
             DrawBillboard(cam, tex, pk->pos, drawSz, WHITE);
@@ -3195,29 +3195,37 @@ static void UpdBullets(float dt) {
     }
 }
 static void DrawBullets(void) {
+#ifdef IRONFIST_V2
+    // Single Begin/End BlendMode wrap around ALL bullets — every per-bullet
+    // toggle was forcing a batch flush, so MG fire could fire dozens of
+    // flushes per frame. One pair => one flush.
+    BeginBlendMode(BLEND_ADDITIVE);
     for (int i=0;i<MAX_BULLETS;i++) {
         Bullet *b=&g_b[i]; if (!b->active) continue;
-#ifdef IRONFIST_V2
-        // Glowing tracer streak: tapered cone from a tail point to the
-        // bullet head, drawn additive so it reads as light. Rockets get a
-        // shorter, fatter, more orange streak; bullets get a thin yellow line.
         float vlen = Vector3Length(b->vel);
         Vector3 dir = (vlen > 0.001f) ? Vector3Scale(b->vel, 1.0f/vlen) : (Vector3){0,0,1};
         float tailLen = b->rocket ? 1.4f : 2.8f;
         Vector3 tail  = Vector3Subtract(b->pos, Vector3Scale(dir, tailLen));
         Color   core  = b->rocket ? (Color){255,170, 60,255}
                                   : (Color){255,240,140,255};
-        // Quad damage tints non-rocket tracers magenta to match the buff
         if (g_p.quadT > 0.f && !b->rocket) core = (Color){240, 90, 255, 255};
-        BeginBlendMode(BLEND_ADDITIVE);
         DrawCylinderEx(tail, b->pos, 0.0f, b->rocket?0.16f:0.05f, 6, core);
         DrawSphere(b->pos, b->rocket?0.20f:0.08f, core);
-        EndBlendMode();
+    }
+    EndBlendMode();
+    // Rocket tail puffs (non-additive) — separate pass so the additive
+    // batch above stays unbroken.
+    for (int i=0;i<MAX_BULLETS;i++) {
+        Bullet *b=&g_b[i]; if (!b->active || !b->rocket) continue;
+        SpawnPart(b->pos,(Vector3){((float)rand()/RAND_MAX-.5f)*.4f,0,((float)rand()/RAND_MAX-.5f)*.4f},(Color){255,120,0,200},0.22f,0.08f,false);
+    }
 #else
+    for (int i=0;i<MAX_BULLETS;i++) {
+        Bullet *b=&g_b[i]; if (!b->active) continue;
         DrawSphere(b->pos,b->rocket?0.14f:0.05f,b->rocket?ORANGE:YELLOW);
-#endif
         if (b->rocket) SpawnPart(b->pos,(Vector3){((float)rand()/RAND_MAX-.5f)*.4f,0,((float)rand()/RAND_MAX-.5f)*.4f},(Color){255,120,0,200},0.22f,0.08f,false);
     }
+#endif
 }
 
 // Multi-kill announcement — picks the right tier and plays it.
