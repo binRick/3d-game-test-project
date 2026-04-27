@@ -112,6 +112,10 @@ int   g_v2ComboCount = 0;     // chain kill counter
 float g_v2ComboT     = 0.f;   // remaining time on chain
 float g_v2FootT      = 0.f;   // (reserved for footstep cadence)
 float g_v2SlowMo     = 0.f;   // remaining time on multi-kill slow motion
+float g_v2PowerFlash = 0.f;   // full-screen tint after grabbing QUAD/SPEED/TESLA
+float g_v2PowerFlashR = 0.f;  // tint colour for the above (0..1 each)
+float g_v2PowerFlashG = 0.f;
+float g_v2PowerFlashB = 0.f;
 
 // Floating score popups — small "+25" text rises briefly above each kill
 // before fading. Pool of fixed slots; if full, the longest-lived expiring
@@ -1348,7 +1352,20 @@ static void UpdPicks(void) {
             switch (pk->type) {
                 case 0: g_p.hp     =fminf(g_p.maxHp,g_p.hp+35);         snprintf(g_msg,80,"+35 HEALTH");
 #ifdef IRONFIST_V2
-                        { extern float g_v2HealFlash; g_v2HealFlash = 0.45f; }
+                        {
+                            extern float g_v2HealFlash; g_v2HealFlash = 0.45f;
+                            // Green regen ring at the player's feet — 16 particles
+                            // emitting outward, slow rise, fades quickly. Reads as
+                            // "you got healed".
+                            Vector3 pp = {g_p.pos.x, g_p.pos.y + 0.4f, g_p.pos.z};
+                            for (int j = 0; j < 16; j++) {
+                                float ang = (float)j / 16.f * 6.2832f;
+                                float spd = 3.f + (float)rand()/RAND_MAX * 1.5f;
+                                Vector3 vv = { cosf(ang)*spd, 0.8f + (float)rand()/RAND_MAX*0.6f, sinf(ang)*spd };
+                                SpawnPart(pp, vv, (Color){80, 230, 110, 220},
+                                          0.55f + (float)rand()/RAND_MAX*0.25f, 0.07f, false);
+                            }
+                        }
 #endif
                         break;
                 case 1: g_p.shells =(int)fminf(99, g_p.shells +16);     snprintf(g_msg,80,"+16 SHELLS");  break;
@@ -1359,11 +1376,21 @@ static void UpdPicks(void) {
                 case 5: g_p.quadT  = fminf(60.f, g_p.quadT  + 25.f);
                         if (g_p.quadT  > g_p.quadPeak)  g_p.quadPeak  = g_p.quadT;
                         strncpy(g_hypeMsg, "QUAD DAMAGE!", 79); g_hypeMsg[79]=0;
-                        g_hypeDur = 2.5f; g_hypeT = g_hypeDur; break;
+                        g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
+#ifdef IRONFIST_V2
+                        g_v2PowerFlash = 0.40f;
+                        g_v2PowerFlashR = 0.86f; g_v2PowerFlashG = 0.20f; g_v2PowerFlashB = 0.86f;
+#endif
+                        break;
                 case 6: g_p.hasteT = fminf(60.f, g_p.hasteT + 20.f);
                         if (g_p.hasteT > g_p.hastePeak) g_p.hastePeak = g_p.hasteT;
                         strncpy(g_hypeMsg, "SPEED BOOST!", 79); g_hypeMsg[79]=0;
-                        g_hypeDur = 2.5f; g_hypeT = g_hypeDur; break;
+                        g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
+#ifdef IRONFIST_V2
+                        g_v2PowerFlash = 0.40f;
+                        g_v2PowerFlashR = 0.16f; g_v2PowerFlashG = 0.86f; g_v2PowerFlashB = 1.00f;
+#endif
+                        break;
                 case 7: g_p.cells = (int)fminf(99, g_p.cells + 30);
                         if (!g_p.hasTesla) {
                             g_p.hasTesla = true;
@@ -1697,11 +1724,13 @@ static void KillEnemy(int i) {
         }
     }
     // Boss death super-flourish — chef boss / cyber demon / spider mastermind
-    // get hard shake, longer hit-stop, and a chained explosion ring so the
-    // wave-ending kill is unmistakably climactic.
+    // get hard shake, longer hit-stop, a chained explosion ring, and a brief
+    // gold full-screen flash so the wave-ending kill is unmistakably climactic.
     if (e->type == 3 || e->type == 9 || e->type == 16) {
         if (g_v2HitStop < 0.18f) g_v2HitStop = 0.18f;
         g_p.shake = fmaxf(g_p.shake, 1.4f);
+        g_v2PowerFlash = 0.55f;
+        g_v2PowerFlashR = 1.00f; g_v2PowerFlashG = 0.85f; g_v2PowerFlashB = 0.30f;
         Vector3 bp = {e->pos.x, e->pos.y + 1.2f, e->pos.z};
         Explode(bp);
         for (int j = 0; j < 8; j++) {
@@ -1796,6 +1825,18 @@ static void KillEnemy(int i) {
         SetSoundVolume(g_sFirstBloodWave, 1.5f);
         PlaySound(g_sFirstBloodWave);
         g_firstKillThisWave = true;
+#ifdef IRONFIST_V2
+        // First-blood-of-wave bonus particles at the kill site — a brief
+        // gold-red explosion ring on top of the regular kill effects.
+        Vector3 fp = {e->pos.x, e->pos.y + 1.0f, e->pos.z};
+        for (int j = 0; j < 20; j++) {
+            float ang = (float)j / 20.f * 6.2832f;
+            float spd = 5.f + (float)rand()/RAND_MAX * 5.f;
+            Vector3 vv = { cosf(ang)*spd, 2.f + (float)rand()/RAND_MAX*3.f, sinf(ang)*spd };
+            SpawnPart(fp, vv, (Color){255, 180, 80, 240},
+                      0.6f + (float)rand()/RAND_MAX*0.4f, 0.10f, true);
+        }
+#endif
     }
     // "One left" stinger — fires the frame the kill takes Alive() from 2 to 1,
     // i.e. one chef remains in this wave. Boss phase always has Alive()==1
@@ -1943,7 +1984,9 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             // moment time resumes.
             g_p.shake = fmaxf(g_p.shake, 1.2f);
             extern float g_v2HitStop;
+            extern float g_v2SlowMo;
             if (g_v2HitStop < 0.09f) g_v2HitStop = 0.09f;
+            if (g_v2SlowMo  < 0.50f) g_v2SlowMo  = 0.50f;  // half a sec of cinematic slow-mo
             Vector3 bsp = {bx, ne->pos.y + 0.1f, bz};
             for (int j = 0; j < 32; j++) {
                 float a2 = (float)j / 32.f * 6.2832f + (float)rand()/RAND_MAX * 0.2f;
@@ -1970,8 +2013,17 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
         char wbuf[64]; snprintf(wbuf,64,"-- WAVE %d INCOMING --",g_wave);
         Msg(wbuf);
 #ifdef IRONFIST_V2
-        // Wave-start punch: hard shake so wave transitions don't slip past.
+        // Wave-start punch: hard shake + gold celebration ring spawning
+        // around the player so the wave transition reads as triumphant.
         g_p.shake = fmaxf(g_p.shake, 0.55f);
+        Vector3 pp = {g_p.pos.x, g_p.pos.y + 0.5f, g_p.pos.z};
+        for (int j = 0; j < 24; j++) {
+            float ang = (float)j / 24.f * 6.2832f;
+            float spd = 6.f + (float)rand()/RAND_MAX * 4.f;
+            Vector3 vv = { cosf(ang)*spd, 1.5f + (float)rand()/RAND_MAX*2.f, sinf(ang)*spd };
+            SpawnPart(pp, vv, (Color){255, 220, 80, 240},
+                      0.8f + (float)rand()/RAND_MAX*0.4f, 0.10f, true);
+        }
 #endif
         // Refresh one of each power-up at a random open cell so a long run
         // always has a quad or speed to chase.
@@ -2041,14 +2093,31 @@ static void DmgEnemy(int i, float d) {
     // remaining HP so overkill doesn't inflate the number.
     g_statDamage += (d > e->hp) ? e->hp : d;
 #ifdef IRONFIST_V2
+    float prevHp = e->hp;
     e->hp-=d; e->flashT=0.22f; e->state=ES_CHASE;
     extern float g_v2HitMarker;
-    g_v2HitMarker = 0.10f;  // crosshair pulse on hit confirm
+    // Hitmarker duration scales with damage so heavy hits flare longer
+    // and bigger. Clamped so MG fire stays consistent.
+    float hm = 0.08f + d * 0.002f;
+    if (hm > 0.20f) hm = 0.20f;
+    if (g_v2HitMarker < hm) g_v2HitMarker = hm;
     // Boss-hit weight: every landing shot on a boss tier (chef boss,
     // cyber demon, spider mastermind) adds a tiny camera kick so they
     // feel thumpy to shoot.
     if (e->type == 3 || e->type == 9 || e->type == 16) {
         g_p.shake = fmaxf(g_p.shake, 0.10f);
+    }
+    // Coup-de-grace flourish — clean killing blow with significant overkill
+    // (>60% of remaining HP) spawns 8 gold sparks before the regular
+    // death effects. Reads as a finishing-strike flair.
+    if (e->hp <= 0.f && prevHp > 0.f && d > prevHp * 0.6f) {
+        Vector3 fp = {e->pos.x, e->pos.y + 1.0f, e->pos.z};
+        for (int j = 0; j < 8; j++) {
+            float ang = (float)rand()/RAND_MAX * 6.2832f;
+            float spd = 4.f + (float)rand()/RAND_MAX * 6.f;
+            Vector3 vv = {cosf(ang)*spd, 2.f + (float)rand()/RAND_MAX*3.f, sinf(ang)*spd};
+            SpawnPart(fp, vv, (Color){255, 220, 80, 255}, 0.40f, 0.07f, true);
+        }
     }
 #else
     e->hp-=d; e->flashT=0.12f; e->state=ES_CHASE;
@@ -2165,7 +2234,17 @@ static void UpdEnemies(float dt) {
         // this overwrites ATTACK back to CHASE every frame, so the ATTACK
         // branch below never executes (cd ticks past 0 forever, mutant
         // never fires, melee chef never damages).
-        if (dist<e->alertR && e->state==ES_PATROL) e->state=ES_CHASE;
+        if (dist<e->alertR && e->state==ES_PATROL) {
+            e->state=ES_CHASE;
+#ifdef IRONFIST_V2
+            // Spotted-you marker — single bright red particle spawned at the
+            // enemy's head height on the frame they transition from PATROL
+            // to CHASE. Reads as a "!" exclamation moment.
+            Vector3 ap = {e->pos.x, e->pos.y + 1.8f, e->pos.z};
+            SpawnPart(ap, (Vector3){0, 1.5f, 0}, (Color){255, 60, 60, 255},
+                      0.40f, 0.18f, false);
+#endif
+        }
         e->cd-=dt; e->stateT-=dt; e->legT+=dt*e->speed*2.8f;
         if (e->state==ES_PATROL) {
             EnemyMove(e, e->pd.x*e->speed*dt, e->pd.z*e->speed*dt);
@@ -3326,6 +3405,23 @@ static void TriggerMultiKill(void) {
         PlaySound(g_sMulti);
         Msg("MULTI KILL!");
     }
+#ifdef IRONFIST_V2
+    // Multi-kill bonus burst — for any 2+ kills, spawn a bright ring of
+    // gold particles around the player so chains visually pay out.
+    if (g_killsThisShot >= 2) {
+        Vector3 pp = {g_p.pos.x, g_p.pos.y + 1.2f, g_p.pos.z};
+        int n = 12 + g_killsThisShot * 4;
+        if (n > 36) n = 36;
+        Color c = (g_killsThisShot >= 4) ? (Color){255, 90, 60, 240}
+                                         : (Color){255, 220, 100, 240};
+        for (int j = 0; j < n; j++) {
+            float ang = (float)j / (float)n * 6.2832f;
+            float spd = 5.f + (float)rand()/RAND_MAX * 4.f;
+            Vector3 vv = { cosf(ang)*spd, 2.f + (float)rand()/RAND_MAX*2.f, sinf(ang)*spd };
+            SpawnPart(pp, vv, c, 0.7f + (float)rand()/RAND_MAX*0.3f, 0.10f, true);
+        }
+    }
+#endif
 }
 
 // ── TESLA BOLTS ──────────────────────────────────────────────────────────────
@@ -5439,6 +5535,7 @@ static void StepFrame(void) {
     if (g_v2HitMarker > 0.f) g_v2HitMarker -= realDt;
     if (g_v2HealFlash > 0.f) g_v2HealFlash -= realDt;
     if (g_v2SlowMo    > 0.f) g_v2SlowMo    -= realDt;
+    if (g_v2PowerFlash > 0.f) g_v2PowerFlash -= realDt;
     if (g_v2ComboT    > 0.f) {
         g_v2ComboT -= realDt;
         if (g_v2ComboT <= 0.f) g_v2ComboCount = 0;

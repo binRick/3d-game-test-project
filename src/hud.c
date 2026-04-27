@@ -158,6 +158,20 @@ void DrawHUD(void) {
         DrawRectangleGradientH(0, 0,           hband, sh,  edge,  clear);
         DrawRectangleGradientH(sw - hband, 0,  hband, sh,  clear, edge);
     }
+    // Powerup grab flash — full-screen colored tint for 0.4s when grabbing
+    // QUAD (magenta) or SPEED (cyan). Decays linearly. Sells the moment.
+    {
+        extern float g_v2PowerFlash, g_v2PowerFlashR, g_v2PowerFlashG, g_v2PowerFlashB;
+        if (g_v2PowerFlash > 0.f) {
+            float t = g_v2PowerFlash / 0.40f; if (t > 1.f) t = 1.f;
+            DrawRectangle(0, 0, sw, sh, (Color){
+                (unsigned char)(255 * g_v2PowerFlashR),
+                (unsigned char)(255 * g_v2PowerFlashG),
+                (unsigned char)(255 * g_v2PowerFlashB),
+                (unsigned char)(120 * t)
+            });
+        }
+    }
     // Heal flash: brief green edge tint when picking up a health pickup,
     // so the heal moment registers as visually distinct from the pickup
     // grab burst (which uses pickup colour, red for health).
