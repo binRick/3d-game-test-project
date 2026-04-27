@@ -4087,7 +4087,20 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     float pc=cosf(g_p.pitch),ps=sinf(g_p.pitch);
     float yw=g_p.yaw+3.14159f;
     cam->target=(Vector3){cam->position.x+sinf(yw)*pc,cam->position.y+ps,cam->position.z+cosf(yw)*pc};
+#ifdef IRONFIST_V2
+    // Camera roll: lean into strafe direction + small oscillating jolt while
+    // the hurt vignette is active. strafe is the signed strafe component of
+    // the input move vector (+1 = right/D, -1 = left/A). Up vector rotated
+    // around forward by `roll` radians.
+    float strafe   = -mx * cy + mz * sy;
+    float rollS    = strafe * 0.06f;
+    float rollD    = sinf(g_p.hurtFlash * 28.f) * g_p.hurtFlash * 0.35f;
+    float roll     = rollS + rollD;
+    float sr = sinf(roll), cr = cosf(roll);
+    cam->up = (Vector3){ -cy * sr, cr, sy * sr };
+#else
     cam->up=(Vector3){0,1,0};
+#endif
     // update shader viewPos
     SetShaderValue(g_shader,u_viewPos,&cam->position,SHADER_UNIFORM_VEC3);
     // flicker scene lights
