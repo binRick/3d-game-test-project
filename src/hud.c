@@ -91,8 +91,25 @@ void ShutdownHUD(void) {
 void DrawHUD(void) {
     int sw=GetScreenWidth(), sh=GetScreenHeight();
     if (g_p.hurtFlash>0) {
+#ifdef IRONFIST_V2
+        // Edge-vignette pulse: 4 gradient strips fade from blood-red at the
+        // screen edges to transparent toward the centre. Reads as a damage
+        // pulse rather than a screen-fill blackout.
+        float t = g_p.hurtFlash / 0.30f;
+        if (t > 1.f) t = 1.f;
+        unsigned char aMax = (unsigned char)(220 * t);
+        Color edge  = {220, 0, 0, aMax};
+        Color clear = {220, 0, 0, 0};
+        int vband = sh / 4;
+        int hband = sw / 5;
+        DrawRectangleGradientV(0, 0,             sw, vband, edge,  clear);
+        DrawRectangleGradientV(0, sh - vband,    sw, vband, clear, edge);
+        DrawRectangleGradientH(0, 0,             hband, sh, edge,  clear);
+        DrawRectangleGradientH(sw - hband, 0,    hband, sh, clear, edge);
+#else
         int a=(int)(g_p.hurtFlash/0.22f*180);
         DrawRectangle(0,0,sw,sh,(Color){200,0,0,(unsigned char)a});
+#endif
     }
     for (int y=0;y<sh;y+=3) DrawLine(0,y,sw,y,(Color){0,0,0,18});
     int cx=sw/2,cy=sh/2;

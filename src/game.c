@@ -4044,7 +4044,14 @@ static void UpdPlayer(float dt, Camera3D *cam) {
         }
     }
     if (g_p.kickAnim>0)  g_p.kickAnim=fmaxf(0,g_p.kickAnim-dt*6.f);
-    if (g_p.hurtFlash>0) g_p.hurtFlash-=dt;
+    if (g_p.hurtFlash>0) {
+        g_p.hurtFlash-=dt;
+#ifdef IRONFIST_V2
+        // Pump shake while the hurt vignette is active so getting shot
+        // jolts the camera for the full pulse, not just the impact frame.
+        g_p.shake = fmaxf(g_p.shake, g_p.hurtFlash * 1.4f);
+#endif
+    }
     if (g_p.switchAnim>0)g_p.switchAnim=fmaxf(0,g_p.switchAnim-dt*5.f);
     if (g_p.shake>0)     g_p.shake=fmaxf(0,g_p.shake-dt*4.f);
     if (g_msgT>0)        g_msgT-=dt;
