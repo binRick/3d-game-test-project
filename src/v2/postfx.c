@@ -46,8 +46,8 @@ static const char *kPostFxFs =
     "void main(){\n"
     "  vec3 col = texture(texture0, fragTexCoord).rgb * tintColor;\n"
     "  ivec2 fc = ivec2(gl_FragCoord.xy);\n"
-    "  col += vec3((bayer4(fc.x, fc.y) / 16.0) - 0.5) * (1.0/64.0);\n"
-    "  col = posterize(col, 14.0, 0.85);\n"
+    "  col += vec3((bayer4(fc.x, fc.y) / 16.0) - 0.5) * (1.0/24.0);\n"
+    "  col = posterize(col, 10.0, 0.85);\n"
     "  finalColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n"
     "}\n";
 
@@ -56,7 +56,7 @@ void PostFxInit(int w, int h) {
     g_rt   = LoadRenderTexture(w, h);
     g_post = LoadShaderFromMemory(0, kPostFxFs);
     g_tintLoc = GetShaderLocation(g_post, "tintColor");
-    float tint[3] = {1.00f, 0.96f, 0.92f};
+    float tint[3] = {1.05f, 0.95f, 0.85f};
     SetShaderValue(g_post, g_tintLoc, tint, SHADER_UNIFORM_VEC3);
     g_curW = w; g_curH = h;
     g_inited = true;
