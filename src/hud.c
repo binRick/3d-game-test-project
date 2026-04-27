@@ -90,6 +90,26 @@ void ShutdownHUD(void) {
 // All globals are read-only — the HUD never mutates game state.
 void DrawHUD(void) {
     int sw=GetScreenWidth(), sh=GetScreenHeight();
+#ifdef IRONFIST_V2
+    // Muzzle screen-flash: brief warm yellow edge tint while kickAnim is
+    // active (set by Shoot() to 0.18 and decaying). Strongest at top
+    // (where the gun barrel is) and weaker around the other edges, so
+    // each shot reads as a punch on screen, not just a viewmodel kick.
+    if (g_p.kickAnim > 0.f) {
+        float k = g_p.kickAnim / 0.18f; if (k > 1.f) k = 1.f;
+        unsigned char aTop  = (unsigned char)(140 * k);
+        unsigned char aSide = (unsigned char)( 70 * k);
+        Color flashT = {255, 210, 130, aTop };
+        Color flashS = {255, 210, 130, aSide};
+        Color clear  = {255, 210, 130, 0};
+        int top  = sh / 5;
+        int side = sw / 9;
+        DrawRectangleGradientV(0, 0,           sw, top,  flashT, clear);
+        DrawRectangleGradientV(0, sh - top/2,  sw, top/2,clear,  flashS);
+        DrawRectangleGradientH(0, 0,           side, sh, flashS, clear);
+        DrawRectangleGradientH(sw - side, 0,   side, sh, clear,  flashS);
+    }
+#endif
     if (g_p.hurtFlash>0) {
 #ifdef IRONFIST_V2
         // Edge-vignette pulse: 4 gradient strips fade from blood-red at the
