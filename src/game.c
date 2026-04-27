@@ -1277,6 +1277,33 @@ static void UpdPicks(void) {
             // Don't grab a health pickup if we're already at full HP
             if (pk->type == 0 && g_p.hp >= g_p.maxHp) continue;
             pk->active=false;
+#ifdef IRONFIST_V2
+            // Pickup grab burst: a bright stationary "pop" at the pickup
+            // position plus 16 outward sparks tinted to the pickup's
+            // signature colour. Sells the grab as a satisfying moment.
+            {
+                Color pcol;
+                switch (pk->type) {
+                    case 0: pcol = (Color){255, 100, 100, 255}; break;  // health
+                    case 1: pcol = (Color){255, 230, 100, 255}; break;  // shells
+                    case 2: pcol = (Color){255, 160,  60, 255}; break;  // rockets
+                    case 3: pcol = (Color){240, 240, 160, 255}; break;  // bullets
+                    case 4: pcol = (Color){180, 220, 255, 255}; break;  // MG
+                    case 5: pcol = (Color){230, 100, 255, 255}; break;  // QUAD
+                    case 6: pcol = (Color){ 80, 220, 255, 255}; break;  // SPEED
+                    case 7: pcol = (Color){200, 130, 255, 255}; break;  // TESLA
+                    default: pcol = WHITE;
+                }
+                SpawnPart(pk->pos, (Vector3){0, 0.5f, 0}, pcol, 0.18f, 0.32f, false);
+                for (int j = 0; j < 16; j++) {
+                    float ang = (float)rand()/RAND_MAX * 6.2832f;
+                    float spd = 2.5f + (float)rand()/RAND_MAX * 4.5f;
+                    Vector3 vv = { cosf(ang)*spd, 1.0f + (float)rand()/RAND_MAX * 2.5f, sinf(ang)*spd };
+                    SpawnPart(pk->pos, vv, pcol, 0.40f + (float)rand()/RAND_MAX * 0.25f,
+                              0.05f + (float)rand()/RAND_MAX * 0.05f, true);
+                }
+            }
+#endif
             g_statPickups++;  // high-score stat
             if      (pk->type == 0 && g_sHealthPickupOK) PlaySound(g_sHealthPickup);
             else if (pk->type == 4 && g_sMGPickupOK)     PlaySound(g_sMGPickup);
