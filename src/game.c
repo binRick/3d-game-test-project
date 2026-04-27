@@ -609,7 +609,7 @@ static bool     g_sMGPickupOK = false;
 static Sound    g_sOneLeft;            // plays when only one chef remains in the wave
 static bool     g_sOneLeftOK = false;
 // Additional chef death variants; g_sDie is variant 0, g_sDieAlt[i] are variants 1..N
-#define CHEF_DIE_ALT_COUNT 5
+#define CHEF_DIE_ALT_COUNT 6
 static Sound    g_sDieAlt[CHEF_DIE_ALT_COUNT];
 static bool     g_sDieAltOK[CHEF_DIE_ALT_COUNT] = {0};
 static Sound    g_sHeadshot;      // UT announcer headshot sfx
