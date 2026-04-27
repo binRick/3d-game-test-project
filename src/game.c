@@ -4053,7 +4053,12 @@ static void InitGame(void) {
     float prevYaw = g_p.yaw;
     bool  hadYaw  = (prevYaw != 0.f);
     memset(&g_p,0,sizeof(g_p));
+#ifdef IRONFIST_V2
+    extern Vector3 g_playerStart;
+    g_p.pos = g_playerStart;
+#else
     g_p.pos=(Vector3){1.5f*CELL,0,1.5f*CELL};
+#endif
     if (hadYaw) {
         g_p.yaw = prevYaw;
     } else {

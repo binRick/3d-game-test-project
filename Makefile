@@ -68,6 +68,63 @@ $(SOUNDS): sounds | $(APP)/Contents/Resources
 run: game
 	open $(APP)
 
+# ─── v2 macOS build (text-driven map engine) ────────────────────────────────
+# Same game.c, but compiled with -DIRONFIST_V2 and src/v2/level.c instead of
+# src/level.c. The v2 level.c loads the wall grid from
+# Contents/Resources/levels/level0.txt at startup, so the map is now
+# editable in any text editor — no recompile needed for layout changes.
+# Falls back to the v1 hardcoded map if the file is missing or malformed.
+# Output: IronFist3D-v2.app, runs side-by-side with the original.
+APPV2      = IronFist3D-v2.app
+BINV2      = $(APPV2)/Contents/MacOS/IronFist3D-v2
+ICNS_V2    = $(APPV2)/Contents/Resources/icon.icns
+SPRITES_V2 = $(APPV2)/Contents/Resources/sprites
+SOUNDS_V2  = $(APPV2)/Contents/Resources/sounds
+LEVELS_V2  = $(APPV2)/Contents/Resources/levels
+SRC_V2     = src/game.c src/hud.c src/effects.c src/v2/level.c
+V2CFLAGS   = $(CFLAGS) -DIRONFIST_V2 -Isrc/v2 -Isrc
+
+v2: $(BINV2) $(ICNS_V2) $(APPV2)/Contents/Info.plist $(SPRITES_V2) $(SOUNDS_V2) $(LEVELS_V2)
+	@echo "Built $(APPV2) — run with: open $(APPV2)"
+
+$(APPV2)/Contents/MacOS:
+	mkdir -p $(APPV2)/Contents/MacOS
+
+$(APPV2)/Contents/Resources:
+	mkdir -p $(APPV2)/Contents/Resources
+
+$(BINV2): $(SRC_V2) $(SRC_M) | $(APPV2)/Contents/MacOS
+	$(CC) $(V2CFLAGS) $(SRC_V2) $(SRC_M) $(LDFLAGS) -o $(BINV2)
+
+$(APPV2)/Contents/Info.plist: | $(APPV2)/Contents/MacOS
+	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $@
+	@echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> $@
+	@echo '<plist version="1.0"><dict>' >> $@
+	@echo '  <key>CFBundleName</key><string>Iron Fist 3D v2</string>' >> $@
+	@echo '  <key>CFBundleDisplayName</key><string>Iron Fist 3D v2</string>' >> $@
+	@echo '  <key>CFBundleIdentifier</key><string>com.ironfist.game.v2</string>' >> $@
+	@echo '  <key>CFBundleVersion</key><string>2.0</string>' >> $@
+	@echo '  <key>CFBundleExecutable</key><string>IronFist3D-v2</string>' >> $@
+	@echo '  <key>CFBundleIconFile</key><string>icon</string>' >> $@
+	@echo '  <key>NSHighResolutionCapable</key><true/>' >> $@
+	@echo '  <key>LSMinimumSystemVersion</key><string>11.0</string>' >> $@
+	@echo '</dict></plist>' >> $@
+
+$(ICNS_V2): $(ICNS) | $(APPV2)/Contents/Resources
+	cp $(ICNS) $(ICNS_V2)
+
+$(SPRITES_V2): sprites | $(APPV2)/Contents/Resources
+	cp -r sprites $(APPV2)/Contents/Resources/
+
+$(SOUNDS_V2): sounds | $(APPV2)/Contents/Resources
+	cp -r sounds $(APPV2)/Contents/Resources/
+
+$(LEVELS_V2): levels | $(APPV2)/Contents/Resources
+	cp -r levels $(APPV2)/Contents/Resources/
+
+run-v2: v2
+	open $(APPV2)
+
 # ─── Windows cross-compile (mingw-w64) ──────────────────────────────────────
 # brew install mingw-w64. raylib prebuilt lives at vendor/{include,lib}/.
 # Output: a single self-contained dist-win/IronFist3D.exe with all sprites +
@@ -166,4 +223,4 @@ web-clean:
 	rm -rf $(WEBDIR)
 
 clean:
-	rm -rf $(APP) $(WINDIR) $(WEBDIR) /tmp/ironfist.png /tmp/ironfist_icon.iconset
+	rm -rf $(APP) $(APPV2) $(WINDIR) $(WEBDIR) /tmp/ironfist.png /tmp/ironfist_icon.iconset

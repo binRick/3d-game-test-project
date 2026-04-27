@@ -1,4 +1,5 @@
 IronFist3D.app/
+IronFist3D-v2.app/
 game
 /tmp/
 .DS_Store
@@ -11,5 +12,5 @@ game-sounds-main/
 third_party/*
 !third_party/Beautiful-Doom
 !third_party/DOOM-style-Game
-!third_party/bstone
+!third_party/dungeon-of-quake
 ~/.ironfist3d.cfg

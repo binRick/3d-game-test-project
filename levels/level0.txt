@@ -1,0 +1,30 @@
+; Iron Fist 3D level file (text format v1)
+; Lines starting with ';' are comments and are ignored at load time.
+; Geometry: '#' = wall cell, '.' = empty floor.
+; Translated tiles (do not block; emit metadata at load time):
+;   's' = player spawn (only the FIRST 's' is used; treated as '.' otherwise)
+; The map MUST be exactly 30 columns wide x 20 rows tall — these dims are
+; baked into the v1 build. All other characters are reserved for future
+; tile classes (pickups, enemies, platforms) and currently treated as '.'.
+; Edit this file and run `make run-v2` to see your changes immediately.
+
+##############################
+#.........#........#.........#
+#.........#..................#
+#..##.##..#..#.#...#..##.##..#
+#..#...#.....#.#......#...#..#
+#..#...#..............#...#..#
+#.........#........#.........#
+#.........#........#.........#
+##.#...#######.########...#.##
+#............................#
+#..............s.............#
+##.#...#####.#####.####...#.##
+#.........#........#.........#
+#.........#........#.........#
+#..#...#.....#.#......#...#..#
+#..##.##..#..#.#...#..##.##..#
+#.........#........#.........#
+#............................#
+#............................#
+##############################

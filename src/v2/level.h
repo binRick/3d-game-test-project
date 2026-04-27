@@ -3,9 +3,10 @@
 
 #include "common.h"
 
-extern int MAP[ROWS][COLS];
+extern int       MAP[ROWS][COLS];
 extern Platform  g_plats[];
 extern int       g_platCount;
+extern Vector3   g_playerStart;
 
 bool  IsWall(float wx, float wz);
 bool  IsWallCircle(float cx, float cz, float rad);
