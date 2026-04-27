@@ -6,6 +6,9 @@
 #include "hud.h"
 #include "effects.h"
 #include "level.h"
+#ifdef IRONFIST_V2
+#include "postfx.h"
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdarg.h>  // va_list / vsnprintf — used by the dev console (ConPrintf)
@@ -5377,7 +5380,11 @@ static void StepFrame(void) {
         }
     }
 
+#ifdef IRONFIST_V2
+    PostFxBeginCapture();
+#else
     BeginDrawing();
+#endif
     ClearBackground((Color){4,3,6,255});
 
     if (g_gs==GS_PLAY||g_gs==GS_DEAD) {
@@ -5792,7 +5799,11 @@ static void StepFrame(void) {
     // Dev console panel goes ON TOP of the HUD so it's always readable.
     // Draw while open OR while the close animation is still playing out.
     if (g_conOpen || g_conAnim > 0.f) ConDraw();
+#ifdef IRONFIST_V2
+    PostFxEndCapture();
+#else
     EndDrawing();
+#endif
 }
 
 // ── MAIN ─────────────────────────────────────────────────────────────────────
@@ -6613,6 +6624,10 @@ int main(int argc, char **argv) {
     g_cam.target=(Vector3){1.5f*CELL+1,EYE_H,1.5f*CELL};
 
     g_gs=GS_MENU;
+
+#ifdef IRONFIST_V2
+    PostFxInit(GetScreenWidth(), GetScreenHeight());
+#endif
 
 #ifdef __EMSCRIPTEN__
     // Browser main loop: hand control back to the runtime after each frame so

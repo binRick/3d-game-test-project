@@ -81,7 +81,7 @@ ICNS_V2    = $(APPV2)/Contents/Resources/icon.icns
 SPRITES_V2 = $(APPV2)/Contents/Resources/sprites
 SOUNDS_V2  = $(APPV2)/Contents/Resources/sounds
 LEVELS_V2  = $(APPV2)/Contents/Resources/levels
-SRC_V2     = src/game.c src/hud.c src/effects.c src/v2/level.c
+SRC_V2     = src/game.c src/hud.c src/effects.c src/v2/level.c src/v2/postfx.c
 V2CFLAGS   = $(CFLAGS) -DIRONFIST_V2 -Isrc/v2 -Isrc
 
 v2: $(BINV2) $(ICNS_V2) $(APPV2)/Contents/Info.plist $(SPRITES_V2) $(SOUNDS_V2) $(LEVELS_V2)
