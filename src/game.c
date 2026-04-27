@@ -4121,7 +4121,7 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     // the input move vector (+1 = right/D, -1 = left/A). Up vector rotated
     // around forward by `roll` radians.
     float strafe   = -mx * cy + mz * sy;
-    float rollS    = strafe * 0.06f;
+    float rollS    = strafe * 0.035f;
     float rollD    = sinf(g_p.hurtFlash * 28.f) * g_p.hurtFlash * 0.35f;
     float roll     = rollS + rollD;
     float sr = sinf(roll), cr = cosf(roll);
