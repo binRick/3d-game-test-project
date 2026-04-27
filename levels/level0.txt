@@ -3,14 +3,18 @@
 ; Geometry: '#' = wall cell, '.' = empty floor.
 ; Translated tiles (do not block; emit metadata at load time):
 ;   's' = player spawn (only the FIRST 's' is used; treated as '.' otherwise)
+; Metadata (key: value lines, anywhere in the file):
+;   face: <yaw_radians>  player facing direction at spawn (0 = +Z forward)
 ; The map MUST be exactly 30 columns wide x 20 rows tall — these dims are
 ; baked into the v1 build. All other characters are reserved for future
 ; tile classes (pickups, enemies, platforms) and currently treated as '.'.
 ; Edit this file and run `make run-v2` to see your changes immediately.
 
+face: -1.78
+
 ##############################
 #.........#........#.........#
-#.........#..................#
+#.........#............s.....#
 #..##.##..#..#.#...#..##.##..#
 #..#...#.....#.#......#...#..#
 #..#...#..............#...#..#
@@ -18,7 +22,7 @@
 #.........#........#.........#
 ##.#...#######.########...#.##
 #............................#
-#..............s.............#
+#............................#
 ##.#...#####.#####.####...#.##
 #.........#........#.........#
 #.........#........#.........#

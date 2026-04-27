@@ -4144,10 +4144,12 @@ static void InitGame(void) {
     memset(&g_p,0,sizeof(g_p));
 #ifdef IRONFIST_V2
     extern Vector3 g_playerStart;
+    extern float   g_playerStartYaw;
     g_p.pos = g_playerStart;
+    g_p.yaw = g_playerStartYaw;
+    (void)prevYaw; (void)hadYaw;
 #else
     g_p.pos=(Vector3){1.5f*CELL,0,1.5f*CELL};
-#endif
     if (hadYaw) {
         g_p.yaw = prevYaw;
     } else {
@@ -4157,6 +4159,7 @@ static void InitGame(void) {
         // centre delta points the player AWAY from the action.
         g_p.yaw = atan2f(g_p.pos.x - 60.f, g_p.pos.z - 40.f);
     }
+#endif
     g_p.hp=g_p.maxHp=100; g_p.shells=32; g_p.rockets=8; g_p.mgAmmo=120; g_p.cells=0; g_p.weapon=0;
     g_p.hasTesla=false;
     g_wave=1; g_ec=0; g_pkc=0;

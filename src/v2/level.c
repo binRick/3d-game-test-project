@@ -4,6 +4,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // V2 level engine — wall grid loaded from a text file in
@@ -49,6 +50,7 @@ int     MAP[ROWS][COLS] = {
 Platform g_plats[MAX_PLATS];
 int      g_platCount = 0;
 Vector3  g_playerStart = {1.5f * CELL, 0.f, 1.5f * CELL};
+float    g_playerStartYaw = 0.f;
 
 // Reads up to 64 KiB of the file into a malloc-free static buffer; rejects
 // files that don't have ROWS data lines of COLS chars each. Comment lines
@@ -69,6 +71,15 @@ static bool LoadLevelFromFile(const char *path) {
         if (n == 0) continue;
         if (line[0] == ';') continue;
         if (line[0] == ' ' || line[0] == '\t') continue;
+        // Metadata lines (any line not starting with a known map char). Parse
+        // recognized keys and skip; unknown keys are silently ignored so the
+        // format can grow forward-compatibly.
+        if (line[0] != '#' && line[0] != '.' && line[0] != 's') {
+            if (!strncmp(line, "face:", 5)) {
+                g_playerStartYaw = (float)atof(line + 5);
+            }
+            continue;
+        }
         if (n < (size_t)COLS) { fclose(f); return false; }
 
         for (int c = 0; c < COLS; c++) {
