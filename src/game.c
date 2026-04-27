@@ -3564,6 +3564,21 @@ static void Shoot(void) {
             if (headshot && p==0) {
                 Msg("HEADSHOT!");
                 if (g_sHeadshotOK) { SetSoundVolume(g_sHeadshot, 1.5f); PlaySound(g_sHeadshot); }
+#ifdef IRONFIST_V2
+                // Headshot VFX: bright gold pop + 14 outward sparks at the
+                // hit point, distinct from the regular blood-red impact so
+                // a headshot reads as visually special.
+                SpawnPart(hp, (Vector3){0, 0.5f, 0}, (Color){255, 230, 80, 255},
+                          0.16f, 0.36f, false);
+                for (int gj = 0; gj < 14; gj++) {
+                    float ang = (float)rand()/RAND_MAX * 6.2832f;
+                    float spd = 6.f + (float)rand()/RAND_MAX * 8.f;
+                    Vector3 vv = { cosf(ang)*spd, 2.f + (float)rand()/RAND_MAX * 4.f, sinf(ang)*spd };
+                    SpawnPart(hp, vv, (Color){255, 220, 130, 255},
+                              0.30f + (float)rand()/RAND_MAX * 0.20f,
+                              0.07f, true);
+                }
+#endif
             }
         }
         else if (barrelHit >= 0) {
