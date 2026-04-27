@@ -126,7 +126,7 @@ $(WINDIR):
 # a user gesture, satisfied by the shell's "click to start" overlay.
 WEBDIR       = dist-web
 RAYLIB_SRC  ?= vendor/raylib-src
-RAYLIB_WEB_A = $(RAYLIB_SRC)/src/libraylib.a
+RAYLIB_WEB_A = $(RAYLIB_SRC)/src/libraylib.web.a
 WEBSHELL     = web/shell.html
 
 # GRAPHICS_API_OPENGL_ES3 pairs with WebGL 2, which supports the GLSL ES 300
