@@ -1589,6 +1589,31 @@ static void KillEnemy(int i) {
         Blood(bp, 50);
         Blood((Vector3){e->pos.x, 1.6f, e->pos.z}, 35);
         Blood((Vector3){e->pos.x, 0.4f, e->pos.z}, 25);
+#ifdef IRONFIST_V2
+        // v2 death flourish: chunky meat/bone gibs that arc outward with
+        // gravity, plus a brief tiny camera kick. Adds physicality so the
+        // kill reads as more than a sprite swap. Stacks on top of the blood
+        // bursts above; remove the ifdef to revert.
+        Vector3 cp = {e->pos.x, 1.1f, e->pos.z};
+        for (int g = 0; g < 14; g++) {
+            float ang = (float)rand()/RAND_MAX * 6.2832f;
+            float spd = 4.f + (float)rand()/RAND_MAX * 7.f;
+            Vector3 v = { cosf(ang)*spd, 4.f + (float)rand()/RAND_MAX*5.f, sinf(ang)*spd };
+            Color c = (Color){140, 30, 30, 255}; // dark meat chunks
+            SpawnPart(cp, v, c, 1.2f + (float)rand()/RAND_MAX*0.6f,
+                      0.16f + (float)rand()/RAND_MAX*0.10f, true);
+        }
+        for (int b = 0; b < 6; b++) {
+            // Bone shards — lighter, faster
+            float ang = (float)rand()/RAND_MAX * 6.2832f;
+            float spd = 6.f + (float)rand()/RAND_MAX * 10.f;
+            Vector3 v = { cosf(ang)*spd, 5.f + (float)rand()/RAND_MAX*6.f, sinf(ang)*spd };
+            Color c = (Color){230, 220, 195, 255};
+            SpawnPart(cp, v, c, 1.5f + (float)rand()/RAND_MAX*0.6f,
+                      0.10f + (float)rand()/RAND_MAX*0.06f, true);
+        }
+        g_p.shake = fmaxf(g_p.shake, 0.15f);
+#endif
     }
     // Death vocalisation + fatality stinger only for organic enemies — robots
     // (mech) get the explosion as their "death sound" instead.
