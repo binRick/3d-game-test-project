@@ -1141,6 +1141,34 @@ static void Explode(Vector3 p) {
     g_p.shake=fmaxf(g_p.shake,0.55f);
     // muzzle flash light slot 6 repurposed for explosion
     g_lights[MUZZLE_LIGHT]=(LightDef){p,{1.0f,0.5f,0.1f},14.f,1}; ShaderSetLight(MUZZLE_LIGHT);
+#ifdef IRONFIST_V2
+    // v2 flourish: bigger, longer-lived explosion. Adds a fireball burst
+    // (fast, bright additive-ish sparks) plus a slow smoke pall that drifts
+    // up and fades, plus a beefier light + harder camera shake. The base
+    // 28-particle pop still happens; this stacks on top so removing the
+    // ifdef reverts cleanly.
+    for (int i = 0; i < 24; i++) {
+        // Fireball — fast outward, larger, bright orange-yellow
+        float ang = (float)rand()/RAND_MAX * 6.2832f;
+        float spd = 6.f + (float)rand()/RAND_MAX * 14.f;
+        Vector3 v = { cosf(ang)*spd, (float)rand()/RAND_MAX*5.f + 1.f, sinf(ang)*spd };
+        Color c = (i & 1) ? (Color){255, 230, 120, 255} : (Color){255, 140, 40, 255};
+        SpawnPart(p, v, c, 0.40f + (float)rand()/RAND_MAX*0.35f,
+                  0.18f + (float)rand()/RAND_MAX*0.14f, true);
+    }
+    for (int i = 0; i < 18; i++) {
+        // Smoke — slow rise, dark, longer-lived
+        float ang = (float)rand()/RAND_MAX * 6.2832f;
+        float spd = 0.6f + (float)rand()/RAND_MAX * 1.6f;
+        Vector3 v = { cosf(ang)*spd, 1.4f + (float)rand()/RAND_MAX*1.6f, sinf(ang)*spd };
+        Color c = (Color){55, 50, 50, 220};
+        SpawnPart(p, v, c, 1.6f + (float)rand()/RAND_MAX*0.9f,
+                  0.25f + (float)rand()/RAND_MAX*0.18f, false);
+    }
+    g_p.shake = fmaxf(g_p.shake, 0.95f);
+    g_lights[MUZZLE_LIGHT] = (LightDef){p, {1.0f, 0.55f, 0.12f}, 22.f, 1};
+    ShaderSetLight(MUZZLE_LIGHT);
+#endif
 }
 
 // ── PICKUPS ──────────────────────────────────────────────────────────────────
