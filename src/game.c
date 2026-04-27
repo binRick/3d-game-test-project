@@ -640,6 +640,8 @@ static Sound    g_sMutAttack;   // mutant energy-ball fire (sounds/mutant-attack
 static bool     g_sMutAttackOK = false;
 static Sound    g_sMutDie;      // mutant death scream (sounds/mutant-die.mp3)
 static bool     g_sMutDieOK = false;
+static Sound    g_sSSDie;       // SS guard / cultist death growl (sounds/ss-die.mp3)
+static bool     g_sSSDieOK = false;
 static Sound    g_sChefHit;     // chef melee inflicts damage on player (sounds/player-ouch.mp3)
 static bool     g_sChefHitOK = false;
 // chef-attack: zing/reveal cue when a chef-tier enemy enters ATTACK state
@@ -1854,6 +1856,8 @@ static void KillEnemy(int i) {
         // falls through to the chef death pool.
         if (e->type == 5 && g_sMutDieOK) {
             PlaySound(g_sMutDie);
+        } else if (e->type == 4 && g_sSSDieOK) {
+            PlaySound(g_sSSDie);
         } else {
             int total = 1;  // g_sDie itself
             for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) total++;
@@ -6578,6 +6582,10 @@ int main(int argc, char **argv) {
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mutant-die.mp3", AppDir());
         g_sMutDie = LoadSound(fp);
         g_sMutDieOK = (g_sMutDie.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/ss-die.mp3", AppDir());
+        g_sSSDie = LoadSound(fp);
+        g_sSSDieOK = (g_sSSDie.frameCount > 0);
 
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ouch.mp3", AppDir());
         g_sChefHit = LoadSound(fp);
