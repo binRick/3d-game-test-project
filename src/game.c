@@ -1295,6 +1295,9 @@ static void UpdPicks(void) {
                     default: pcol = WHITE;
                 }
                 SpawnPart(pk->pos, (Vector3){0, 0.5f, 0}, pcol, 0.18f, 0.32f, false);
+                // Small camera kick on grab — bigger for powerups so they
+                // feel weightier than ammo grabs.
+                g_p.shake = fmaxf(g_p.shake, (pk->type >= 5) ? 0.30f : 0.10f);
                 for (int j = 0; j < 16; j++) {
                     float ang = (float)rand()/RAND_MAX * 6.2832f;
                     float spd = 2.5f + (float)rand()/RAND_MAX * 4.5f;
@@ -1493,6 +1496,15 @@ static void DrawPicks(Camera3D cam) {
             if (pk->type < 5) {
                 Color halo = tc[pk->type];
                 float halog = 0.6f + 0.3f * sinf(t * 3.f + (float)i);
+                // Proximity boost — within 5m the halo brightens and pulses
+                // faster, peaking at 1.7x at point-blank. Reads as "loot
+                // locked on".
+                float dxp = pk->pos.x - g_p.pos.x, dzp = pk->pos.z - g_p.pos.z;
+                float pdist = sqrtf(dxp*dxp + dzp*dzp);
+                if (pdist < 5.f) {
+                    float prox = 1.f - (pdist / 5.f);
+                    halog *= 1.f + prox * 0.7f;
+                }
                 Vector3 hpos = {pk->pos.x, pk->pos.y - 0.32f, pk->pos.z};
                 BeginBlendMode(BLEND_ADDITIVE);
                 DrawCircle3D(hpos, 0.55f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.55f));
@@ -4209,6 +4221,19 @@ static void UpdPlayer(float dt, Camera3D *cam) {
             }
         }
         v2_prevSinBob = curSin;
+    }
+    // SPEED powerup trail — bright cyan sparks behind the player while
+    // haste is active and moving. Spawned every frame so the trail reads
+    // as continuous rather than stepped.
+    if (g_p.hasteT > 0.f && moving) {
+        Vector3 fp = {g_p.pos.x, g_p.pos.y + 0.6f, g_p.pos.z};
+        for (int j = 0; j < 2; j++) {
+            float ang = (float)rand()/RAND_MAX * 6.2832f;
+            float spd = 0.4f + (float)rand()/RAND_MAX * 0.8f;
+            Vector3 vv = { cosf(ang)*spd, (float)rand()/RAND_MAX * 0.6f - 0.3f, sinf(ang)*spd };
+            SpawnPart(fp, vv, (Color){80, 220, 255, 200},
+                      0.30f + (float)rand()/RAND_MAX * 0.20f, 0.07f, false);
+        }
     }
 #endif
 

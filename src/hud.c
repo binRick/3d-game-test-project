@@ -91,12 +91,39 @@ void ShutdownHUD(void) {
 void DrawHUD(void) {
     int sw=GetScreenWidth(), sh=GetScreenHeight();
 #ifdef IRONFIST_V2
+    // Boss low-HP rage tint: when any boss-tier enemy (chef boss / cyber
+    // demon / spider mastermind) is below 25% HP, slow deep-red pulse on
+    // top + bottom edges so the kill moment feels imminent.
+    {
+        bool bossLow = false;
+        for (int bi = 0; bi < g_ec; bi++) {
+            Enemy *be = &g_e[bi];
+            if (!be->active || be->dying) continue;
+            if (be->type != 3 && be->type != 9 && be->type != 16) continue;
+            if (be->hp < be->maxHp * 0.25f) { bossLow = true; break; }
+        }
+        if (bossLow) {
+            float pulse = 0.5f + 0.5f * sinf((float)GetTime() * 3.f);
+            unsigned char a = (unsigned char)(120 * pulse);
+            Color edge  = {180, 0, 0, a};
+            Color clear = {180, 0, 0, 0};
+            int band = sh / 6;
+            DrawRectangleGradientV(0, 0,           sw, band, edge,  clear);
+            DrawRectangleGradientV(0, sh - band,   sw, band, clear, edge);
+        }
+    }
     // Powerup active overlay: while QUAD or SPEED is running, pulse a
     // tinted halo at the screen edges so you can see at a glance you're
     // powered up. QUAD = magenta on the side edges; SPEED = cyan on the
     // top/bottom edges. They stack visually if both are active.
     if (g_p.quadT > 0.f || g_p.hasteT > 0.f) {
-        float pulse = 0.6f + 0.3f * sinf((float)GetTime() * 4.f);
+        // Pulse rate accelerates in the last 3s of the powerup so you can
+        // feel it about to expire. Picks the soonest-expiring of the two.
+        float minLeft = 999.f;
+        if (g_p.quadT  > 0.f && g_p.quadT  < minLeft) minLeft = g_p.quadT;
+        if (g_p.hasteT > 0.f && g_p.hasteT < minLeft) minLeft = g_p.hasteT;
+        float urgency = (minLeft < 3.f) ? (1.f + (3.f - minLeft) * 2.0f) : 1.f;
+        float pulse = 0.6f + 0.3f * sinf((float)GetTime() * 4.f * urgency);
         if (g_p.quadT > 0.f) {
             unsigned char a = (unsigned char)(75 * pulse);
             Color edge  = {220, 50, 220, a};
@@ -184,9 +211,15 @@ void DrawHUD(void) {
         float k = g_p.kickAnim / 0.18f; if (k > 1.f) k = 1.f;
         unsigned char aTop  = (unsigned char)(140 * k);
         unsigned char aSide = (unsigned char)( 70 * k);
-        Color flashT = {255, 210, 130, aTop };
-        Color flashS = {255, 210, 130, aSide};
-        Color clear  = {255, 210, 130, 0};
+        // Quad damage swaps the muzzle tint to magenta to match the bullet
+        // tracer recolour, so the buff is visible from the gun side too.
+        bool quadFire = (g_p.quadT > 0.f);
+        unsigned char r = quadFire ? 240 : 255;
+        unsigned char g = quadFire ?  90 : 210;
+        unsigned char b = quadFire ? 255 : 130;
+        Color flashT = {r, g, b, aTop };
+        Color flashS = {r, g, b, aSide};
+        Color clear  = {r, g, b, 0};
         int top  = sh / 5;
         int side = sw / 9;
         DrawRectangleGradientV(0, 0,           sw, top,  flashT, clear);
@@ -259,14 +292,49 @@ void DrawHUD(void) {
     DrawRectangle(21,sh-39,(int)(198*hp),16,hcol);
     DrawRectangle(20,sh-40,200,18,(Color){80,80,80,80});
     char hpBuf[16]; snprintf(hpBuf,16,"%d",(int)g_p.hp);
+#ifdef IRONFIST_V2
+    // HP number flashes to white-red on each damage hit so the running
+    // total registers visually as you take fire.
+    Color hpDispCol = hcol;
+    if (g_p.hurtFlash > 0.f) {
+        float ht = g_p.hurtFlash / 0.30f; if (ht > 1.f) ht = 1.f;
+        hpDispCol = (Color){
+            (unsigned char)(hcol.r + (unsigned char)((255 - hcol.r) * ht)),
+            (unsigned char)((float)hcol.g * (1.f - ht * 0.6f)),
+            (unsigned char)((float)hcol.b * (1.f - ht * 0.6f)),
+            255
+        };
+    }
+    DrawText(hpBuf,228,sh-43,18,hpDispCol);
+#else
     DrawText(hpBuf,228,sh-43,18,hcol);
+#endif
     char aBuf[16];
     if      (g_p.weapon==0) snprintf(aBuf,16,"%d",g_p.shells);
     else if (g_p.weapon==1) snprintf(aBuf,16,"%d",g_p.mgAmmo);
     else if (g_p.weapon==2) snprintf(aBuf,16,"%d",g_p.rockets);
     else                    snprintf(aBuf,16,"%d",g_p.cells);
     DrawText(WPN[g_p.weapon],sw-220,sh-58,13,SKYBLUE);
+#ifdef IRONFIST_V2
+    // Low-ammo pulse — when the active weapon's ammo drops under a tier,
+    // the ammo number pulses red-orange so you notice you're running out.
+    int lowThresh = (g_p.weapon == 0) ? 8 :
+                    (g_p.weapon == 1) ? 30 :
+                    (g_p.weapon == 2) ? 2  :
+                                        10;
+    int curAmmo = (g_p.weapon == 0) ? g_p.shells :
+                  (g_p.weapon == 1) ? g_p.mgAmmo :
+                  (g_p.weapon == 2) ? g_p.rockets :
+                                       g_p.cells;
+    Color aCol = YELLOW;
+    if (curAmmo > 0 && curAmmo <= lowThresh) {
+        float pulse = 0.5f + 0.5f * sinf((float)GetTime() * 6.5f);
+        aCol = (Color){255, (unsigned char)(80 + 90 * (1.f - pulse)), 50, 255};
+    }
+    DrawText(aBuf,sw-220,sh-46,36,aCol);
+#else
     DrawText(aBuf,sw-220,sh-46,36,YELLOW);
+#endif
 
     if (g_mugshotOK) {
         static int   look       = 1;
@@ -301,9 +369,35 @@ void DrawHUD(void) {
     }
 
     char sc[48]; snprintf(sc,48,"SCORE %d",g_p.score);
+#ifdef IRONFIST_V2
+    // SCORE number flashes gold for ~250ms on each score increase, so the
+    // number registers as "earned" rather than silently ticking up.
+    static int  v2_lastScore = 0;
+    static float v2_scoreFlash = 0.f;
+    if (g_p.score > v2_lastScore) v2_scoreFlash = 0.25f;
+    v2_lastScore = g_p.score;
+    if (v2_scoreFlash > 0.f) v2_scoreFlash -= GetFrameTime();
+    Color scCol = (v2_scoreFlash > 0.f) ? (Color){255, 220, 80, 255} : WHITE;
+    int   scSize = 18 + (v2_scoreFlash > 0.f ? (int)(v2_scoreFlash / 0.25f * 4.f) : 0);
+    DrawText(sc, sw - MeasureText(sc, scSize) - 170, 10, scSize, scCol);
+#else
     DrawText(sc,sw-MeasureText(sc,18)-170,10,18,WHITE);
+#endif
     char wv[24]; snprintf(wv,24,"WAVE %d",g_wave);
+#ifdef IRONFIST_V2
+    // WAVE counter pulses gold for ~1s on increment so the wave change
+    // doesn't go unnoticed when the screen is busy.
+    static int  v2_lastWave = 1;
+    static float v2_waveFlash = 0.f;
+    if (g_wave > v2_lastWave) v2_waveFlash = 1.0f;
+    v2_lastWave = g_wave;
+    if (v2_waveFlash > 0.f) v2_waveFlash -= GetFrameTime();
+    Color wvCol = (v2_waveFlash > 0.f) ? (Color){255, 230, 80, 255} : (Color){255,160,40,255};
+    int   wvSize = 18 + (v2_waveFlash > 0.f ? (int)(v2_waveFlash * 6.f) : 0);
+    DrawText(wv, 12, 10, wvSize, wvCol);
+#else
     DrawText(wv,12,10,18,(Color){255,160,40,255});
+#endif
     char en[32]; snprintf(en,32,"ENEMIES: %d",Alive());
     DrawText(en,12,32,14,(Color){200,60,60,255});
     {
