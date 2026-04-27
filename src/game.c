@@ -1579,6 +1579,12 @@ static void KillEnemy(int i) {
     // Keep the enemy active=true so the sprite keeps rendering — mark dying so
     // AI/bullets/minimap/alive-count skip it.
     e->dying = true; e->deathT = 0.f; e->hp = 0.f;
+#ifdef IRONFIST_V2
+    // Hit-stop: brief world freeze on each kill so the impact reads. Capped
+    // so chains don't stack into a long pause; resets to 40ms on each death.
+    extern float g_v2HitStop;
+    if (g_v2HitStop < 0.04f) g_v2HitStop = 0.04f;
+#endif
     if (e->type == 6) {
         // Mech has no death sprite in the WolfenDoom source — it explodes
         // in two staggered blasts and scatters metal/spark debris, then the
@@ -5153,8 +5159,24 @@ static void ConDraw(void) {
     }
 }
 
+#ifdef IRONFIST_V2
+// Brief world-freeze applied on enemy death. Set in KillEnemy, decremented
+// in StepFrame using *real* frame time so the freeze actually ends.
+float g_v2HitStop = 0.f;
+#endif
+
 static void StepFrame(void) {
     float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
+#ifdef IRONFIST_V2
+    // Hit-stop: while g_v2HitStop is active, scale game dt to 0 so the
+    // world freezes mid-action for a few frames. Real-time dt still
+    // counts down the stop and feeds particle/UI animations that need
+    // to keep moving (postprocess, HUD overlays, sound timing).
+    if (g_v2HitStop > 0.f) {
+        g_v2HitStop -= dt;
+        if (g_v2HitStop > 0.f) dt = 0.f;
+    }
+#endif
     DebugLogTick();
     // F8 — toggle the sprite browser (debug). When active, swallows the
     // entire frame and renders the single-sprite viewer instead of the game.
