@@ -1,11 +1,9 @@
 CC      = clang
 RDIR    = $(shell brew --prefix raylib)
-# IRONFIST_V2 enables the polish + map-engine changes from the v2 branch
-# (postprocess shader, hit-stop, combo counter, footstep dust, edge
-# vignettes, score popups, text-driven map loader, etc.) — it's the
-# default in every target now. The legacy v1 codepath still compiles
-# cleanly without the define for revert capability.
-CFLAGS  = -O2 -Wall -Wno-unused-result -I$(RDIR)/include -DIRONFIST_V2 -Isrc/v2 -Isrc
+# -Isrc/v2 -Isrc lets src/v2/{level,postfx}.c find the project's common.h
+# (it lives in src/, not src/v2/). Same flags repeat in WINCFLAGS and
+# WEBCFLAGS for the cross-compiles.
+CFLAGS  = -O2 -Wall -Wno-unused-result -I$(RDIR)/include -Isrc/v2 -Isrc
 # Foundation framework is needed by src/score_post.m (NSURLSession-based
 # high-score POST). Native macOS only — the web build skips score_post.m
 # and uses EM_JS fetch instead; the Windows target currently no-ops the
@@ -87,7 +85,7 @@ WINRES  = x86_64-w64-mingw32-windres
 WINDIR  = dist-win
 WINEXE  = $(WINDIR)/IronFist3D.exe
 WINVENDOR = vendor
-WINCFLAGS = -O2 -Wall -Wno-unused-result -I$(WINVENDOR)/include -DIRONFIST_V2 -Isrc/v2 -Isrc
+WINCFLAGS = -O2 -Wall -Wno-unused-result -I$(WINVENDOR)/include -Isrc/v2 -Isrc
 WINLDFLAGS = -L$(WINVENDOR)/lib -lraylib -lopengl32 -lgdi32 -lwinmm \
              -static-libgcc -static-libstdc++ -Wl,-subsystem,windows
 
@@ -135,7 +133,7 @@ WEBSHELL     = web/shell.html
 WEBCFLAGS = -O2 -Wall -Wno-unused-result \
             -I$(RAYLIB_SRC)/src \
             -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
-            -DIRONFIST_V2 -Isrc/v2 -Isrc
+            -Isrc/v2 -Isrc
 WEBLDFLAGS = -s USE_GLFW=3 \
              -s MIN_WEBGL_VERSION=2 -s MAX_WEBGL_VERSION=2 \
              -s FORCE_FILESYSTEM=1 \

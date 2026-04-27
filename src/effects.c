@@ -53,7 +53,6 @@ void Blood(Vector3 p, int n) {
         float life = 0.35f + (float)rand()/RAND_MAX * 0.45f;
         SpawnPart(spawn, v, col, life, size, true);
     }
-#ifdef IRONFIST_V2
     // v2 hit flourish: a single bright stationary "impact pop" plus a few
     // hot-yellow spark particles fanning out, so each shot landing on an
     // enemy reads as a punchy hit, not just a colour swap on the sprite.
@@ -69,7 +68,6 @@ void Blood(Vector3 p, int n) {
                   0.10f + (float)rand()/RAND_MAX * 0.10f,
                   0.06f, true);
     }
-#endif
 }
 
 // Triple-layer impact effect for bullet-on-wall hits. Three particle types
@@ -113,7 +111,6 @@ void Sparks(Vector3 p, int n) {
                   0.4f + (float)rand()/RAND_MAX * 0.3f,
                   0.08f, false);
     }
-#ifdef IRONFIST_V2
     // v2 flourish: a handful of bright hot-white sparks that fly fast and
     // brief, plus a quick yellow flash particle right at impact. Reads as
     // a hotter, more energetic muzzle/projectile-on-stone hit.
@@ -130,7 +127,6 @@ void Sparks(Vector3 p, int n) {
     // Brief stationary impact flash — single bright additive-feeling particle
     SpawnPart(p, (Vector3){0,0.3f,0}, (Color){255, 230, 130, 255},
               0.10f, 0.20f, false);
-#endif
 }
 
 // Per-frame particle simulation. For each active particle:

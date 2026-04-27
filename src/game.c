@@ -6,9 +6,7 @@
 #include "hud.h"
 #include "effects.h"
 #include "level.h"
-#ifdef IRONFIST_V2
 #include "postfx.h"
-#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdarg.h>  // va_list / vsnprintf — used by the dev console (ConPrintf)
@@ -100,7 +98,6 @@ static const char *AppDir(void) {
     return GetApplicationDirectory();
 }
 
-#ifdef IRONFIST_V2
 // v2 transient game-feel state. All decremented in StepFrame on real
 // frame time so they keep ticking through hit-stop / slow-mo. Defined
 // here (rather than further down with v1 globals) so KillEnemy / DmgEnemy
@@ -131,7 +128,6 @@ int   g_v2KillsThisWave = 0;      // kill count for the current wave (for wave-c
 typedef struct { Vector3 pos; float life; int amount; bool active; } V2ScorePop;
 #define V2_POP_MAX 32
 V2ScorePop g_v2_pops[V2_POP_MAX];
-#endif
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 #define SW          1280
@@ -1174,7 +1170,6 @@ static void Explode(Vector3 p) {
     g_p.shake=fmaxf(g_p.shake,0.55f);
     // muzzle flash light slot 6 repurposed for explosion
     g_lights[MUZZLE_LIGHT]=(LightDef){p,{1.0f,0.5f,0.1f},14.f,1}; ShaderSetLight(MUZZLE_LIGHT);
-#ifdef IRONFIST_V2
     // v2 flourish: bigger, longer-lived explosion. Adds a fireball burst
     // (fast, bright additive-ish sparks) plus a slow smoke pall that drifts
     // up and fades, plus a beefier light + harder camera shake. The base
@@ -1224,7 +1219,6 @@ static void Explode(Vector3 p) {
         SpawnPart(sw, vv, (Color){255, 180, 100, 220},
                   0.30f, 0.10f, false);
     }
-#endif
 }
 
 // ── PICKUPS ──────────────────────────────────────────────────────────────────
@@ -1333,7 +1327,6 @@ static void UpdPicks(void) {
             // Don't grab a health pickup if we're already at full HP
             if (pk->type == 0 && g_p.hp >= g_p.maxHp) continue;
             pk->active=false;
-#ifdef IRONFIST_V2
             // Pickup grab burst: a bright stationary "pop" at the pickup
             // position plus 16 outward sparks tinted to the pickup's
             // signature colour. Sells the grab as a satisfying moment.
@@ -1362,7 +1355,6 @@ static void UpdPicks(void) {
                               0.05f + (float)rand()/RAND_MAX * 0.05f, true);
                 }
             }
-#endif
             g_statPickups++;  // high-score stat
             if      (pk->type == 0 && g_sHealthPickupOK) PlaySound(g_sHealthPickup);
             else if (pk->type == 4 && g_sMGPickupOK)     PlaySound(g_sMGPickup);
@@ -1370,7 +1362,6 @@ static void UpdPicks(void) {
             g_msgT=1.8f;
             switch (pk->type) {
                 case 0: g_p.hp     =fminf(g_p.maxHp,g_p.hp+35);         snprintf(g_msg,80,"+35 HEALTH");
-#ifdef IRONFIST_V2
                         {
                             extern float g_v2HealFlash; g_v2HealFlash = 0.45f;
                             // Green regen ring at the player's feet — 16 particles
@@ -1385,7 +1376,6 @@ static void UpdPicks(void) {
                                           0.55f + (float)rand()/RAND_MAX*0.25f, 0.07f, false);
                             }
                         }
-#endif
                         break;
                 case 1: g_p.shells =(int)fminf(99, g_p.shells +16);     snprintf(g_msg,80,"+16 SHELLS");  break;
                 case 2: g_p.rockets=(int)fminf(30, g_p.rockets+ 5);     snprintf(g_msg,80,"+5 ROCKETS");  break;
@@ -1396,19 +1386,15 @@ static void UpdPicks(void) {
                         if (g_p.quadT  > g_p.quadPeak)  g_p.quadPeak  = g_p.quadT;
                         strncpy(g_hypeMsg, "QUAD DAMAGE!", 79); g_hypeMsg[79]=0;
                         g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
-#ifdef IRONFIST_V2
                         g_v2PowerFlash = 0.40f;
                         g_v2PowerFlashR = 0.86f; g_v2PowerFlashG = 0.20f; g_v2PowerFlashB = 0.86f;
-#endif
                         break;
                 case 6: g_p.hasteT = fminf(60.f, g_p.hasteT + 20.f);
                         if (g_p.hasteT > g_p.hastePeak) g_p.hastePeak = g_p.hasteT;
                         strncpy(g_hypeMsg, "SPEED BOOST!", 79); g_hypeMsg[79]=0;
                         g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
-#ifdef IRONFIST_V2
                         g_v2PowerFlash = 0.40f;
                         g_v2PowerFlashR = 0.16f; g_v2PowerFlashG = 0.86f; g_v2PowerFlashB = 1.00f;
-#endif
                         break;
                 case 7: g_p.cells = (int)fminf(99, g_p.cells + 30);
                         if (!g_p.hasTesla) {
@@ -1567,7 +1553,6 @@ static void DrawPicks(Camera3D cam) {
         else if (pk->type == 7 && g_teslaPickupTex.id) { tex = g_teslaPickupTex; drawSz = teslaSz; }
 
         if (tex.id) {
-#ifdef IRONFIST_V2
             // v2 pickup polish: pulsing additive halo at ground level under
             // plain ammo/health pickups so they read as loot rather than
             // background geometry. Powerups (5,6,7) and Tesla already do
@@ -1607,7 +1592,6 @@ static void DrawPicks(Camera3D cam) {
                 DrawCircle3D(hpos, 0.40f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.40f));
                 DrawSphere(pk->pos, 0.10f * halog, Fade(halo, 0.55f));
             }
-#endif
             DrawBillboard(cam, tex, pk->pos, drawSz, WHITE);
             // Tesla pickup advertises itself as a special weapon find: two
             // pulsing rings (one above, one below) plus a glowing core sphere
@@ -1716,7 +1700,6 @@ static void KillEnemy(int i) {
     // Keep the enemy active=true so the sprite keeps rendering — mark dying so
     // AI/bullets/minimap/alive-count skip it.
     e->dying = true; e->deathT = 0.f; e->hp = 0.f;
-#ifdef IRONFIST_V2
     // Hit-stop: brief world freeze on each kill so the impact reads. Capped
     // so chains don't stack into a long pause; resets to 40ms on each death.
     extern float g_v2HitStop;
@@ -1790,7 +1773,6 @@ static void KillEnemy(int i) {
             Explode(ep);
         }
     }
-#endif
     if (e->type == 6) {
         // Mech has no death sprite in the WolfenDoom source — it explodes
         // in two staggered blasts and scatters metal/spark debris, then the
@@ -1818,7 +1800,6 @@ static void KillEnemy(int i) {
         Blood(bp, 50);
         Blood((Vector3){e->pos.x, 1.6f, e->pos.z}, 35);
         Blood((Vector3){e->pos.x, 0.4f, e->pos.z}, 25);
-#ifdef IRONFIST_V2
         // v2 death flourish: chunky meat/bone gibs that arc outward with
         // gravity, plus a brief tiny camera kick. Adds physicality so the
         // kill reads as more than a sprite swap. Stacks on top of the blood
@@ -1842,7 +1823,6 @@ static void KillEnemy(int i) {
                       0.10f + (float)rand()/RAND_MAX*0.06f, true);
         }
         g_p.shake = fmaxf(g_p.shake, 0.15f);
-#endif
     }
     // Death vocalisation + fatality stinger only for organic enemies — robots
     // (mech) get the explosion as their "death sound" instead.
@@ -1875,7 +1855,6 @@ static void KillEnemy(int i) {
         SetSoundVolume(g_sFirstBloodWave, 1.5f);
         PlaySound(g_sFirstBloodWave);
         g_firstKillThisWave = true;
-#ifdef IRONFIST_V2
         // First-blood-of-wave bonus particles at the kill site — a brief
         // gold-red explosion ring on top of the regular kill effects.
         Vector3 fp = {e->pos.x, e->pos.y + 1.0f, e->pos.z};
@@ -1886,7 +1865,6 @@ static void KillEnemy(int i) {
             SpawnPart(fp, vv, (Color){255, 180, 80, 240},
                       0.6f + (float)rand()/RAND_MAX*0.4f, 0.10f, true);
         }
-#endif
     }
     // "One left" stinger — fires the frame the kill takes Alive() from 2 to 1,
     // i.e. one chef remains in this wave. Boss phase always has Alive()==1
@@ -2027,7 +2005,6 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             float ang = (float)rand()/RAND_MAX * 6.28f;
             ne->pd = (Vector3){sinf(ang), 0, cosf(ang)};
             ne->stateT = 1.f + (float)rand()/RAND_MAX * 2.f;
-#ifdef IRONFIST_V2
             // Boss-spawn dramatic intro: hard camera shake, ground-shake
             // dust ring at the spawn point, and a 90ms hit-stop so the
             // entrance reads as cinematic. The boss is hunting you the
@@ -2049,7 +2026,6 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             // Big bright flash at the spawn for one frame
             SpawnPart(bsp, (Vector3){0, 1.0f, 0}, (Color){255, 200, 100, 255},
                       0.18f, 0.55f, false);
-#endif
             return;
         }
         // Boss just died — bump wave and kick off the next chef round
@@ -2062,7 +2038,6 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
         }
         char wbuf[64]; snprintf(wbuf,64,"-- WAVE %d INCOMING --",g_wave);
         Msg(wbuf);
-#ifdef IRONFIST_V2
         // Wave-start punch: hard shake + gold celebration ring spawning
         // around the player so the wave transition reads as triumphant.
         g_p.shake = fmaxf(g_p.shake, 0.55f);
@@ -2086,7 +2061,6 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
             SpawnPart(pp, vv, (Color){255, 220, 80, 240},
                       0.8f + (float)rand()/RAND_MAX*0.4f, 0.10f, true);
         }
-#endif
         // Refresh one of each power-up at a random open cell so a long run
         // always has a quad or speed to chase.
         SpawnPowerupRandom(5);
@@ -2154,7 +2128,6 @@ static void DmgEnemy(int i, float d) {
     // High-score stat: count damage that landed on a live target. Cap at
     // remaining HP so overkill doesn't inflate the number.
     g_statDamage += (d > e->hp) ? e->hp : d;
-#ifdef IRONFIST_V2
     float prevHp = e->hp;
     e->hp-=d; e->flashT=0.22f; e->state=ES_CHASE;
     extern float g_v2HitMarker;
@@ -2184,9 +2157,6 @@ static void DmgEnemy(int i, float d) {
             SpawnPart(fp, vv, (Color){255, 220, 80, 255}, 0.40f, 0.07f, true);
         }
     }
-#else
-    e->hp-=d; e->flashT=0.12f; e->state=ES_CHASE;
-#endif
     if (e->hp<=0) KillEnemy(i);
 }
 
@@ -2301,14 +2271,12 @@ static void UpdEnemies(float dt) {
         // never fires, melee chef never damages).
         if (dist<e->alertR && e->state==ES_PATROL) {
             e->state=ES_CHASE;
-#ifdef IRONFIST_V2
             // Spotted-you marker — single bright red particle spawned at the
             // enemy's head height on the frame they transition from PATROL
             // to CHASE. Reads as a "!" exclamation moment.
             Vector3 ap = {e->pos.x, e->pos.y + 1.8f, e->pos.z};
             SpawnPart(ap, (Vector3){0, 1.5f, 0}, (Color){255, 60, 60, 255},
                       0.40f, 0.18f, false);
-#endif
         }
         e->cd-=dt; e->stateT-=dt; e->legT+=dt*e->speed*2.8f;
         if (e->state==ES_PATROL) {
@@ -2597,7 +2565,6 @@ static void UpdEnemies(float dt) {
 }
 
 static void DrawEnemies(Camera3D cam) {
-#ifdef IRONFIST_V2
     // Last-enemy highlight: when only one chef-tier enemy remains in the
     // wave (boss interlude excluded), pulse a yellow ball over their head
     // so they don't get lost in scenery.
@@ -2630,7 +2597,6 @@ static void DrawEnemies(Camera3D cam) {
         DrawCircle3D(fp, 1.6f * pulse, (Vector3){1,0,0}, 90.f, (Color){255, 40, 40, 200});
         DrawCircle3D(fp, 1.3f * pulse, (Vector3){1,0,0}, 90.f, (Color){255, 80, 60, 160});
     }
-#endif
     // Sort enemies by distance to camera (far first) so billboards blend correctly.
     // Without back-to-front, a live enemy drawn before a closer live enemy gets clipped
     // by the closer one's depth writes on transparent pixels.
@@ -3309,7 +3275,6 @@ static void DestroyLamp(int idx) {
                   0.6f + (float)rand()/RAND_MAX * 0.5f,
                   0.04f + (float)rand()/RAND_MAX * 0.04f, true);
     }
-#ifdef IRONFIST_V2
     // Lamp shatter bonus: 12 bright electric sparks fan out from the
     // lamp position, giving the destroy-the-lights moment more punch.
     for (int i = 0; i < 12; i++) {
@@ -3319,7 +3284,6 @@ static void DestroyLamp(int idx) {
         SpawnPart(p, vv, (Color){255, 240, 200, 255},
                   0.20f + (float)rand()/RAND_MAX*0.15f, 0.05f, true);
     }
-#endif
 }
 
 // Detonate a flaming barrel: 5m splash to enemies and player, chains to
@@ -3461,7 +3425,6 @@ static void UpdBullets(float dt) {
     }
 }
 static void DrawBullets(void) {
-#ifdef IRONFIST_V2
     // Single Begin/End BlendMode wrap around ALL bullets — every per-bullet
     // toggle was forcing a batch flush, so MG fire could fire dozens of
     // flushes per frame. One pair => one flush.
@@ -3485,13 +3448,6 @@ static void DrawBullets(void) {
         Bullet *b=&g_b[i]; if (!b->active || !b->rocket) continue;
         SpawnPart(b->pos,(Vector3){((float)rand()/RAND_MAX-.5f)*.4f,0,((float)rand()/RAND_MAX-.5f)*.4f},(Color){255,120,0,200},0.22f,0.08f,false);
     }
-#else
-    for (int i=0;i<MAX_BULLETS;i++) {
-        Bullet *b=&g_b[i]; if (!b->active) continue;
-        DrawSphere(b->pos,b->rocket?0.14f:0.05f,b->rocket?ORANGE:YELLOW);
-        if (b->rocket) SpawnPart(b->pos,(Vector3){((float)rand()/RAND_MAX-.5f)*.4f,0,((float)rand()/RAND_MAX-.5f)*.4f},(Color){255,120,0,200},0.22f,0.08f,false);
-    }
-#endif
 }
 
 // Multi-kill announcement — picks the right tier and plays it.
@@ -3505,17 +3461,14 @@ static void TriggerMultiKill(void) {
         strncpy(g_hypeMsg, "MONSTER KILL!!", 79); g_hypeMsg[79] = 0;
         g_hypeDur = 3.0f;
         g_hypeT   = g_hypeDur;
-#ifdef IRONFIST_V2
         // 0.4s of 0.4x time so the world crawls while the announcer crows.
         extern float g_v2SlowMo;
         g_v2SlowMo = 0.4f;
-#endif
     } else if (g_killsThisShot >= 2 && g_sMultiOK) {
         SetSoundVolume(g_sMulti, 8.0f);
         PlaySound(g_sMulti);
         Msg("MULTI KILL!");
     }
-#ifdef IRONFIST_V2
     // Multi-kill bonus burst — for any 2+ kills, spawn a bright ring of
     // gold particles around the player so chains visually pay out.
     if (g_killsThisShot >= 2) {
@@ -3531,7 +3484,6 @@ static void TriggerMultiKill(void) {
             SpawnPart(pp, vv, c, 0.7f + (float)rand()/RAND_MAX*0.3f, 0.10f, true);
         }
     }
-#endif
 }
 
 // ── TESLA BOLTS ──────────────────────────────────────────────────────────────
@@ -3787,11 +3739,7 @@ static void Shoot(void) {
     if (g_needMouseRelease) return;  // swallow held click from menu/death screen
     if (g_p.shootCD>0) return;
     int w=g_p.weapon;
-#ifdef IRONFIST_V2
 #define V2_DRYFIRE_KICK() do { g_p.shake = fmaxf(g_p.shake, 0.08f); g_p.kickAnim = fmaxf(g_p.kickAnim, 0.05f); } while (0)
-#else
-#define V2_DRYFIRE_KICK() do {} while (0)
-#endif
     if (w==0&&g_p.shells<=0){PlaySound(g_sEmpty);V2_DRYFIRE_KICK();return;}
     if (w==1&&g_p.mgAmmo<=0){PlaySound(g_sEmpty);V2_DRYFIRE_KICK();return;}
     if (w==2&&g_p.rockets<=0){PlaySound(g_sEmpty);V2_DRYFIRE_KICK();return;}
@@ -3924,7 +3872,6 @@ static void Shoot(void) {
             if (headshot && p==0) {
                 Msg("HEADSHOT!");
                 if (g_sHeadshotOK) { SetSoundVolume(g_sHeadshot, 1.5f); PlaySound(g_sHeadshot); }
-#ifdef IRONFIST_V2
                 // Headshot VFX: bright gold pop + 14 outward sparks at the
                 // hit point, distinct from the regular blood-red impact so
                 // a headshot reads as visually special.
@@ -3938,7 +3885,6 @@ static void Shoot(void) {
                               0.30f + (float)rand()/RAND_MAX * 0.20f,
                               0.07f, true);
                 }
-#endif
             }
         }
         else if (barrelHit >= 0) {
@@ -4412,16 +4358,13 @@ static void UpdPlayer(float dt, Camera3D *cam) {
     if (IsKeyPressed(KEY_SPACE)&&g_p.onGround){g_p.velY=JUMP;g_p.onGround=false;}
     g_p.velY+=GRAV*dt; g_p.pos.y+=g_p.velY*dt;
     float ground = PlatGroundAt(g_p.pos.x, g_p.pos.z, g_p.pos.y);
-#ifdef IRONFIST_V2
     bool _v2WasAir = !g_p.onGround;
     float _v2VelY  = g_p.velY;
-#endif
     if (g_p.pos.y <= ground) {
         g_p.pos.y = ground; g_p.velY = 0; g_p.onGround = true;
     } else {
         g_p.onGround = false;
     }
-#ifdef IRONFIST_V2
     // Landing kick: airborne -> grounded with significant downward velocity
     // pulses shake proportional to fall speed. Tiny dust burst at the feet
     // sells the impact when landing from a real height.
@@ -4438,28 +4381,19 @@ static void UpdPlayer(float dt, Camera3D *cam) {
                       0.35f + (float)rand()/RAND_MAX * 0.25f, 0.07f, false);
         }
     }
-#endif
 
     // weapon switch
     if (IsKeyPressed(KEY_ONE)  &&g_p.weapon!=0){g_p.weapon=0;g_p.switchAnim=0.3f;
-#ifdef IRONFIST_V2
 g_v2WeapSwitchFlash = 0.20f;
-#endif
 }
     if (IsKeyPressed(KEY_TWO)  &&g_p.weapon!=1){g_p.weapon=1;g_p.switchAnim=0.3f;
-#ifdef IRONFIST_V2
 g_v2WeapSwitchFlash = 0.20f;
-#endif
 }
     if (IsKeyPressed(KEY_THREE)&&g_p.weapon!=2){g_p.weapon=2;g_p.switchAnim=0.3f;
-#ifdef IRONFIST_V2
 g_v2WeapSwitchFlash = 0.20f;
-#endif
 }
     if (IsKeyPressed(KEY_FOUR) &&g_p.hasTesla&&g_p.weapon!=3){g_p.weapon=3;g_p.switchAnim=0.3f;
-#ifdef IRONFIST_V2
 g_v2WeapSwitchFlash = 0.20f;
-#endif
 }
     // Tesla pending shot is bound to weapon 3 — switching cancels the bolt
     // AND kills any leftover buzz so the sample doesn't trail across weapons.
@@ -4496,13 +4430,10 @@ g_v2WeapSwitchFlash = 0.20f;
     if (g_p.kickAnim>0)  g_p.kickAnim=fmaxf(0,g_p.kickAnim-dt*6.f);
     if (g_p.hurtFlash>0) {
         g_p.hurtFlash-=dt;
-#ifdef IRONFIST_V2
         // Pump shake while the hurt vignette is active so getting shot
         // jolts the camera for the full pulse, not just the impact frame.
         g_p.shake = fmaxf(g_p.shake, g_p.hurtFlash * 1.4f);
-#endif
     }
-#ifdef IRONFIST_V2
     // Detect rising-edge of hurtFlash to stamp the last-damaged time. Used
     // by the kill code to decide whether a kill counts as a "quick-kill"
     // (kill within 0.5s of taking damage).
@@ -4511,10 +4442,8 @@ g_v2WeapSwitchFlash = 0.20f;
         if (g_p.hurtFlash > v2_prevHurt + 0.02f) g_v2LastDamageT = (float)GetTime();
         v2_prevHurt = g_p.hurtFlash;
     }
-#endif
     if (g_p.switchAnim>0)g_p.switchAnim=fmaxf(0,g_p.switchAnim-dt*5.f);
     if (g_p.shake>0)     g_p.shake=fmaxf(0,g_p.shake-dt*4.f);
-#ifdef IRONFIST_V2
     // Critical HP shake — at very low HP (<15%), apply a small constant
     // floor shake so the camera trembles even when not being hit. Scales
     // up linearly as HP drops further.
@@ -4522,10 +4451,8 @@ g_v2WeapSwitchFlash = 0.20f;
         float danger = 1.f - (g_p.hp / (g_p.maxHp * 0.15f));
         g_p.shake = fmaxf(g_p.shake, danger * 0.10f);
     }
-#endif
     if (g_msgT>0)        g_msgT-=dt;
     if (g_hypeT>0)       g_hypeT-=dt;
-#ifdef IRONFIST_V2
     {
         // Power-down notifications: fire Msg() on the frame the buff
         // transitions from active to expired so the player knows the
@@ -4537,14 +4464,12 @@ g_v2WeapSwitchFlash = 0.20f;
         v2_prevQuad  = g_p.quadT;
         v2_prevHaste = g_p.hasteT;
     }
-#endif
     if (g_p.quadT>0)     g_p.quadT  = fmaxf(0.f, g_p.quadT  - dt);
     if (g_p.hasteT>0)    g_p.hasteT = fmaxf(0.f, g_p.hasteT - dt);
     if (g_p.quadT  <= 0.f) g_p.quadPeak  = 0.f;  // reset so next pickup starts full
     if (g_p.hasteT <= 0.f) g_p.hastePeak = 0.f;
     bool moving=(mlen>0)&&g_p.onGround;
     if (moving) g_p.bobT+=dt*(sprint?10.f:7.f);
-#ifdef IRONFIST_V2
     // Footstep dust — fire 2 small dust particles each time bobT crosses
     // a footfall (sin going negative -> positive). Sprint footsteps are
     // bigger and faster (sells the speed). No-op when stationary or
@@ -4580,7 +4505,6 @@ g_v2WeapSwitchFlash = 0.20f;
                       0.30f + (float)rand()/RAND_MAX * 0.20f, 0.07f, false);
         }
     }
-#endif
 
     // fade muzzle flash light
     if (g_lights[MUZZLE_LIGHT].enabled) {
@@ -4602,7 +4526,6 @@ g_v2WeapSwitchFlash = 0.20f;
     float pc=cosf(g_p.pitch),ps=sinf(g_p.pitch);
     float yw=g_p.yaw+3.14159f;
     cam->target=(Vector3){cam->position.x+sinf(yw)*pc,cam->position.y+ps,cam->position.z+cosf(yw)*pc};
-#ifdef IRONFIST_V2
     // Camera roll: lean into strafe direction + small oscillating jolt while
     // the hurt vignette is active. strafe is the signed strafe component of
     // the input move vector (+1 = right/D, -1 = left/A). Up vector rotated
@@ -4613,9 +4536,6 @@ g_v2WeapSwitchFlash = 0.20f;
     float roll     = rollS + rollD;
     float sr = sinf(roll), cr = cosf(roll);
     cam->up = (Vector3){ -cy * sr, cr, sy * sr };
-#else
-    cam->up=(Vector3){0,1,0};
-#endif
     // update shader viewPos
     SetShaderValue(g_shader,u_viewPos,&cam->position,SHADER_UNIFORM_VEC3);
     // flicker scene lights
@@ -4681,24 +4601,11 @@ static void InitGame(void) {
     float prevYaw = g_p.yaw;
     bool  hadYaw  = (prevYaw != 0.f);
     memset(&g_p,0,sizeof(g_p));
-#ifdef IRONFIST_V2
     extern Vector3 g_playerStart;
     extern float   g_playerStartYaw;
     g_p.pos = g_playerStart;
     g_p.yaw = g_playerStartYaw;
     (void)prevYaw; (void)hadYaw;
-#else
-    g_p.pos=(Vector3){1.5f*CELL,0,1.5f*CELL};
-    if (hadYaw) {
-        g_p.yaw = prevYaw;
-    } else {
-        // Forward direction in this engine is (sin(yaw+π), cos(yaw+π)),
-        // so to face the map centre at (60, 40) from spawn (6, 6) we need
-        // atan2(-(centerX - px), -(centerZ - pz)) — naive atan2 of the
-        // centre delta points the player AWAY from the action.
-        g_p.yaw = atan2f(g_p.pos.x - 60.f, g_p.pos.z - 40.f);
-    }
-#endif
     g_p.hp=g_p.maxHp=100; g_p.shells=32; g_p.rockets=8; g_p.mgAmmo=120; g_p.cells=0; g_p.weapon=0;
     g_p.hasTesla=false;
     g_wave=1; g_ec=0; g_pkc=0;
@@ -5650,7 +5557,6 @@ static void ConDraw(void) {
 
 static void StepFrame(void) {
     float dt=GetFrameTime(); if (dt>0.05f) dt=0.05f;
-#ifdef IRONFIST_V2
     // Hit-stop: while g_v2HitStop is active, scale game dt to 0 so the
     // world freezes mid-action for a few frames. Real-time dt still
     // counts down the stop and feeds particle/UI animations that need
@@ -5698,7 +5604,6 @@ static void StepFrame(void) {
         g_v2_pops[sp].pos.y += realDt * 1.2f;
         if (g_v2_pops[sp].life <= 0.f) g_v2_pops[sp].active = false;
     }
-#endif
     DebugLogTick();
     // F8 — toggle the sprite browser (debug). When active, swallows the
     // entire frame and renders the single-sprite viewer instead of the game.
@@ -6059,11 +5964,7 @@ static void StepFrame(void) {
         }
     }
 
-#ifdef IRONFIST_V2
     PostFxBeginCapture();
-#else
-    BeginDrawing();
-#endif
     ClearBackground((Color){4,3,6,255});
 
     if (g_gs==GS_PLAY||g_gs==GS_DEAD) {
@@ -6124,7 +6025,6 @@ static void StepFrame(void) {
         DrawCeilingLights(g_cam);
         DrawWeapon3D(g_cam);
         EndMode3D();
-#ifdef IRONFIST_V2
         // Score popups — float over enemies that just died. World-pos -> screen
         // via GetWorldToScreen, with rise + alpha fade tied to the popup's
         // remaining life. Rendered after EndMode3D so DrawText hits 2D space.
@@ -6138,7 +6038,6 @@ static void StepFrame(void) {
             DrawText(pb, (int)sc.x - MeasureText(pb, fs)/2 + 2, (int)sc.y + 2, fs, (Color){0,0,0,a});
             DrawText(pb, (int)sc.x - MeasureText(pb, fs)/2,     (int)sc.y,     fs, (Color){255,230,120,a});
         }
-#endif
         DrawSpriteWeapon();
         DrawHUD();
         // Rear-warning arc indicator — red arrow at the bottom of the
@@ -6493,11 +6392,7 @@ static void StepFrame(void) {
     // Dev console panel goes ON TOP of the HUD so it's always readable.
     // Draw while open OR while the close animation is still playing out.
     if (g_conOpen || g_conAnim > 0.f) ConDraw();
-#ifdef IRONFIST_V2
     PostFxEndCapture();
-#else
-    EndDrawing();
-#endif
 }
 
 // ── MAIN ─────────────────────────────────────────────────────────────────────
@@ -7319,9 +7214,7 @@ int main(int argc, char **argv) {
 
     g_gs=GS_MENU;
 
-#ifdef IRONFIST_V2
     PostFxInit(GetScreenWidth(), GetScreenHeight());
-#endif
 
 #ifdef __EMSCRIPTEN__
     // Browser main loop: hand control back to the runtime after each frame so

@@ -90,7 +90,6 @@ void ShutdownHUD(void) {
 // All globals are read-only — the HUD never mutates game state.
 void DrawHUD(void) {
     int sw=GetScreenWidth(), sh=GetScreenHeight();
-#ifdef IRONFIST_V2
     // Boss low-HP rage tint: when any boss-tier enemy (chef boss / cyber
     // demon / spider mastermind) is below 25% HP, slow deep-red pulse on
     // top + bottom edges so the kill moment feels imminent.
@@ -313,9 +312,7 @@ void DrawHUD(void) {
         DrawRectangleGradientH(0, 0,           side, sh, flashS, clear);
         DrawRectangleGradientH(sw - side, 0,   side, sh, clear,  flashS);
     }
-#endif
     if (g_p.hurtFlash>0) {
-#ifdef IRONFIST_V2
         // Edge-vignette pulse: 4 gradient strips fade from blood-red at the
         // screen edges to transparent toward the centre. Reads as a damage
         // pulse rather than a screen-fill blackout.
@@ -330,10 +327,6 @@ void DrawHUD(void) {
         DrawRectangleGradientV(0, sh - vband,    sw, vband, clear, edge);
         DrawRectangleGradientH(0, 0,             hband, sh, edge,  clear);
         DrawRectangleGradientH(sw - hband, 0,    hband, sh, clear, edge);
-#else
-        int a=(int)(g_p.hurtFlash/0.22f*180);
-        DrawRectangle(0,0,sw,sh,(Color){200,0,0,(unsigned char)a});
-#endif
     }
     for (int y=0;y<sh;y+=3) DrawLine(0,y,sw,y,(Color){0,0,0,18});
     int cx=sw/2,cy=sh/2;
@@ -343,7 +336,6 @@ void DrawHUD(void) {
     } else if (wpn>=0 && wpn<4 && g_xhair[wpn].id) {
         Texture2D xh = g_xhair[wpn];
         float xsc = 1.2f;
-#ifdef IRONFIST_V2
         // Crosshair tinted by current weapon, plus a brief size-flare
         // pulse on hit confirm (g_v2HitMarker).
         Color xCol = (wpn == 0) ? (Color){255, 220, 130, 255}   // shotgun warm
@@ -354,17 +346,12 @@ void DrawHUD(void) {
             xsc *= 1.f + (g_v2HitMarker / 0.10f) * 0.45f;
             xCol = (Color){255, 80, 80, 255};  // red tint while hit-flaring
         }
-#endif
         float xw = xh.width*xsc, xh2 = xh.height*xsc;
         DrawTexturePro(xh,
             (Rectangle){0,0,(float)xh.width,(float)xh.height},
             (Rectangle){cx-xw/2, cy-xh2/2, xw, xh2},
             (Vector2){0,0}, 0.f,
-#ifdef IRONFIST_V2
             xCol);
-#else
-            WHITE);
-#endif
     } else {
         DrawRectangle(cx-14,cy-1,10,2,WHITE); DrawRectangle(cx+4,cy-1,10,2,WHITE);
         DrawRectangle(cx-1,cy-14,2,10,WHITE); DrawRectangle(cx-1,cy+4,2,10,WHITE);
@@ -375,7 +362,6 @@ void DrawHUD(void) {
     Color hcol=hp>0.5f?(Color){50,220,50,255}:hp>0.25f?(Color){220,180,0,255}:(Color){220,30,30,255};
     DrawText("HP",20,sh-56,12,(Color){180,180,180,255});
     DrawRectangle(20,sh-40,200,18,(Color){30,0,0,200});
-#ifdef IRONFIST_V2
     // Damage-delay ghost bar — yellow outline-bar lerps from previous HP
     // to current HP at a fixed rate. Gives an immediate visual readout of
     // "how much damage just happened" before the green bar finishes
@@ -386,11 +372,9 @@ void DrawHUD(void) {
     if (v2_ghostHp > hp) {
         DrawRectangle(21, sh-39, (int)(198 * v2_ghostHp), 16, (Color){220, 200, 80, 220});
     }
-#endif
     DrawRectangle(21,sh-39,(int)(198*hp),16,hcol);
     DrawRectangle(20,sh-40,200,18,(Color){80,80,80,80});
     char hpBuf[16]; snprintf(hpBuf,16,"%d",(int)g_p.hp);
-#ifdef IRONFIST_V2
     // HP number flashes to white-red on damage and to white-green on heal,
     // so the running total registers visually on every change.
     Color hpDispCol = hcol;
@@ -413,16 +397,12 @@ void DrawHUD(void) {
         };
     }
     DrawText(hpBuf,228,sh-43,18,hpDispCol);
-#else
-    DrawText(hpBuf,228,sh-43,18,hcol);
-#endif
     char aBuf[16];
     if      (g_p.weapon==0) snprintf(aBuf,16,"%d",g_p.shells);
     else if (g_p.weapon==1) snprintf(aBuf,16,"%d",g_p.mgAmmo);
     else if (g_p.weapon==2) snprintf(aBuf,16,"%d",g_p.rockets);
     else                    snprintf(aBuf,16,"%d",g_p.cells);
     DrawText(WPN[g_p.weapon],sw-220,sh-58,13,SKYBLUE);
-#ifdef IRONFIST_V2
     // Low-ammo pulse — when the active weapon's ammo drops under a tier,
     // the ammo number pulses red-orange so you notice you're running out.
     int lowThresh = (g_p.weapon == 0) ? 8 :
@@ -439,9 +419,6 @@ void DrawHUD(void) {
         aCol = (Color){255, (unsigned char)(80 + 90 * (1.f - pulse)), 50, 255};
     }
     DrawText(aBuf,sw-220,sh-46,36,aCol);
-#else
-    DrawText(aBuf,sw-220,sh-46,36,YELLOW);
-#endif
 
     if (g_mugshotOK) {
         static int   look       = 1;
@@ -476,7 +453,6 @@ void DrawHUD(void) {
     }
 
     char sc[48]; snprintf(sc,48,"SCORE %d",g_p.score);
-#ifdef IRONFIST_V2
     // SCORE number flashes gold for ~250ms on each score increase, so the
     // number registers as "earned" rather than silently ticking up.
     static int  v2_lastScore = 0;
@@ -492,11 +468,7 @@ void DrawHUD(void) {
     Color scCol = (v2_scoreFlash > 0.f) ? (Color){255, 220, 80, 255} : baseCol;
     int   scSize = 18 + (v2_scoreFlash > 0.f ? (int)(v2_scoreFlash / 0.25f * 4.f) : 0);
     DrawText(sc, sw - MeasureText(sc, scSize) - 170, 10, scSize, scCol);
-#else
-    DrawText(sc,sw-MeasureText(sc,18)-170,10,18,WHITE);
-#endif
     char wv[24]; snprintf(wv,24,"WAVE %d",g_wave);
-#ifdef IRONFIST_V2
     // WAVE counter pulses gold for ~1s on increment so the wave change
     // doesn't go unnoticed when the screen is busy.
     static int  v2_lastWave = 1;
@@ -507,10 +479,6 @@ void DrawHUD(void) {
     Color wvCol = (v2_waveFlash > 0.f) ? (Color){255, 230, 80, 255} : (Color){255,160,40,255};
     int   wvSize = 18 + (v2_waveFlash > 0.f ? (int)(v2_waveFlash * 6.f) : 0);
     DrawText(wv, 12, 10, wvSize, wvCol);
-#else
-    DrawText(wv,12,10,18,(Color){255,160,40,255});
-#endif
-#ifdef IRONFIST_V2
     {
         // Wave timer — small "T 1:24" in top-left under the WAVE counter.
         extern float g_v2WaveTimer;
@@ -519,11 +487,9 @@ void DrawHUD(void) {
         char tb[16]; snprintf(tb, sizeof(tb), "T %d:%02d", mins, secs);
         DrawText(tb, 12, 32, 13, (Color){180, 180, 180, 200});
     }
-#endif
     // Wave-low countdown — when enemies are dwindling (5..1) and we're not
     // in boss interlude, show a big "5 LEFT" / "1 LEFT" centered upper
     // screen so the player can hunt them down.
-#ifdef IRONFIST_V2
     {
         int al = Alive();
         if (al > 0 && al <= 5) {
@@ -537,7 +503,6 @@ void DrawHUD(void) {
             DrawText(lb, sw/2 - tw2/2,     64,     fs, lc);
         }
     }
-#endif
     char en[32]; snprintf(en,32,"ENEMIES: %d",Alive());
     DrawText(en,12,32,14,(Color){200,60,60,255});
     {

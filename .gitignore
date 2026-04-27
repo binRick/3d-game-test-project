@@ -5,6 +5,8 @@ game
 WolfenDoom-master/
 game-sounds-main/
 dist-win/
+dist-web/
+dist-release/
 vendor/
 boss1/
 game-sounds-main/
