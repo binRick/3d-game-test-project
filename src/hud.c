@@ -91,6 +91,46 @@ void ShutdownHUD(void) {
 void DrawHUD(void) {
     int sw=GetScreenWidth(), sh=GetScreenHeight();
 #ifdef IRONFIST_V2
+    // Powerup active overlay: while QUAD or SPEED is running, pulse a
+    // tinted halo at the screen edges so you can see at a glance you're
+    // powered up. QUAD = magenta on the side edges; SPEED = cyan on the
+    // top/bottom edges. They stack visually if both are active.
+    if (g_p.quadT > 0.f || g_p.hasteT > 0.f) {
+        float pulse = 0.6f + 0.3f * sinf((float)GetTime() * 4.f);
+        if (g_p.quadT > 0.f) {
+            unsigned char a = (unsigned char)(75 * pulse);
+            Color edge  = {220, 50, 220, a};
+            Color clear = {220, 50, 220, 0};
+            int band = sw / 8;
+            DrawRectangleGradientH(0,           0, band, sh, edge,  clear);
+            DrawRectangleGradientH(sw - band,   0, band, sh, clear, edge);
+        }
+        if (g_p.hasteT > 0.f) {
+            unsigned char a = (unsigned char)(70 * pulse);
+            Color edge  = {40, 210, 255, a};
+            Color clear = {40, 210, 255, 0};
+            int band = sh / 8;
+            DrawRectangleGradientV(0, 0,           sw, band, edge,  clear);
+            DrawRectangleGradientV(0, sh - band,   sw, band, clear, edge);
+        }
+    }
+    // Low-health danger pulse: slow red breathing on the screen edges when
+    // HP is critical (< 25%). Pulse rate and brightness ramp as HP drops
+    // further so the screen feels more frantic the closer you are to dying.
+    if (g_p.hp > 0.f && g_p.hp < g_p.maxHp * 0.25f) {
+        float danger = 1.f - (g_p.hp / (g_p.maxHp * 0.25f));
+        float rate   = 2.5f + danger * 4.0f;
+        float pulse  = 0.5f + 0.5f * sinf((float)GetTime() * rate);
+        unsigned char a = (unsigned char)(95 * pulse * (0.5f + danger * 0.5f));
+        Color edge  = {220, 0, 0, a};
+        Color clear = {220, 0, 0, 0};
+        int vband = sh / 5;
+        int hband = sw / 7;
+        DrawRectangleGradientV(0, 0,           sw, vband, edge,  clear);
+        DrawRectangleGradientV(0, sh - vband,  sw, vband, clear, edge);
+        DrawRectangleGradientH(0, 0,           hband, sh,  edge,  clear);
+        DrawRectangleGradientH(sw - hband, 0,  hband, sh,  clear, edge);
+    }
     // Muzzle screen-flash: brief warm yellow edge tint while kickAnim is
     // active (set by Shoot() to 0.18 and decaying). Strongest at top
     // (where the gun barrel is) and weaker around the other edges, so
