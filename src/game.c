@@ -638,6 +638,8 @@ static Sound    g_sMechRocket;  // mech rocket launch (sounds/mech-rocket.mp3)
 static bool     g_sMechRocketOK = false;
 static Sound    g_sMutAttack;   // mutant energy-ball fire (sounds/mutant-attack.mp3)
 static bool     g_sMutAttackOK = false;
+static Sound    g_sMutDie;      // mutant death scream (sounds/mutant-die.mp3)
+static bool     g_sMutDieOK = false;
 static Sound    g_sChefHit;     // chef melee inflicts damage on player (sounds/player-ouch.mp3)
 static bool     g_sChefHitOK = false;
 // chef-attack: zing/reveal cue when a chef-tier enemy enters ATTACK state
@@ -1848,14 +1850,20 @@ static void KillEnemy(int i) {
     // Death vocalisation + fatality stinger only for organic enemies — robots
     // (mech) get the explosion as their "death sound" instead.
     if (e->type != 6) {
-        int total = 1;  // g_sDie itself
-        for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) total++;
-        int pick = rand() % total;
-        if (pick == 0) PlaySound(g_sDie);
-        else {
-            int idx = 0;
-            for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) {
-                if (++idx == pick) { PlaySound(g_sDieAlt[i]); break; }
+        // Type-specific death vocalisations dispatch first; everything else
+        // falls through to the chef death pool.
+        if (e->type == 5 && g_sMutDieOK) {
+            PlaySound(g_sMutDie);
+        } else {
+            int total = 1;  // g_sDie itself
+            for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) total++;
+            int pick = rand() % total;
+            if (pick == 0) PlaySound(g_sDie);
+            else {
+                int idx = 0;
+                for (int i = 0; i < CHEF_DIE_ALT_COUNT; i++) if (g_sDieAltOK[i]) {
+                    if (++idx == pick) { PlaySound(g_sDieAlt[i]); break; }
+                }
             }
         }
         if (g_sFatalityOK && !g_lastHitHead) {
@@ -6566,6 +6574,10 @@ int main(int argc, char **argv) {
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mutant-attack.mp3", AppDir());
         g_sMutAttack = LoadSound(fp);
         g_sMutAttackOK = (g_sMutAttack.frameCount > 0);
+
+        snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/mutant-die.mp3", AppDir());
+        g_sMutDie = LoadSound(fp);
+        g_sMutDieOK = (g_sMutDie.frameCount > 0);
 
         snprintf(fp, sizeof(fp), "%s" RES_PREFIX "sounds/player-ouch.mp3", AppDir());
         g_sChefHit = LoadSound(fp);
