@@ -116,6 +116,14 @@ float g_v2PowerFlash = 0.f;   // full-screen tint after grabbing QUAD/SPEED/TESL
 float g_v2PowerFlashR = 0.f;  // tint colour for the above (0..1 each)
 float g_v2PowerFlashG = 0.f;
 float g_v2PowerFlashB = 0.f;
+float g_v2WeapSwitchFlash = 0.f;  // brief screen tint on weapon swap
+float g_v2LastDamageT = -999.f;   // last time the player took damage (for quick-kill bonus)
+float g_v2QuickKillT = 0.f;       // remaining time on the quick-kill flourish glow
+float g_v2ComboBreakT = 0.f;      // remaining display time for "x[N] LOST" banner
+int   g_v2ComboBreakN = 0;        // last combo size when it expired
+int   g_v2LastScoreMilestone = 0; // most recent triggered milestone (1000, 2500, 5000...)
+float g_v2WaveTimer  = 0.f;       // seconds elapsed in current wave
+int   g_v2KillsThisWave = 0;      // kill count for the current wave (for wave-clear stats)
 
 // Floating score popups — small "+25" text rises briefly above each kill
 // before fading. Pool of fixed slots; if full, the longest-lived expiring
@@ -1205,6 +1213,17 @@ static void Explode(Vector3 p) {
         SpawnPart(spawn, (Vector3){0, 0.01f, 0}, (Color){25, 18, 18, 200},
                   0.6f, 0.05f + (float)rand()/RAND_MAX*0.04f, false);
     }
+    // Ground-skim shockwave ring — 24 fast horizontal particles fanning
+    // out at floor level. Reads as the visible expansion of the blast
+    // wave away from ground zero.
+    Vector3 sw = {p.x, 0.20f, p.z};
+    for (int i = 0; i < 24; i++) {
+        float ang = (float)i / 24.f * 6.2832f;
+        float spd = 12.f + (float)rand()/RAND_MAX * 4.f;
+        Vector3 vv = { cosf(ang)*spd, 0.05f, sinf(ang)*spd };
+        SpawnPart(sw, vv, (Color){255, 180, 100, 220},
+                  0.30f, 0.10f, false);
+    }
 #endif
 }
 
@@ -1579,6 +1598,10 @@ static void DrawPicks(Camera3D cam) {
                 if (needed) {
                     halog *= 1.3f + 0.25f * sinf(t * 6.5f);
                 }
+                // Pickup ground shadow — flat dark ellipse on the floor under
+                // each pickup. Sells the verticality of the bob.
+                Vector3 shadow = {pk->pos.x, 0.02f, pk->pos.z};
+                DrawCircle3D(shadow, 0.32f, (Vector3){1,0,0}, 90.f, (Color){0, 0, 0, 100});
                 Vector3 hpos = {pk->pos.x, pk->pos.y - 0.32f, pk->pos.z};
                 DrawCircle3D(hpos, 0.55f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.55f));
                 DrawCircle3D(hpos, 0.40f*halog, (Vector3){1,0,0}, 90.f, Fade(halo, 0.40f));
@@ -1698,6 +1721,33 @@ static void KillEnemy(int i) {
     // so chains don't stack into a long pause; resets to 40ms on each death.
     extern float g_v2HitStop;
     if (g_v2HitStop < 0.04f) g_v2HitStop = 0.04f;
+    // Killing-blow extra shake — small camera kick on every kill so deaths
+    // register physically, on top of the existing gibs and hit-stop.
+    g_p.shake = fmaxf(g_p.shake, 0.18f);
+    g_v2KillsThisWave++;
+    // Quick-kill bonus — kills landed within 0.5s of taking damage trigger
+    // a brief golden ring around the kill site. Reads as a clutch payoff.
+    if ((float)GetTime() - g_v2LastDamageT < 0.5f) {
+        g_v2QuickKillT = 0.5f;
+        Vector3 qp = {e->pos.x, e->pos.y + 1.0f, e->pos.z};
+        for (int j = 0; j < 12; j++) {
+            float ang = (float)j / 12.f * 6.2832f;
+            float spd = 5.f + (float)rand()/RAND_MAX * 4.f;
+            Vector3 vv = {cosf(ang)*spd, 1.5f + (float)rand()/RAND_MAX*2.f, sinf(ang)*spd};
+            SpawnPart(qp, vv, (Color){255, 200, 60, 255}, 0.5f, 0.09f, true);
+        }
+    }
+    // Score milestone banner — fires once per 1000-point threshold crossed
+    // (max 100k captured so it doesn't loop on overflow).
+    {
+        int next = ((g_p.score + e->score) / 1000) * 1000;
+        if (next > g_v2LastScoreMilestone && next > 0 && next <= 100000) {
+            g_v2LastScoreMilestone = next;
+            char mb[48]; snprintf(mb, sizeof(mb), "%d POINTS!", next);
+            strncpy(g_hypeMsg, mb, 79); g_hypeMsg[79] = 0;
+            g_hypeDur = 1.6f; g_hypeT = g_hypeDur;
+        }
+    }
     // Combo chain: each kill within 1.5s of the previous extends the
     // window and increments the chain count. Drawn in HUD as "x2", "x3"...
     extern int   g_v2ComboCount;
@@ -2016,6 +2066,18 @@ else if (t == 12) ne->pos.y = 2.0f;  // pain elemental
         // Wave-start punch: hard shake + gold celebration ring spawning
         // around the player so the wave transition reads as triumphant.
         g_p.shake = fmaxf(g_p.shake, 0.55f);
+        // Wave-clear stats banner: time + kill count from the wave that
+        // just ended, before the new wave timer / kill counter resets.
+        {
+            int mins = (int)(g_v2WaveTimer / 60.f);
+            int secs = (int)g_v2WaveTimer % 60;
+            char sb[80]; snprintf(sb, sizeof(sb), "WAVE CLEAR  %d KILLS  %d:%02d",
+                                  g_v2KillsThisWave, mins, secs);
+            strncpy(g_hypeMsg, sb, 79); g_hypeMsg[79] = 0;
+            g_hypeDur = 2.5f; g_hypeT = g_hypeDur;
+        }
+        g_v2WaveTimer = 0.f;
+        g_v2KillsThisWave = 0;
         Vector3 pp = {g_p.pos.x, g_p.pos.y + 0.5f, g_p.pos.z};
         for (int j = 0; j < 24; j++) {
             float ang = (float)j / 24.f * 6.2832f;
@@ -2103,9 +2165,12 @@ static void DmgEnemy(int i, float d) {
     if (g_v2HitMarker < hm) g_v2HitMarker = hm;
     // Boss-hit weight: every landing shot on a boss tier (chef boss,
     // cyber demon, spider mastermind) adds a tiny camera kick so they
-    // feel thumpy to shoot.
+    // feel thumpy to shoot. Smaller shake on regular chef-tier hits so
+    // sustained MG fire on a heavy chef has a hint of weight too.
     if (e->type == 3 || e->type == 9 || e->type == 16) {
         g_p.shake = fmaxf(g_p.shake, 0.10f);
+    } else {
+        g_p.shake = fmaxf(g_p.shake, 0.025f);
     }
     // Coup-de-grace flourish — clean killing blow with significant overkill
     // (>60% of remaining HP) spawns 8 gold sparks before the regular
@@ -2532,6 +2597,40 @@ static void UpdEnemies(float dt) {
 }
 
 static void DrawEnemies(Camera3D cam) {
+#ifdef IRONFIST_V2
+    // Last-enemy highlight: when only one chef-tier enemy remains in the
+    // wave (boss interlude excluded), pulse a yellow ball over their head
+    // so they don't get lost in scenery.
+    if (!g_bossInterlude) {
+        int aliveCount = 0; int lastIdx = -1;
+        for (int i = 0; i < g_ec; i++) {
+            Enemy *le2 = &g_e[i];
+            if (!le2->active || le2->dying) continue;
+            if (le2->type == 3 || le2->type == 9 || le2->type == 16) continue;
+            aliveCount++;
+            lastIdx = i;
+        }
+        if (aliveCount == 1 && lastIdx >= 0) {
+            Enemy *le = &g_e[lastIdx];
+            float pulse = 0.6f + 0.4f * sinf((float)GetTime() * 5.f);
+            Vector3 hp = {le->pos.x, le->pos.y + 2.4f, le->pos.z};
+            DrawSphere(hp, 0.18f * pulse, (Color){255, 220, 80, 230});
+        }
+    }
+    // Boss low-HP rage ring — pulsing red ring at the feet of any boss-tier
+    // enemy below 25% HP, so the boss reads visibly as enraged on top of
+    // the existing edge-vignette pulse.
+    for (int i = 0; i < g_ec; i++) {
+        Enemy *be = &g_e[i];
+        if (!be->active || be->dying) continue;
+        if (be->type != 3 && be->type != 9 && be->type != 16) continue;
+        if (be->hp >= be->maxHp * 0.25f) continue;
+        float pulse = 0.7f + 0.3f * sinf((float)GetTime() * 6.f);
+        Vector3 fp = {be->pos.x, be->pos.y + 0.05f, be->pos.z};
+        DrawCircle3D(fp, 1.6f * pulse, (Vector3){1,0,0}, 90.f, (Color){255, 40, 40, 200});
+        DrawCircle3D(fp, 1.3f * pulse, (Vector3){1,0,0}, 90.f, (Color){255, 80, 60, 160});
+    }
+#endif
     // Sort enemies by distance to camera (far first) so billboards blend correctly.
     // Without back-to-front, a live enemy drawn before a closer live enemy gets clipped
     // by the closer one's depth writes on transparent pixels.
@@ -3210,6 +3309,17 @@ static void DestroyLamp(int idx) {
                   0.6f + (float)rand()/RAND_MAX * 0.5f,
                   0.04f + (float)rand()/RAND_MAX * 0.04f, true);
     }
+#ifdef IRONFIST_V2
+    // Lamp shatter bonus: 12 bright electric sparks fan out from the
+    // lamp position, giving the destroy-the-lights moment more punch.
+    for (int i = 0; i < 12; i++) {
+        float ang = (float)rand()/RAND_MAX * 6.2832f;
+        float spd = 6.f + (float)rand()/RAND_MAX * 6.f;
+        Vector3 vv = { cosf(ang)*spd, (float)rand()/RAND_MAX*4.f + 0.5f, sinf(ang)*spd };
+        SpawnPart(p, vv, (Color){255, 240, 200, 255},
+                  0.20f + (float)rand()/RAND_MAX*0.15f, 0.05f, true);
+    }
+#endif
 }
 
 // Detonate a flaming barrel: 5m splash to enemies and player, chains to
@@ -4331,10 +4441,26 @@ static void UpdPlayer(float dt, Camera3D *cam) {
 #endif
 
     // weapon switch
-    if (IsKeyPressed(KEY_ONE)  &&g_p.weapon!=0){g_p.weapon=0;g_p.switchAnim=0.3f;}
-    if (IsKeyPressed(KEY_TWO)  &&g_p.weapon!=1){g_p.weapon=1;g_p.switchAnim=0.3f;}
-    if (IsKeyPressed(KEY_THREE)&&g_p.weapon!=2){g_p.weapon=2;g_p.switchAnim=0.3f;}
-    if (IsKeyPressed(KEY_FOUR) &&g_p.hasTesla&&g_p.weapon!=3){g_p.weapon=3;g_p.switchAnim=0.3f;}
+    if (IsKeyPressed(KEY_ONE)  &&g_p.weapon!=0){g_p.weapon=0;g_p.switchAnim=0.3f;
+#ifdef IRONFIST_V2
+g_v2WeapSwitchFlash = 0.20f;
+#endif
+}
+    if (IsKeyPressed(KEY_TWO)  &&g_p.weapon!=1){g_p.weapon=1;g_p.switchAnim=0.3f;
+#ifdef IRONFIST_V2
+g_v2WeapSwitchFlash = 0.20f;
+#endif
+}
+    if (IsKeyPressed(KEY_THREE)&&g_p.weapon!=2){g_p.weapon=2;g_p.switchAnim=0.3f;
+#ifdef IRONFIST_V2
+g_v2WeapSwitchFlash = 0.20f;
+#endif
+}
+    if (IsKeyPressed(KEY_FOUR) &&g_p.hasTesla&&g_p.weapon!=3){g_p.weapon=3;g_p.switchAnim=0.3f;
+#ifdef IRONFIST_V2
+g_v2WeapSwitchFlash = 0.20f;
+#endif
+}
     // Tesla pending shot is bound to weapon 3 — switching cancels the bolt
     // AND kills any leftover buzz so the sample doesn't trail across weapons.
     if (g_p.weapon != 3) {
@@ -4376,6 +4502,16 @@ static void UpdPlayer(float dt, Camera3D *cam) {
         g_p.shake = fmaxf(g_p.shake, g_p.hurtFlash * 1.4f);
 #endif
     }
+#ifdef IRONFIST_V2
+    // Detect rising-edge of hurtFlash to stamp the last-damaged time. Used
+    // by the kill code to decide whether a kill counts as a "quick-kill"
+    // (kill within 0.5s of taking damage).
+    {
+        static float v2_prevHurt = 0.f;
+        if (g_p.hurtFlash > v2_prevHurt + 0.02f) g_v2LastDamageT = (float)GetTime();
+        v2_prevHurt = g_p.hurtFlash;
+    }
+#endif
     if (g_p.switchAnim>0)g_p.switchAnim=fmaxf(0,g_p.switchAnim-dt*5.f);
     if (g_p.shake>0)     g_p.shake=fmaxf(0,g_p.shake-dt*4.f);
 #ifdef IRONFIST_V2
@@ -5536,6 +5672,20 @@ static void StepFrame(void) {
     if (g_v2HealFlash > 0.f) g_v2HealFlash -= realDt;
     if (g_v2SlowMo    > 0.f) g_v2SlowMo    -= realDt;
     if (g_v2PowerFlash > 0.f) g_v2PowerFlash -= realDt;
+    g_v2WaveTimer += realDt;
+    if (g_v2WeapSwitchFlash > 0.f) g_v2WeapSwitchFlash -= realDt;
+    if (g_v2QuickKillT > 0.f) g_v2QuickKillT -= realDt;
+    if (g_v2ComboBreakT > 0.f) g_v2ComboBreakT -= realDt;
+    // When the combo expires (count drops to 0 from a non-zero), capture
+    // the size it died at for the "x[N] LOST" banner.
+    {
+        static int v2_prevCombo = 0;
+        if (v2_prevCombo >= 2 && g_v2ComboCount == 0) {
+            g_v2ComboBreakN = v2_prevCombo;
+            g_v2ComboBreakT = 1.0f;
+        }
+        v2_prevCombo = g_v2ComboCount;
+    }
     if (g_v2ComboT    > 0.f) {
         g_v2ComboT -= realDt;
         if (g_v2ComboT <= 0.f) g_v2ComboCount = 0;

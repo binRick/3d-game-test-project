@@ -158,6 +158,19 @@ void DrawHUD(void) {
         DrawRectangleGradientH(0, 0,           hband, sh,  edge,  clear);
         DrawRectangleGradientH(sw - hband, 0,  hband, sh,  clear, edge);
     }
+    // Weapon-switch flash — brief weapon-coloured tint when changing weapons.
+    {
+        extern float g_v2WeapSwitchFlash;
+        if (g_v2WeapSwitchFlash > 0.f) {
+            float t = g_v2WeapSwitchFlash / 0.20f; if (t > 1.f) t = 1.f;
+            unsigned char a = (unsigned char)(70 * t);
+            Color tint = (g_p.weapon == 0) ? (Color){255, 220, 130, a}
+                       : (g_p.weapon == 1) ? (Color){180, 220, 255, a}
+                       : (g_p.weapon == 2) ? (Color){255, 160,  80, a}
+                       :                     (Color){200, 130, 255, a};
+            DrawRectangle(0, 0, sw, sh, tint);
+        }
+    }
     // Powerup grab flash — full-screen colored tint for 0.4s when grabbing
     // QUAD (magenta) or SPEED (cyan). Decays linearly. Sells the moment.
     {
@@ -219,6 +232,65 @@ void DrawHUD(void) {
             // Drop shadow + main text
             DrawText(buf, tx + 3, ty + 3, fsize, (Color){0, 0, 0, alpha});
             DrawText(buf, tx,     ty,     fsize, tcol);
+            // Combo timer ring around crosshair: arc goes from full circle
+            // and shrinks toward 0 as the combo window depletes.
+            int cxc = sw/2, cyc = sh/2;
+            float frac = g_v2ComboT / 1.5f;
+            DrawCircleSector((Vector2){(float)cxc, (float)cyc}, 30,
+                             -90.f, -90.f + 360.f * frac, 24,
+                             Fade(tcol, 0.45f));
+        }
+    }
+    // Combo break banner — when the chain expires, briefly show "x[N] LOST"
+    // so dropped chains feel like a real loss.
+    {
+        extern float g_v2ComboBreakT;
+        extern int   g_v2ComboBreakN;
+        if (g_v2ComboBreakT > 0.f && g_v2ComboBreakN >= 2) {
+            char buf[24]; snprintf(buf, sizeof(buf), "x%d LOST", g_v2ComboBreakN);
+            int fs = 28;
+            int tw = MeasureText(buf, fs);
+            unsigned char a = (unsigned char)(220 * fminf(1.f, g_v2ComboBreakT));
+            DrawText(buf, sw - tw - 60 + 2, sh/3 + 80 + 2, fs, (Color){0,0,0,a});
+            DrawText(buf, sw - tw - 60,     sh/3 + 80,     fs, (Color){200, 80, 80, a});
+        }
+    }
+    // Powerup duration bars — slim cyan/magenta strips along the top of the
+    // screen showing remaining QUAD/SPEED time. Helpful at-a-glance.
+    if (g_p.quadT > 0.f || g_p.hasteT > 0.f) {
+        int barW = 180;
+        int barH = 4;
+        int x0   = (sw - barW) / 2;
+        int y    = 4;
+        if (g_p.quadT > 0.f) {
+            float frac = g_p.quadT / 60.f; if (frac > 1.f) frac = 1.f;
+            DrawRectangle(x0, y, barW, barH, (Color){40, 0, 40, 180});
+            DrawRectangle(x0, y, (int)(barW * frac), barH, (Color){220, 80, 220, 240});
+            y += barH + 2;
+        }
+        if (g_p.hasteT > 0.f) {
+            float frac = g_p.hasteT / 60.f; if (frac > 1.f) frac = 1.f;
+            DrawRectangle(x0, y, barW, barH, (Color){0, 30, 40, 180});
+            DrawRectangle(x0, y, (int)(barW * frac), barH, (Color){80, 220, 240, 240});
+        }
+    }
+    // No-ammo red X over the crosshair when current weapon is empty —
+    // immediate "you can't fire" feedback on top of the audio dry-fire kick.
+    {
+        int curAmmo = (g_p.weapon == 0) ? g_p.shells :
+                      (g_p.weapon == 1) ? g_p.mgAmmo :
+                      (g_p.weapon == 2) ? g_p.rockets :
+                                           g_p.cells;
+        if (curAmmo == 0) {
+            int xcx = sw/2, xcy = sh/2;
+            float pulse = 0.6f + 0.4f * sinf((float)GetTime() * 6.f);
+            unsigned char a = (unsigned char)(220 * pulse);
+            Color rc = {220, 60, 60, a};
+            DrawLineEx((Vector2){xcx-12, xcy-12}, (Vector2){xcx+12, xcy+12}, 3.f, rc);
+            DrawLineEx((Vector2){xcx+12, xcy-12}, (Vector2){xcx-12, xcy+12}, 3.f, rc);
+            int tw = MeasureText("OUT", 14);
+            DrawText("OUT", xcx - tw/2 + 1, xcy + 18 + 1, 14, (Color){0,0,0,a});
+            DrawText("OUT", xcx - tw/2,     xcy + 18,     14, rc);
         }
     }
     if (g_p.kickAnim > 0.f) {
@@ -412,7 +484,12 @@ void DrawHUD(void) {
     if (g_p.score > v2_lastScore) v2_scoreFlash = 0.25f;
     v2_lastScore = g_p.score;
     if (v2_scoreFlash > 0.f) v2_scoreFlash -= GetFrameTime();
-    Color scCol = (v2_scoreFlash > 0.f) ? (Color){255, 220, 80, 255} : WHITE;
+    // Score tier colours: white < 1k, gold < 5k, orange < 10k, red 10k+.
+    Color baseCol = (g_p.score >= 10000) ? (Color){255, 80, 60, 255}
+                  : (g_p.score >= 5000)  ? (Color){255, 160, 60, 255}
+                  : (g_p.score >= 1000)  ? (Color){255, 220, 80, 255}
+                  :                        WHITE;
+    Color scCol = (v2_scoreFlash > 0.f) ? (Color){255, 220, 80, 255} : baseCol;
     int   scSize = 18 + (v2_scoreFlash > 0.f ? (int)(v2_scoreFlash / 0.25f * 4.f) : 0);
     DrawText(sc, sw - MeasureText(sc, scSize) - 170, 10, scSize, scCol);
 #else
@@ -432,6 +509,34 @@ void DrawHUD(void) {
     DrawText(wv, 12, 10, wvSize, wvCol);
 #else
     DrawText(wv,12,10,18,(Color){255,160,40,255});
+#endif
+#ifdef IRONFIST_V2
+    {
+        // Wave timer — small "T 1:24" in top-left under the WAVE counter.
+        extern float g_v2WaveTimer;
+        int mins = (int)(g_v2WaveTimer / 60.f);
+        int secs = (int)g_v2WaveTimer % 60;
+        char tb[16]; snprintf(tb, sizeof(tb), "T %d:%02d", mins, secs);
+        DrawText(tb, 12, 32, 13, (Color){180, 180, 180, 200});
+    }
+#endif
+    // Wave-low countdown — when enemies are dwindling (5..1) and we're not
+    // in boss interlude, show a big "5 LEFT" / "1 LEFT" centered upper
+    // screen so the player can hunt them down.
+#ifdef IRONFIST_V2
+    {
+        int al = Alive();
+        if (al > 0 && al <= 5) {
+            char lb[24]; snprintf(lb, sizeof(lb), "%d LEFT", al);
+            int fs = (al == 1) ? 36 : 26;
+            int tw2 = MeasureText(lb, fs);
+            float pulse = 0.6f + 0.4f * sinf((float)GetTime() * 4.f);
+            Color lc = (al == 1) ? (Color){255, 100, 100, (unsigned char)(220*pulse)}
+                                 : (Color){255, 200, 100, (unsigned char)(200*pulse)};
+            DrawText(lb, sw/2 - tw2/2 + 2, 64 + 2, fs, (Color){0,0,0,(unsigned char)(220*pulse)});
+            DrawText(lb, sw/2 - tw2/2,     64,     fs, lc);
+        }
+    }
 #endif
     char en[32]; snprintf(en,32,"ENEMIES: %d",Alive());
     DrawText(en,12,32,14,(Color){200,60,60,255});
