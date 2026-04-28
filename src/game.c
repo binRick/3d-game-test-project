@@ -5325,26 +5325,90 @@ static int FindClosestRearEnemy(float range) {
     return best;
 }
 
-// ── AUDIO BROWSER (F9 from menu) ───────────────────────────────────────────
-// Lists every .mp3 in sounds/, plays the selected one as a streaming Music
-// (works for both long tracks and short SFX). Up/Down navigates; Enter or
-// Space toggles play/pause; L toggles loop; Esc/F9 closes.
+// ── AUDIO BROWSER (F9 anywhere, M from menu) ──────────────────────────────
+// 3-panel layout: gameplay-role categories on the left, files in the
+// selected category in the middle, now-playing on the right. Streaming
+// playback via raylib's Music API works for both long tracks and short
+// SFX without a separate code path.
+typedef struct {
+    const char *name;
+    const char *matches[10];  // basename substrings; first NULL terminates
+                              // a totally-empty list means "match every file"
+} AB_Category;
+
+static const AB_Category AB_CATS[] = {
+    { "All sounds",        { NULL } },
+    { "Music tracks",      { "hell-march", "soviet-march", "funeral-queen",
+                             "gb-stranger", "title-music", NULL } },
+    { "Chef death",        { "chef-die", NULL } },
+    { "Other enemy death", { "ss-die", "mutant-die", "alien-scream", NULL } },
+    { "Enemy attack",      { "chef-attack", "mutant-attack", "soldier-mg",
+                             "cyber-fire", "ss-fire", "mech-rocket",
+                             "chaingun", NULL } },
+    { "Player weapons",    { "shotgun", "mg-sound", "launcher", "rocket-hit",
+                             "tesla", NULL } },
+    { "Player damage",     { "player-hurt", "player-ouch", "player-ough",
+                             "low-health", NULL } },
+    { "Pickup / powerup",  { "health-pickup", "ammo-pickup", "powerup-grab",
+                             "speedup", "quad-ended", NULL } },
+    { "Announcer",         { "first-blood", "headshot", "fatality",
+                             "holy-shit", "monster-kill", "shotgun-kill",
+                             NULL } },
+    { "Wave / boss",       { "next-wave", "wave-advance", "boss-phase",
+                             "one-left", "scary-alert", "bombin-alert",
+                             "distant-enemy", NULL } },
+    { "Game / UI",         { "pause", "running", "idle-sigh", NULL } },
+};
+#define AB_CAT_COUNT (int)(sizeof(AB_CATS)/sizeof(AB_CATS[0]))
+
 static bool          g_abActive   = false;
 static FilePathList  g_abList;
 static bool          g_abHasList  = false;
-static int           g_abIdx      = 0;
-static float         g_abScroll   = 0.f;
+static int           g_abCat      = 0;
+static int           g_abIdx      = 0;       // index into g_abFiltered[]
+static float         g_abScrollC  = 0.f;     // category list scroll
+static float         g_abScrollF  = 0.f;     // file list scroll
 static Music         g_abMusic;
 static bool          g_abHasMusic = false;
 static bool          g_abLooping  = false;
 static bool          g_abPaused   = false;
+#define AB_FILTERED_MAX 256
+static int           g_abFiltered[AB_FILTERED_MAX];
+static int           g_abFilteredCount = 0;
+
+static const char *ABBasename(const char *p) {
+    const char *b = strrchr(p, '/');
+    return b ? b + 1 : p;
+}
+
+static bool ABCatMatches(int catIdx, const char *base) {
+    const AB_Category *cat = &AB_CATS[catIdx];
+    if (cat->matches[0] == NULL) return true;  // empty list = match all
+    for (int m = 0; m < 10 && cat->matches[m] != NULL; m++) {
+        if (strstr(base, cat->matches[m])) return true;
+    }
+    return false;
+}
+
+static void ABFilter(void) {
+    g_abFilteredCount = 0;
+    if (!g_abHasList) return;
+    for (int i = 0; i < (int)g_abList.count && g_abFilteredCount < AB_FILTERED_MAX; i++) {
+        if (ABCatMatches(g_abCat, ABBasename(g_abList.paths[i]))) {
+            g_abFiltered[g_abFilteredCount++] = i;
+        }
+    }
+    g_abIdx = 0;
+    g_abScrollF = 0.f;
+}
 
 static void ABLoadCurrent(void) {
     if (g_abHasMusic) { UnloadMusicStream(g_abMusic); g_abHasMusic = false; }
-    if (!g_abHasList || g_abList.count == 0) return;
-    if (g_abIdx < 0) g_abIdx = (int)g_abList.count - 1;
-    if (g_abIdx >= (int)g_abList.count) g_abIdx = 0;
-    g_abMusic = LoadMusicStream(g_abList.paths[g_abIdx]);
+    if (g_abFilteredCount == 0) return;
+    if (g_abIdx < 0) g_abIdx = g_abFilteredCount - 1;
+    if (g_abIdx >= g_abFilteredCount) g_abIdx = 0;
+    int actual = g_abFiltered[g_abIdx];
+    g_abMusic = LoadMusicStream(g_abList.paths[actual]);
     if (g_abMusic.frameCount > 0) {
         g_abMusic.looping = g_abLooping;
         SetMusicVolume(g_abMusic, 1.0f);
@@ -5361,8 +5425,9 @@ static void ABOpen(void) {
     snprintf(dir, sizeof(dir), "%s" RES_PREFIX "sounds", AppDir());
     g_abList = LoadDirectoryFilesEx(dir, ".mp3", false);
     g_abHasList = true;
-    g_abIdx = 0;
-    g_abScroll = 0.f;
+    if (g_abCat < 0 || g_abCat >= AB_CAT_COUNT) g_abCat = 0;
+    g_abScrollC = 0.f;
+    ABFilter();
     // Pause the in-game / title music so it doesn't fight the previewed track.
     if (g_titleMusicOK) PauseMusicStream(g_titleMusic);
     if (g_musicOK)      PauseMusicStream(g_musicTracks[g_musicIdx]);
@@ -5388,32 +5453,62 @@ static void ABStep(void) {
     if (g_abHasMusic) UpdateMusicStream(g_abMusic);
 
     int sw = GetScreenWidth(), sh = GetScreenHeight();
-    int rowH = 22;
-    int listY = 60;
-    int listH = sh - listY - 60;
+    int rowH      = 22;
+    int catW      = 220;            // category column width
+    int fileX     = catW + 12;
+    int fileW     = sw * 5 / 12;    // file column width
+    int rightX    = catW + fileW + 24;
+    int listY     = 60;
+    int listH     = sh - listY - 50;
 
-    // Mouse wheel inside the sidebar (left two-thirds).
     Vector2 mp = GetMousePosition();
-    bool mouseInList = (mp.x < (float)(sw * 2 / 3));
+    bool mouseInCats  = (mp.x >= 0 && mp.x < (float)catW);
+    bool mouseInFiles = (mp.x >= (float)fileX && mp.x < (float)(fileX + fileW));
     float wheel = GetMouseWheelMove();
-    if (mouseInList && wheel != 0.f) g_abScroll -= wheel * rowH * 3.f;
-    int totalListPx = (int)g_abList.count * rowH;
-    float maxScroll = (float)(totalListPx > listH ? totalListPx - listH : 0);
-    if (g_abScroll < 0.f)        g_abScroll = 0.f;
-    if (g_abScroll > maxScroll)  g_abScroll = maxScroll;
 
-    // Click to pick a row.
-    if (mouseInList && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+    if (mouseInCats && wheel != 0.f)  g_abScrollC -= wheel * rowH * 3.f;
+    if (mouseInFiles && wheel != 0.f) g_abScrollF -= wheel * rowH * 3.f;
+
+    int catTotal  = AB_CAT_COUNT * rowH;
+    int fileTotal = g_abFilteredCount * rowH;
+    float maxC = (float)(catTotal  > listH ? catTotal  - listH : 0);
+    float maxF = (float)(fileTotal > listH ? fileTotal - listH : 0);
+    if (g_abScrollC < 0.f)    g_abScrollC = 0.f;
+    if (g_abScrollC > maxC)   g_abScrollC = maxC;
+    if (g_abScrollF < 0.f)    g_abScrollF = 0.f;
+    if (g_abScrollF > maxF)   g_abScrollF = maxF;
+
+    // Category click = switch + refilter.
+    if (mouseInCats && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
         && mp.y >= (float)listY && mp.y < (float)(listY + listH)) {
-        int rowI = (int)((mp.y - (float)listY + g_abScroll) / (float)rowH);
-        if (rowI >= 0 && rowI < (int)g_abList.count && rowI != g_abIdx) {
+        int rowI = (int)((mp.y - (float)listY + g_abScrollC) / (float)rowH);
+        if (rowI >= 0 && rowI < AB_CAT_COUNT && rowI != g_abCat) {
+            g_abCat = rowI;
+            ABFilter();
+            ABLoadCurrent();
+        }
+    }
+    // File click = play.
+    if (mouseInFiles && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+        && mp.y >= (float)listY && mp.y < (float)(listY + listH)) {
+        int rowI = (int)((mp.y - (float)listY + g_abScrollF) / (float)rowH);
+        if (rowI >= 0 && rowI < g_abFilteredCount && rowI != g_abIdx) {
             g_abIdx = rowI;
             ABLoadCurrent();
         }
     }
 
+    // Keyboard: arrows pick file in current category; LEFT/RIGHT or [/] page categories.
     if (IsKeyPressed(KEY_UP))   { g_abIdx--; ABLoadCurrent(); }
     if (IsKeyPressed(KEY_DOWN)) { g_abIdx++; ABLoadCurrent(); }
+    if (IsKeyPressed(KEY_LEFT_BRACKET) || IsKeyPressed(KEY_LEFT)) {
+        g_abCat = (g_abCat + AB_CAT_COUNT - 1) % AB_CAT_COUNT;
+        ABFilter(); ABLoadCurrent();
+    }
+    if (IsKeyPressed(KEY_RIGHT_BRACKET) || IsKeyPressed(KEY_RIGHT)) {
+        g_abCat = (g_abCat + 1) % AB_CAT_COUNT;
+        ABFilter(); ABLoadCurrent();
+    }
     if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)) {
         if (g_abHasMusic) {
             if (g_abPaused) { ResumeMusicStream(g_abMusic); g_abPaused = false; }
@@ -5428,55 +5523,79 @@ static void ABStep(void) {
     BeginDrawing();
     ClearBackground((Color){15, 20, 30, 255});
     DrawText("AUDIO BROWSER", 14, 16, 22, (Color){240, 200, 80, 255});
-    DrawText("Up/Down/click select   Space play/pause   L loop   Esc close",
+    DrawText("Left/Right or click cat   Up/Down or click file   Space play/pause   L loop   Esc close",
              14, 40, 13, (Color){180, 180, 200, 220});
 
-    BeginScissorMode(0, listY, sw * 2 / 3, listH);
-    for (int i = 0; i < (int)g_abList.count; i++) {
-        int y = listY + i * rowH - (int)g_abScroll;
+    // Categories panel
+    DrawRectangle(0, 0, catW, sh, (Color){12, 14, 22, 245});
+    DrawRectangle(catW, 0, 2, sh, (Color){80, 200, 120, 200});
+    BeginScissorMode(0, listY, catW, listH);
+    for (int i = 0; i < AB_CAT_COUNT; i++) {
+        int y = listY + i * rowH - (int)g_abScrollC;
         if (y > sh) break;
         if (y + rowH < listY) continue;
-        const char *p = g_abList.paths[i];
-        const char *base = strrchr(p, '/');
-        base = base ? base + 1 : p;
-        if (i == g_abIdx) {
-            DrawRectangle(0, y, sw * 2 / 3, rowH, (Color){50, 100, 60, 200});
+        if (i == g_abCat) DrawRectangle(0, y, catW, rowH, (Color){60, 110, 70, 220});
+        // Show count of files in each category for quick navigation.
+        int count = 0;
+        if (g_abHasList) {
+            for (int j = 0; j < (int)g_abList.count; j++)
+                if (ABCatMatches(i, ABBasename(g_abList.paths[j]))) count++;
         }
-        DrawText(base, 22, y + 4, 16,
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%s (%d)", AB_CATS[i].name, count);
+        DrawText(buf, 12, y + 4, 14,
+                 (i == g_abCat) ? (Color){250, 250, 200, 255}
+                                : (Color){200, 200, 220, 230});
+    }
+    EndScissorMode();
+
+    // Files panel
+    DrawRectangle(catW + fileW + 12, 0, 2, sh, (Color){80, 200, 120, 200});
+    BeginScissorMode(fileX, listY, fileW, listH);
+    for (int i = 0; i < g_abFilteredCount; i++) {
+        int y = listY + i * rowH - (int)g_abScrollF;
+        if (y > sh) break;
+        if (y + rowH < listY) continue;
+        const char *base = ABBasename(g_abList.paths[g_abFiltered[i]]);
+        if (i == g_abIdx) DrawRectangle(fileX, y, fileW, rowH, (Color){50, 100, 60, 200});
+        DrawText(base, fileX + 10, y + 4, 16,
                  (i == g_abIdx) ? (Color){250, 250, 200, 255}
                                 : (Color){200, 200, 220, 240});
     }
     EndScissorMode();
 
-    DrawRectangle(sw * 2 / 3, 0, 2, sh, (Color){80, 200, 120, 200});
-
-    int rx = sw * 2 / 3 + 20;
-    DrawText("NOW PLAYING", rx, 60, 18, (Color){240, 200, 80, 255});
-    if (g_abHasMusic) {
-        const char *p = g_abList.paths[g_abIdx];
-        const char *base = strrchr(p, '/');
-        base = base ? base + 1 : p;
-        DrawText(base, rx, 90, 16, (Color){240, 240, 240, 255});
+    // Now-playing panel
+    DrawText(AB_CATS[g_abCat].name, rightX, 50, 14, (Color){180, 200, 220, 200});
+    DrawText("NOW PLAYING", rightX, 70, 18, (Color){240, 200, 80, 255});
+    if (g_abHasMusic && g_abFilteredCount > 0) {
+        int actual = g_abFiltered[g_abIdx];
+        const char *base = ABBasename(g_abList.paths[actual]);
+        DrawText(base, rightX, 100, 16, (Color){240, 240, 240, 255});
 
         float total  = (float)GetMusicTimeLength(g_abMusic);
         float played = (float)GetMusicTimePlayed(g_abMusic);
         float frac   = (total > 0.f) ? played / total : 0.f;
-        int barW = sw - rx - 30;
-        DrawRectangle(rx, 130, barW, 12, (Color){40, 50, 60, 220});
-        DrawRectangle(rx, 130, (int)(barW * frac), 12, (Color){80, 220, 120, 240});
+        int barW = sw - rightX - 30;
+        DrawRectangle(rightX, 140, barW, 12, (Color){40, 50, 60, 220});
+        DrawRectangle(rightX, 140, (int)(barW * frac), 12, (Color){80, 220, 120, 240});
 
-        char tb[48];
+        char tb[64];
         snprintf(tb, sizeof(tb), "%.1fs / %.1fs    %s    loop=%s",
                  (double)played, (double)total,
                  g_abPaused ? "PAUSED" : "PLAYING",
                  g_abLooping ? "ON" : "off");
-        DrawText(tb, rx, 152, 14, (Color){200, 200, 220, 220});
+        DrawText(tb, rightX, 162, 14, (Color){200, 200, 220, 220});
+    } else if (g_abFilteredCount == 0) {
+        DrawText("(no files in this category)", rightX, 100, 16, (Color){180, 180, 100, 240});
     } else {
-        DrawText("(failed to load)", rx, 90, 16, (Color){220, 100, 100, 240});
+        DrawText("(failed to load)", rightX, 100, 16, (Color){220, 100, 100, 240});
     }
 
-    DrawText(TextFormat("%d / %d files", g_abIdx + 1, (int)g_abList.count),
-             rx, sh - 36, 14, (Color){140, 140, 160, 220});
+    DrawText(TextFormat("%d / %d files in '%s'",
+                        g_abFilteredCount > 0 ? g_abIdx + 1 : 0,
+                        g_abFilteredCount,
+                        AB_CATS[g_abCat].name),
+             rightX, sh - 30, 14, (Color){140, 140, 160, 220});
 
     EndDrawing();
 }
