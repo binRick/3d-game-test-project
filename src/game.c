@@ -5325,6 +5325,162 @@ static int FindClosestRearEnemy(float range) {
     return best;
 }
 
+// ── AUDIO BROWSER (F9 from menu) ───────────────────────────────────────────
+// Lists every .mp3 in sounds/, plays the selected one as a streaming Music
+// (works for both long tracks and short SFX). Up/Down navigates; Enter or
+// Space toggles play/pause; L toggles loop; Esc/F9 closes.
+static bool          g_abActive   = false;
+static FilePathList  g_abList;
+static bool          g_abHasList  = false;
+static int           g_abIdx      = 0;
+static float         g_abScroll   = 0.f;
+static Music         g_abMusic;
+static bool          g_abHasMusic = false;
+static bool          g_abLooping  = false;
+static bool          g_abPaused   = false;
+
+static void ABLoadCurrent(void) {
+    if (g_abHasMusic) { UnloadMusicStream(g_abMusic); g_abHasMusic = false; }
+    if (!g_abHasList || g_abList.count == 0) return;
+    if (g_abIdx < 0) g_abIdx = (int)g_abList.count - 1;
+    if (g_abIdx >= (int)g_abList.count) g_abIdx = 0;
+    g_abMusic = LoadMusicStream(g_abList.paths[g_abIdx]);
+    if (g_abMusic.frameCount > 0) {
+        g_abMusic.looping = g_abLooping;
+        SetMusicVolume(g_abMusic, 1.0f);
+        PlayMusicStream(g_abMusic);
+        g_abHasMusic = true;
+        g_abPaused = false;
+    }
+}
+
+static void ABOpen(void) {
+    g_abActive = true;
+    if (g_abHasList) { UnloadDirectoryFiles(g_abList); g_abHasList = false; }
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%s" RES_PREFIX "sounds", AppDir());
+    g_abList = LoadDirectoryFilesEx(dir, ".mp3", false);
+    g_abHasList = true;
+    g_abIdx = 0;
+    g_abScroll = 0.f;
+    // Pause the in-game / title music so it doesn't fight the previewed track.
+    if (g_titleMusicOK) PauseMusicStream(g_titleMusic);
+    if (g_musicOK)      PauseMusicStream(g_musicTracks[g_musicIdx]);
+    EnableCursor(); ShowCursor();
+    ABLoadCurrent();
+}
+
+static void ABClose(void) {
+    g_abActive = false;
+    if (g_abHasMusic) { UnloadMusicStream(g_abMusic); g_abHasMusic = false; }
+    if (g_abHasList)  { UnloadDirectoryFiles(g_abList); g_abHasList = false; }
+    // Resume whichever stream was playing before we stole the audio thread.
+    if (g_titleMusicOK && g_gs == GS_MENU) ResumeMusicStream(g_titleMusic);
+    else if (g_musicOK)                    ResumeMusicStream(g_musicTracks[g_musicIdx]);
+}
+
+static void ABStep(void) {
+    if (IsKeyPressed(KEY_F9) || IsKeyPressed(KEY_ESCAPE)) {
+        ABClose();
+        g_gs = GS_MENU;
+        return;
+    }
+    if (g_abHasMusic) UpdateMusicStream(g_abMusic);
+
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    int rowH = 22;
+    int listY = 60;
+    int listH = sh - listY - 60;
+
+    // Mouse wheel inside the sidebar (left two-thirds).
+    Vector2 mp = GetMousePosition();
+    bool mouseInList = (mp.x < (float)(sw * 2 / 3));
+    float wheel = GetMouseWheelMove();
+    if (mouseInList && wheel != 0.f) g_abScroll -= wheel * rowH * 3.f;
+    int totalListPx = (int)g_abList.count * rowH;
+    float maxScroll = (float)(totalListPx > listH ? totalListPx - listH : 0);
+    if (g_abScroll < 0.f)        g_abScroll = 0.f;
+    if (g_abScroll > maxScroll)  g_abScroll = maxScroll;
+
+    // Click to pick a row.
+    if (mouseInList && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+        && mp.y >= (float)listY && mp.y < (float)(listY + listH)) {
+        int rowI = (int)((mp.y - (float)listY + g_abScroll) / (float)rowH);
+        if (rowI >= 0 && rowI < (int)g_abList.count && rowI != g_abIdx) {
+            g_abIdx = rowI;
+            ABLoadCurrent();
+        }
+    }
+
+    if (IsKeyPressed(KEY_UP))   { g_abIdx--; ABLoadCurrent(); }
+    if (IsKeyPressed(KEY_DOWN)) { g_abIdx++; ABLoadCurrent(); }
+    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)) {
+        if (g_abHasMusic) {
+            if (g_abPaused) { ResumeMusicStream(g_abMusic); g_abPaused = false; }
+            else            { PauseMusicStream(g_abMusic);  g_abPaused = true;  }
+        }
+    }
+    if (IsKeyPressed(KEY_L)) {
+        g_abLooping = !g_abLooping;
+        if (g_abHasMusic) g_abMusic.looping = g_abLooping;
+    }
+
+    BeginDrawing();
+    ClearBackground((Color){15, 20, 30, 255});
+    DrawText("AUDIO BROWSER", 14, 16, 22, (Color){240, 200, 80, 255});
+    DrawText("Up/Down/click select   Space play/pause   L loop   Esc close",
+             14, 40, 13, (Color){180, 180, 200, 220});
+
+    BeginScissorMode(0, listY, sw * 2 / 3, listH);
+    for (int i = 0; i < (int)g_abList.count; i++) {
+        int y = listY + i * rowH - (int)g_abScroll;
+        if (y > sh) break;
+        if (y + rowH < listY) continue;
+        const char *p = g_abList.paths[i];
+        const char *base = strrchr(p, '/');
+        base = base ? base + 1 : p;
+        if (i == g_abIdx) {
+            DrawRectangle(0, y, sw * 2 / 3, rowH, (Color){50, 100, 60, 200});
+        }
+        DrawText(base, 22, y + 4, 16,
+                 (i == g_abIdx) ? (Color){250, 250, 200, 255}
+                                : (Color){200, 200, 220, 240});
+    }
+    EndScissorMode();
+
+    DrawRectangle(sw * 2 / 3, 0, 2, sh, (Color){80, 200, 120, 200});
+
+    int rx = sw * 2 / 3 + 20;
+    DrawText("NOW PLAYING", rx, 60, 18, (Color){240, 200, 80, 255});
+    if (g_abHasMusic) {
+        const char *p = g_abList.paths[g_abIdx];
+        const char *base = strrchr(p, '/');
+        base = base ? base + 1 : p;
+        DrawText(base, rx, 90, 16, (Color){240, 240, 240, 255});
+
+        float total  = (float)GetMusicTimeLength(g_abMusic);
+        float played = (float)GetMusicTimePlayed(g_abMusic);
+        float frac   = (total > 0.f) ? played / total : 0.f;
+        int barW = sw - rx - 30;
+        DrawRectangle(rx, 130, barW, 12, (Color){40, 50, 60, 220});
+        DrawRectangle(rx, 130, (int)(barW * frac), 12, (Color){80, 220, 120, 240});
+
+        char tb[48];
+        snprintf(tb, sizeof(tb), "%.1fs / %.1fs    %s    loop=%s",
+                 (double)played, (double)total,
+                 g_abPaused ? "PAUSED" : "PLAYING",
+                 g_abLooping ? "ON" : "off");
+        DrawText(tb, rx, 152, 14, (Color){200, 200, 220, 220});
+    } else {
+        DrawText("(failed to load)", rx, 90, 16, (Color){220, 100, 100, 240});
+    }
+
+    DrawText(TextFormat("%d / %d files", g_abIdx + 1, (int)g_abList.count),
+             rx, sh - 36, 14, (Color){140, 140, 160, 220});
+
+    EndDrawing();
+}
+
 // ── DEV CONSOLE ( ` toggles ) ───────────────────────────────────────────────
 // Quake-style drop-down debug console. Backtick (or shift+~) toggles. While
 // open, the player input (movement, mouse-look, fire) freezes but enemies +
@@ -5676,6 +5832,9 @@ static void StepFrame(void) {
     if (g_sbActive) { SBStep(); return; }
     if (g_spActive) { SPStep(); return; }
 #endif
+    // F9 — audio browser, all targets. Streams every .mp3 in sounds/.
+    if (IsKeyPressed(KEY_F9) && !g_abActive) { ABOpen(); }
+    if (g_abActive) { ABStep(); return; }
     // Backtick (or shift+~) toggles the dev console — only meaningful in
     // GS_PLAY where there's live game state to act on. ConHandleInput()
     // captures keys ENTER/UP/DOWN/BACKSPACE/ESC and printable chars while
@@ -5810,6 +5969,9 @@ static void StepFrame(void) {
         // K — open the speed-pickup candidate previewer (animated grid).
         if (IsKeyPressed(KEY_K) && !g_spActive) { SPOpen(); }
 #endif
+        // M (on the menu, not in game) — open the audio browser. Plays
+        // every .mp3 in sounds/. Available on every target.
+        if (IsKeyPressed(KEY_M) && !g_abActive) { ABOpen(); }
     } else if (g_gs == GS_PICK_ENEMY) {
         // Enemy picker — navigate 13 picker slots: 10 in-game enemies (0..9)
         // plus 3 preview-only Beautiful-Doom enemies (10/11/12 — revenant,
